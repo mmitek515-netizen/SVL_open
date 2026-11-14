@@ -1,0 +1,86 @@
+# ============================================================================
+# SVL PYTHON OS — DEBIAN 13 TRIXIE PRODUCTION STACK (DOCKER COMPOSE)
+# Includes:
+# 1. svl-python-backend (FastAPI + SVLSystemKernel + 4 Spherical Agent Workers)
+# 2. ollama (Local LLM & Native Vision Engine with GPU passthrough if available)
+# 3. ollama-model-init (Auto-pulls ~14B native Vision model qwen2.5vl:14b or llama3.2-vision:11b)
+# 4. open-webui (Official Open WebUI connected to Ollama + SVL Python OS Pipelines)
+# ============================================================================
+
+services:
+  svl-python-backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.debian13
+    container_name: svl-python-backend
+    restart: unless-stopped
+    environment:
+      SVL_OPERATOR_TOKEN: "${SVL_OPERATOR_TOKEN:?Wymagany sekret SVL_OPERATOR_TOKEN o dlugosci min. 32 znakow}"
+      OLLAMA_HOST: "http://ollama:11434"
+      OLLAMA_PREFERRED_MODEL: "${OLLAMA_PREFERRED_MODEL:-llama3.2-vision:11b}"
+      SVL_SQLITE_PATH: "/var/lib/svl-os/svl_os.sqlite3"
+      SVL_PYTHON_PORT: "8085"
+    ports:
+      - "127.0.0.1:8085:8085"
+    volumes:
+      - svl-os-data:/var/lib/svl-os
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8085/api/py/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: svl-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    expose:
+      - "11434"
+    ports:
+      - "127.0.0.1:11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  ollama-model-init:
+    image: ollama/ollama:latest
+    container_name: svl-ollama-init
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command: |
+      echo "[SVL Ollama Init] Pobieranie modelu Vision Llama 3.2 11B (llama3.2-vision:11b)..."
+      OLLAMA_HOST=http://ollama:11434 ollama pull "${OLLAMA_PREFERRED_MODEL:-llama3.2-vision:11b}" || \
+      OLLAMA_HOST=http://ollama:11434 ollama pull "qwen2.5vl:14b"
+    environment:
+      OLLAMA_PREFERRED_MODEL: "${OLLAMA_PREFERRED_MODEL:-llama3.2-vision:11b}"
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: svl-open-webui
+    restart: unless-stopped
+    depends_on:
+      - ollama
+      - svl-python-backend
+    environment:
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      OPENAI_API_BASE_URL: "http://svl-python-backend:8085/v1"
+      WEBUI_NAME: "SVL Python OS (Debian 13 Trixie)"
+      ENABLE_PERSISTENT_CONFIG: "true"
+    ports:
+      - "127.0.0.1:3000:8080"
+    volumes:
+      - open-webui-data:/app/backend/data
+
+volumes:
+  svl-os-data:
+  ollama-models:
+  open-webui-data:

@@ -1,0 +1,26 @@
+[Unit]
+Description=SVL Python OS Kernel & Spherical Agent Workers (Debian 13 Trixie)
+After=network-online.target docker.service ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=svlos
+Group=svlos
+WorkingDirectory=/opt/svl-python-os
+EnvironmentFile=/etc/svl-os/svl.env
+Environment=PYTHONUNBUFFERED=1
+Environment=SVL_SQLITE_PATH=/var/lib/svl-os/svl_os.sqlite3
+Environment=SVL_PYTHON_PORT=8085
+ExecStart=/opt/svl-python-os/venv/bin/uvicorn backend.app:fastapi_app --host 127.0.0.1 --port 8085
+Restart=always
+RestartSec=3s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/svl-os /var/log/svl-os
+
+[Install]
+WantedBy=multi-user.target
