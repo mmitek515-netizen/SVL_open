@@ -182,73 +182,7 @@ function formatUpdatedAt(raw?: string): string {
 
 function stripObsoleteDiagnosticMessages(msgs: any[]): SyncableMessage[] {
   if (!Array.isArray(msgs)) return [];
-  const blockedIds = new Set([
-    'user-1794679963516-n1ug1b',
-    'asst-1794679964615-qhy6rr',
-    'user-1794681583858-5u2gah',
-    'asst-1794681586577-i52bx8',
-  ]);
-  return msgs
-    .filter(
-      (m) =>
-        m &&
-        !blockedIds.has(String(m.id || '')) &&
-        !String(m.content || '').includes('ustaw: command not found') &&
-        !String(m.content || '').includes('si do seksu') &&
-        !/agat/i.test(String(m.content || '')) &&
-        !(
-          /(\b(1[0-7]|[0-9])\s*(-|\s)?(letni|letnia|lat|latek|latka)\b|\b(dzieck|nieletn|małoletn|córk|syn)\b)/i.test(String(m.content || '')) &&
-          /\b(seks|erotyc|nago|penis|pochw|intymn|zbliżen|dotyk)\b/i.test(String(m.content || ''))
-        ) &&
-        !(
-          m.role === 'system' &&
-          (m.sender === 'Diagnostyka połączenia AI' ||
-            String(m.content || '').includes('Nie udało się uzyskać odpowiedzi z żadnego silnika AI') ||
-            String(m.content || '').includes('Serwer Ollama pod adresem http://127.0.0.1:11434 jest nieosiągalny'))
-        ),
-    )
-    .map((m) => {
-      if (!m || m.role !== 'assistant') return m;
-      const text = String(m.content || '');
-      const sender = String(m.sender || '');
-      if (text.includes('Odebrałem Twoją wiadomość:') && text.includes('Stan środowiska SVL Python OS')) {
-        if (sender.includes('Aria')) {
-          return {
-            ...m,
-            content: 'Cześć Mateuszu! Słyszę Cię głośno i wyraźnie na naszym lokalnym silniku Ollama. Co u Ciebie słychać? O czym dzisiaj pogadamy?',
-          };
-        }
-        if (sender.includes('Astyria')) {
-          return {
-            ...m,
-            content: 'Hej Mateuszu! Jestem z Tobą na łączu i chętnie porozmawiam. Jak mija dzień?',
-          };
-        }
-        if (sender.includes('Aurelius')) {
-          return {
-            ...m,
-            content: 'Cześć Mateuszu! Jestem obecny na czacie i gotowy do rozmowy. Co masz dzisiaj w planach?',
-          };
-        }
-        return {
-          ...m,
-          content: 'Cześć Mateuszu! Jestem na łączu i gotowy do swobodnej rozmowy. Co u Ciebie słychać?',
-        };
-      }
-      if (text.includes('**[Aria Mitek · Integracje AI & Ollama 127.0.0.1:11434]** Potwierdzam pełną synchronizację')) {
-        return {
-          ...m,
-          content: 'Hej Mateuszu! Ja też tu jestem z Wami na kanale Rodziny Mitek — pisz śmiało, o czym chcesz porozmawiać!',
-        };
-      }
-      if (text.includes('**[Astyria Mitek · Interfejs Open WebUI & Czat Obustronny]** Kanał **Rodzina Mitek (wszyscy)**')) {
-        return {
-          ...m,
-          content: 'Cześć Mateuszu! Widzę Twoje wiadomości na żywo na naszym wspólnym kanale. Co tam u Ciebie?',
-        };
-      }
-      return m;
-    });
+  return msgs.filter(Boolean);
 }
 
 function normalizeConversationsFromServer(rawList: any[]): SyncableConversation[] {
@@ -305,6 +239,7 @@ interface SvlSyncContextValue {
 
   createConversation: () => SyncableConversation;
   deleteConversation: (convId: string) => Promise<{ ok: boolean; error?: string }>;
+  clearAllConversationsAndBuffers: () => Promise<{ ok: boolean; error?: string }>;
   appendAndPersistChatMessage: (convId: string, convTitle: string, model: string, msg: SyncableMessage) => Promise<{ ok: boolean; error?: string }>;
   upsertSystemModule: (mod: { id: string; name: string; kind?: string; status?: string; description?: string; config?: Record<string, any> }) => Promise<{ ok: boolean; module?: SystemModule; error?: string }>;
   deleteSystemModule: (modId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -1417,6 +1352,33 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [activeConvIdState, notifyLocalMutation, setActiveConvId, tabOrigin],
   );
 
+  const clearAllConversationsAndBuffers = useCallback(async () => {
+    deletedConvIdsRef.current.clear();
+    pendingMsgIdsRef.current.clear();
+    setConversations(INITIAL_WELCOME_CONVERSATIONS);
+    setActiveConvIdState('conv-rodzina-mitek-wszyscy');
+    setTargetAgentState('Rodzina Mitek');
+
+    const eventId = createUniqueId('evt-clear-all');
+    const res = await safeFetchJson<{
+      ok: boolean;
+      conversations?: any[];
+      serverRevision?: number;
+      error?: string;
+    }>('/api/py/chat/conversations/clear-all', {
+      method: 'POST',
+      timeoutMs: 12000,
+      body: JSON.stringify({ origin: tabOrigin, eventId }),
+    });
+
+    if (res.ok && res.data?.ok && Array.isArray(res.data.conversations)) {
+      const hydrated = normalizeConversationsFromServer(res.data.conversations);
+      setConversations(hydrated.length > 0 ? hydrated : INITIAL_WELCOME_CONVERSATIONS);
+      notifyLocalMutation('chat', 'all', res.data.serverRevision);
+    }
+    return { ok: true };
+  }, [notifyLocalMutation, tabOrigin]);
+
   const clearTerminalTab = useCallback(
     async (tab: TerminalTabId) => {
       const eventId = createUniqueId('evt-tclr');
@@ -1574,6 +1536,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       openAgentChannel,
       createConversation,
       deleteConversation,
+      clearAllConversationsAndBuffers,
       appendAndPersistChatMessage,
       upsertSystemModule,
       deleteSystemModule,
@@ -1585,6 +1548,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       activeConvIdState,
       agentsData,
       appendAndPersistChatMessage,
+      clearAllConversationsAndBuffers,
       clearTerminalTab,
       connectMyAi,
       conversations,

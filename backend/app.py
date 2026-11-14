@@ -970,6 +970,17 @@ async def handle_api_request(
                 "conversations": runtime.kernel.list_conversations_with_messages(),
             }
 
+    if method == "POST" and path == "/api/py/chat/conversations/clear-all":
+        try:
+            cleared = runtime.kernel.clear_all_chat_data(
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+            )
+            return 200, {**cleared}
+        except Exception as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
     if method == "POST" and path == "/api/py/system/sync":
         # Spójny, idempotentny i bezpieczny snapshot globalny bez niebezpiecznych operacji OS
         sync_id = f"sync-{uuid.uuid4().hex[:12]}"

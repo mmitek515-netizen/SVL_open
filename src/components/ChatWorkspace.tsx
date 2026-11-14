@@ -332,6 +332,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     openAgentChannel,
     createConversation,
     deleteConversation,
+    clearAllConversationsAndBuffers,
     appendAndPersistChatMessage,
     triggerFullSync,
     refreshDomainModules,
@@ -788,6 +789,19 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               </button>
             )}
           </div>
+          <button
+            type="button"
+            onClick={async () => {
+              if (window.confirm('Czy na pewno chcesz wyczyścić wszystkie wiadomości i odetkać bufory czatu?')) {
+                await clearAllConversationsAndBuffers();
+                setMobileSidebarOpen(false);
+              }
+            }}
+            className="w-full min-h-[36px] px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-200 text-xs font-medium rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            Wyczyść wszystko i odetkaj bufory
+          </button>
         </div>
 
         {/* Conversations List */}

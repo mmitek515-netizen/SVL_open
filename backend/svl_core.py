@@ -1484,12 +1484,6 @@ class SVLSystemKernel:
                     mid = str(m.get("id") or "").strip()
                     if not mid:
                         continue
-                    content_str = str(m.get("content") or "")
-                    if (
-                        re.search(r"(\b(1[0-7]|[0-9])\s*(-|\s)?(letni|letnia|lat|latek|latka)\b|\b(dzieck|nieletn|małoletn|córk|syn)\b)", content_str, re.I)
-                        and re.search(r"\b(seks|erotyc|nago|penis|pochw|intymn|zbliżen|dotyk)\b", content_str, re.I)
-                    ) or re.search(r"agat", content_str, re.I):
-                        continue
                     exists_msg = conn.execute("SELECT id FROM chat_messages WHERE id = ?", (mid,)).fetchone()
                     if not exists_msg:
                         meta_json = json.dumps({
@@ -1537,6 +1531,39 @@ class SVLSystemKernel:
         return {
             "conversations": self.list_conversations_with_messages(),
             **merge_info,
+        }
+
+    def clear_all_chat_data(
+        self,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        def _clear(conn: sqlite3.Connection) -> dict[str, Any]:
+            conn.execute("DELETE FROM chat_messages")
+            conn.execute("DELETE FROM conversations")
+            conn.execute("DELETE FROM sync_entities WHERE entity = 'chat'")
+            sync_res = self.commit_entity_event_tx(
+                conn,
+                entity="chat",
+                entity_id="all",
+                event_type="chat.all_cleared",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                deleted=False,
+                payload={"action": "clear_all"},
+            )
+            return sync_res
+
+        sync_res = self.run_db(_clear, write=True)
+        self.ensure_mitek_family_channel()
+        return {
+            "ok": True,
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
+            "conversations": self.list_conversations_with_messages(),
         }
 
     def sync_conversations(
@@ -2208,6 +2235,7 @@ class SVLSystemKernel:
                         "conv-agent-alex",
                         "conv-agent-astyria",
                         "conv-agent-aurelius",
+                        "conv-agent-agata",
                     ],
                     "group_channel": "conv-rodzina-mitek-wszyscy",
                     "synchronized_sources": ["chat_messages", "terminal_history", "agent_configs", "agent_memory"],
