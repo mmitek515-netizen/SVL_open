@@ -1062,7 +1062,8 @@ async def handle_api_request(
         agents_payload = _time_module("agents", True, _load_agents)
 
         def _sync_modules() -> list[dict[str, Any]]:
-            runtime.kernel.sync_chat_state_mutations(origin=origin, correlation_id=corr)
+            # Snapshot reads cannot re-execute chat directives or emit new module mutations.
+            # Chat writes process directives once in the message endpoint.
             return runtime.apply_active_module_settings()
 
         system_modules = _time_module("modules_registry", True, _sync_modules)
@@ -1131,27 +1132,11 @@ async def handle_api_request(
             }
 
         fresh_meta = runtime.kernel.get_sync_snapshot_meta()
-        sync_evt = runtime.kernel.emit_sync_event(
-            entity="system",
-            entity_id="snapshot",
-            event_type="system.snapshot_synced",
-            origin=origin,
-            correlation_id=corr,
-            event_id=event_id,
-            payload={
-                "syncId": sync_id,
-                "clientRevision": client_rev,
-                "warningsCount": len(warnings),
-            },
-        )
-        final_srv_rev = sync_evt["serverRevision"]
-        runtime.kernel.record_audit(
-            "operator",
-            "SYSTEM_FULL_SYNC",
-            "all_subsystems",
-            "OK" if not warnings else "OK_WITH_WARNINGS",
-            f"syncId={sync_id} srvRev={final_srv_rev} warnings={len(warnings)}",
-        )
+        # A read-only snapshot MUST NOT produce a system.snapshot_synced event.
+        # Previously every snapshot incremented serverRevision and generated a
+        # WebSocket notification that caused all other tabs to request another
+        # snapshot, creating a self-sustaining synchronization storm.
+        final_srv_rev = fresh_meta["serverRevision"]
 
         return 200, {
             "ok": True,

@@ -411,9 +411,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
               error: null,
             };
             setLastSyncReport(report);
-            if (reason !== 'boot_initial_sync' && reason !== 'broadcast_catchup') {
-              emitCrossTabSignal('system', 'snapshot', report.serverRevision, data.syncId);
-            }
+            // Read-only snapshots are not mutations: never echo them across tabs.
             return report;
           }
 
@@ -439,7 +437,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       inflightSnapshotRef.current = task;
       return task;
     },
-    [applyAuthoritativeSnapshot, emitCrossTabSignal, tabOrigin],
+    [applyAuthoritativeSnapshot, tabOrigin],
   );
 
   const refreshDomainModules = useCallback(
@@ -668,8 +666,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return;
       }
 
-      if (evt.entity === 'system' && evt.origin !== tabOrigin) {
-        void triggerFullSync('remote_snapshot_event');
+      if (evt.entity === 'system' && evt.origin !== tabOrigin && evt.type !== 'system.snapshot_synced') {
+        void triggerFullSync('remote_system_mutation');
       }
     },
     [advanceServerRevision, recordSeenEventId, scheduleDomainRefresh, tabOrigin, triggerFullSync],
