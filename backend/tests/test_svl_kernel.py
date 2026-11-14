@@ -122,6 +122,51 @@ class TestSVLKernelSuite(unittest.TestCase):
             reloaded = orchestrator.get_agent_config("Aria")
             self.assertAlmostEqual(reloaded["temperature"], 0.42)
 
+    def test_sqlite_chat_sync_and_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = str(Path(tmpdir) / "test_chat_sync.sqlite3")
+            token = "test_operator_token_with_more_than_32_chars_abcdef"
+            kernel = SVLSystemKernel(db_path=db_file, operator_token=token)
+
+            saved = kernel.save_chat_message(
+                "conv-sync-1",
+                "Test Sync",
+                "svl-hybrid-router",
+                {
+                    "id": "m-1",
+                    "role": "user",
+                    "sender": "Mateusz",
+                    "content": "Synchronizuj czat",
+                    "timestamp": "10:00",
+                },
+            )
+            self.assertTrue(saved["ok"])
+
+            synced = kernel.sync_conversations([
+                {
+                    "id": "conv-sync-1",
+                    "title": "Test Sync",
+                    "messages": [
+                        {"id": "m-1", "role": "user", "sender": "Mateusz", "content": "Synchronizuj czat", "timestamp": "10:00"},
+                        {"id": "m-2", "role": "assistant", "sender": "Alex", "agentId": "Alex", "content": "Zsynchronizowano", "timestamp": "10:01"},
+                    ],
+                },
+                {
+                    "id": "conv-sync-2",
+                    "title": "Druga sesja",
+                    "messages": [
+                        {"id": "m-3", "role": "user", "sender": "Mateusz", "content": "Hej", "timestamp": "10:02"},
+                    ],
+                },
+            ])
+            self.assertEqual(len(synced), 2)
+            conv1 = next(c for c in synced if c["id"] == "conv-sync-1")
+            self.assertEqual([m["id"] for m in conv1["messages"]], ["m-1", "m-2"])
+
+            kernel.delete_conversation("conv-sync-2")
+            remaining = kernel.list_conversations_with_messages()
+            self.assertEqual([c["id"] for c in remaining], ["conv-sync-1"])
+
 
 if __name__ == "__main__":
     unittest.main()

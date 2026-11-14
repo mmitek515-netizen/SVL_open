@@ -565,6 +565,66 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
         res = runtime.execute_python_repl(code)
         return 200, res
 
+    if method == "GET" and path == "/api/py/chat/conversations":
+        return 200, {"ok": True, "conversations": runtime.kernel.list_conversations_with_messages()}
+
+    if method == "POST" and path == "/api/py/chat/conversations/sync":
+        threads = body.get("conversations") if isinstance(body.get("conversations"), list) else []
+        merged = runtime.kernel.sync_conversations(threads)
+        return 200, {"ok": True, "conversations": merged}
+
+    if method == "POST" and path == "/api/py/chat/conversations/message":
+        cid = str(body.get("conversation_id", "")).strip()
+        title = str(body.get("title", "Sesja SVL Python OS")).strip()
+        model = str(body.get("model", "svl-hybrid-router")).strip()
+        msg = body.get("message") if isinstance(body.get("message"), dict) else {}
+        if not cid or not msg:
+            return 400, {"ok": False, "error": "conversation_id and message are required"}
+        saved = runtime.kernel.save_chat_message(cid, title, model, msg)
+        return 200, {**saved, "conversations": runtime.kernel.list_conversations_with_messages()}
+
+    if method == "POST" and path == "/api/py/chat/conversations/delete":
+        cid = str(body.get("conversation_id", "")).strip()
+        if not cid:
+            return 400, {"ok": False, "error": "conversation_id is required"}
+        deleted = runtime.kernel.delete_conversation(cid)
+        return 200, {**deleted, "conversations": runtime.kernel.list_conversations_with_messages()}
+
+    if method == "POST" and path == "/api/py/system/sync":
+        # Full cross-subsystem synchronization: ensure all 4 workers alive, reload configs, probe Ollama/Codex, merge chat
+        client_threads = body.get("conversations") if isinstance(body.get("conversations"), list) else []
+        if client_threads:
+            runtime.kernel.sync_conversations(client_threads)
+        # Ensure all 4 workers are connected if any stopped
+        alive_count = sum(1 for p in runtime.orchestrator.processes.values() if p.is_alive())
+        sync_report = None
+        if alive_count < len(CANONICAL_SVL_AGENTS):
+            sync_report = await runtime.orchestrator.connect_my_ai(triggered_by="system_full_sync")
+        agents = runtime.orchestrator.refresh_states()
+        await runtime.bus.publish(
+            topic="svl.system.synchronized",
+            source=str(body.get("triggered_by", "operator_sync")),
+            target="*",
+            scope_mode="CAŁOŚĆ",
+            payload={"agents_online": len([a for a in agents if a.get("status") == "ONLINE_LOCAL_WORKER"])},
+        )
+        runtime.kernel.record_audit("operator", "SYSTEM_FULL_SYNC", "all_subsystems", "OK", "Synchronized kernel, agents, Ollama, and SQLite chat history")
+        return 200, {
+            "ok": True,
+            "synchronized_at": datetime.now(timezone.utc).isoformat(),
+            "connection_report": sync_report or runtime.orchestrator.last_Sync_report,
+            "health": {
+                "status": "ONLINE",
+                "system": runtime.kernel.sys_version.value,
+                "operator": runtime.kernel.operator.value,
+                "host": runtime.probe_host_environment(),
+                "ollama": runtime.probe_ollama_status(),
+                "codex": runtime.probe_codex_status(),
+            },
+            "agents": agents,
+            "conversations": runtime.kernel.list_conversations_with_messages(),
+        }
+
     return 404, {"ok": False, "error": f"Unknown endpoint: {method} {path}"}
 
 

@@ -222,12 +222,34 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '12mb' }));
 
+  const wsClients = new Set<WebSocket>();
+  const broadcastSvlSync = (scope: string, detail: Record<string, unknown> = {}) => {
+    const frame = JSON.stringify({
+      type: 'svl_sync',
+      scope,
+      timestamp: new Date().toISOString(),
+      ...detail,
+    });
+    for (const client of wsClients) {
+      if (client.readyState === WebSocket.OPEN) {
+        try {
+          client.send(frame);
+        } catch {
+          // ignore closed socket race
+        }
+      }
+    }
+  };
+
   // 1. Proxy all /api/py/* routes directly to the live Python 3 SVLSystemKernel server
   app.all('/api/py/*', async (req, res) => {
     const queryStr = new URLSearchParams(req.query as Record<string, string>).toString();
     const fullEndpoint = queryStr ? `${req.path}?${queryStr}` : req.path;
     const method = req.method === 'POST' ? 'POST' : 'GET';
     const result = await callPythonBackend(method, fullEndpoint, method === 'POST' ? req.body : undefined);
+    if (method === 'POST' && result.status >= 200 && result.status < 300) {
+      broadcastSvlSync(req.path.replace('/api/py/', ''), { endpoint: req.path });
+    }
     res.status(result.status).json(result.data);
   });
 
@@ -251,6 +273,7 @@ async function startServer() {
       const pyRes = await callPythonBackend('POST', '/api/py/agents/connect', {
         triggered_by: `terminal:${terminalType}`,
       });
+      broadcastSvlSync('agents', { command: 'podłącz moje ai', source: terminalType });
       res.json({
         ok: true,
         terminalType,
@@ -305,6 +328,7 @@ async function startServer() {
         title: taskBody.slice(0, 80),
         payload: taskBody,
       });
+      broadcastSvlSync('agents', { targetAgent });
       res.json({
         ok: pyRes.data.ok,
         terminalType,
@@ -393,12 +417,14 @@ async function startServer() {
   app.post('/api/ollama/config', async (req, res) => {
     const ollamaHost = String(req.body?.ollamaHost || req.body?.ollama_host || '').trim();
     const pyRes = await callPythonBackend('POST', '/api/py/ollama/config', { ollama_host: ollamaHost });
+    broadcastSvlSync('ollama', { ollamaHost });
     res.status(pyRes.status).json(pyRes.data);
   });
 
   app.post('/api/ollama/pull', async (req, res) => {
     const modelName = String(req.body?.model || 'llama3.2-vision:11b').trim();
     const pyRes = await callPythonBackend('POST', '/api/py/ollama/pull', { model: modelName });
+    broadcastSvlSync('ollama', { pulling: modelName });
     res.status(pyRes.status).json(pyRes.data);
   });
 
@@ -448,6 +474,7 @@ async function startServer() {
         `${agentsList}\n\n` +
         `Pamięć agentów została zainicjalizowana w bazie SQLite (\`./data/svl_os.sqlite3\`) wyłącznie z rzeczywistych danych repozytorium.`;
 
+      broadcastSvlSync('agents', { command: 'podłącz moje ai', source: 'chat' });
       res.json({
         ok: true,
         sender: 'SVL System Kernel',
@@ -603,6 +630,7 @@ async function startServer() {
                 kind: 'episode',
                 content: `Rozmowa (${ollamaModel}): Pytanie "${cleanMsg.slice(0, 90)}" -> Odpowiedź "${replyContent.slice(0, 120)}"`,
               });
+              broadcastSvlSync('chat', { agent: selectedAgent, modelUsed: `Ollama (${ollamaModel})` });
               res.json({
                 ok: true,
                 sender: selectedAgent,
@@ -690,6 +718,7 @@ async function startServer() {
               kind: 'episode',
               content: `Rozmowa (${candidate}): Pytanie "${cleanMsg.slice(0, 90)}" -> Odpowiedź "${replyText.slice(0, 120)}"`,
             });
+            broadcastSvlSync('chat', { agent: selectedAgent, modelUsed: candidate });
             res.json({
               ok: true,
               sender: selectedAgent,
@@ -783,6 +812,7 @@ async function startServer() {
   // Real WebSocket Server for interactive PTY/terminal streaming & Spherical Event Bus live push
   const wss = new WebSocketServer({ server: httpServer, path: '/ws/svl' });
   wss.on('connection', (ws: WebSocket) => {
+    wsClients.add(ws);
     ws.send(
       JSON.stringify({
         type: 'connected',
@@ -797,10 +827,16 @@ async function startServer() {
         if (msg.type === 'ping') {
           const status = await callPythonBackend('GET', '/api/py/agents/status');
           ws.send(JSON.stringify({ type: 'bus_snapshot', data: status.data }));
+        } else if (msg.type === 'sync_request') {
+          broadcastSvlSync('manual_sync');
         }
       } catch {
         // ignore malformed frame
       }
+    });
+
+    ws.on('close', () => {
+      wsClients.delete(ws);
     });
   });
 

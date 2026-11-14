@@ -607,6 +607,157 @@ class SVLSystemKernel:
             "variable": target_var.to_metadata(),
         }
 
+    def list_conversations_with_messages(self) -> list[dict[str, Any]]:
+        """Zwraca wszystkie wątki czatu wraz z wiadomościami z SQLite."""
+        with self._connect() as conn:
+            conv_rows = conn.execute(
+                "SELECT id, title, model, created_at, updated_at FROM conversations ORDER BY updated_at DESC"
+            ).fetchall()
+            msg_rows = conn.execute(
+                "SELECT id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at FROM chat_messages ORDER BY rowid ASC"
+            ).fetchall()
+
+        msgs_by_conv: dict[str, list[dict[str, Any]]] = {}
+        for mr in msg_rows:
+            try:
+                meta = json.loads(mr["metadata_json"] or "{}")
+            except Exception:
+                meta = {}
+            try:
+                attachments = json.loads(mr["attachments_json"] or "[]")
+            except Exception:
+                attachments = []
+            msg_item = {
+                "id": mr["id"],
+                "role": mr["role"],
+                "sender": mr["sender"],
+                "content": mr["content"],
+                "timestamp": meta.get("display_timestamp") or mr["created_at"],
+                "agentId": meta.get("agentId"),
+                "modelUsed": meta.get("modelUsed"),
+                "fileName": meta.get("fileName"),
+                "imagePreview": attachments[0] if attachments else None,
+                "connectionReport": meta.get("connectionReport"),
+            }
+            msgs_by_conv.setdefault(mr["conversation_id"], []).append(msg_item)
+
+        result: list[dict[str, Any]] = []
+        for cr in conv_rows:
+            result.append({
+                "id": cr["id"],
+                "title": cr["title"],
+                "model": cr["model"],
+                "createdAt": cr["created_at"],
+                "updatedAt": cr["updated_at"],
+                "messages": msgs_by_conv.get(cr["id"], []),
+            })
+        return result
+
+    def save_chat_message(
+        self,
+        conversation_id: str,
+        title: str,
+        model: str,
+        msg: dict[str, Any],
+    ) -> dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        display_ts = str(msg.get("timestamp") or datetime.now(timezone.utc).strftime("%H:%M"))
+        msg_id = str(msg.get("id") or f"msg-{int(time.time() * 1000)}")
+        meta_json = json.dumps({
+            "display_timestamp": display_ts,
+            "agentId": msg.get("agentId"),
+            "modelUsed": msg.get("modelUsed"),
+            "fileName": msg.get("fileName"),
+            "connectionReport": msg.get("connectionReport"),
+        }, ensure_ascii=False)
+        attachments_json = json.dumps(
+            [msg["imagePreview"]] if msg.get("imagePreview") else [],
+            ensure_ascii=False,
+        )
+        with self._connect() as conn:
+            existing_conv = conn.execute(
+                "SELECT id, created_at FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+            created_at = existing_conv["created_at"] if existing_conv else now_iso
+            conn.execute(
+                "INSERT OR REPLACE INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (conversation_id, title or "Sesja SVL Python OS", model or "svl-hybrid-router", created_at, now_iso),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO chat_messages (id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    msg_id,
+                    conversation_id,
+                    str(msg.get("role") or "user"),
+                    str(msg.get("sender") or "Operator"),
+                    str(msg.get("content") or ""),
+                    attachments_json,
+                    meta_json,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+        return {"ok": True, "conversation_id": conversation_id, "message_id": msg_id}
+
+    def sync_conversations(self, threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Scala wątki przesłane przez klienta z trwałą bazą SQLite bez nadpisywania nowszych wpisów."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            for th in threads:
+                cid = str(th.get("id") or "").strip()
+                if not cid:
+                    continue
+                title = str(th.get("title") or "Sesja SVL Python OS")
+                model = str(th.get("model") or "svl-hybrid-router")
+                existing_conv = conn.execute("SELECT id, created_at FROM conversations WHERE id = ?", (cid,)).fetchone()
+                if not existing_conv:
+                    conn.execute(
+                        "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                        (cid, title, model, now_iso, now_iso),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+                        (title, now_iso, cid),
+                    )
+                for m in th.get("messages") or []:
+                    mid = str(m.get("id") or "").strip()
+                    if not mid:
+                        continue
+                    exists_msg = conn.execute("SELECT id FROM chat_messages WHERE id = ?", (mid,)).fetchone()
+                    if not exists_msg:
+                        meta_json = json.dumps({
+                            "display_timestamp": str(m.get("timestamp") or ""),
+                            "agentId": m.get("agentId"),
+                            "modelUsed": m.get("modelUsed"),
+                            "fileName": m.get("fileName"),
+                            "connectionReport": m.get("connectionReport"),
+                        }, ensure_ascii=False)
+                        att_json = json.dumps([m["imagePreview"]] if m.get("imagePreview") else [], ensure_ascii=False)
+                        conn.execute(
+                            "INSERT INTO chat_messages (id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                mid,
+                                cid,
+                                str(m.get("role") or "user"),
+                                str(m.get("sender") or "Operator"),
+                                str(m.get("content") or ""),
+                                att_json,
+                                meta_json,
+                                now_iso,
+                            ),
+                        )
+            conn.commit()
+        return self.list_conversations_with_messages()
+
+    def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM chat_messages WHERE conversation_id = ?", (conversation_id,))
+            conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+            conn.commit()
+        return {"ok": True, "deleted_id": conversation_id}
+
     def generate_system_status_report(self, include_demo_history: bool = False) -> str:
         """
         Generuje uniwersalny, produkcyjny zrzut stanu systemu w formacie strukturalnym JSON.

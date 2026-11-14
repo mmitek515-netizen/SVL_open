@@ -16,7 +16,12 @@ import {
   MessageSquare,
   Trash2,
 } from 'lucide-react';
-import { CANONICAL_AGENTS, buildChatHistoryPayload, validateOllamaHostUrl } from '../utils/svlLogic';
+import {
+  CANONICAL_AGENTS,
+  buildChatHistoryPayload,
+  mergeConversationThreads,
+  validateOllamaHostUrl,
+} from '../utils/svlLogic';
 
 export interface ChatMessage {
   id: string;
@@ -47,6 +52,10 @@ interface ChatWorkspaceProps {
   onRefreshSystem: () => Promise<void>;
   targetAgent?: 'Auto' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
   onChangeTargetAgent?: (agent: 'Auto' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => void;
+  syncRevision?: number;
+  isSyncing?: boolean;
+  lastSyncedAt?: string | null;
+  onFullSync?: (localConversations?: any[]) => Promise<any>;
 }
 
 const STORAGE_KEY = 'svl_python_os_conversations_v1';
@@ -128,6 +137,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   onRefreshSystem,
   targetAgent: propTargetAgent,
   onChangeTargetAgent,
+  syncRevision = 0,
+  isSyncing = false,
+  lastSyncedAt,
+  onFullSync,
 }) => {
   const [conversations, setConversations] = useState<ConversationThread[]>(() => {
     try {
@@ -155,6 +168,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [attachedImage, setAttachedImage] = useState<{ base64: string; mimeType: string; name: string } | null>(null);
   const [attachedTextFile, setAttachedTextFile] = useState<{ name: string; content: string } | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const hasSyncedInitialRef = useRef(false);
+  const pendingMsgIdsRef = useRef<Set<string>>(new Set());
+  const deletedConvIdsRef = useRef<Set<string>>(new Set());
 
   // Ollama connection panel & pull state
   const [ollamaConfigOpen, setOllamaConfigOpen] = useState(false);
@@ -167,6 +184,59 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const activeConv = conversations.find((c) => c.id === activeConvId) || conversations[0];
+
+  // Synchronize conversations with SQLite on boot and whenever syncRevision updates
+  useEffect(() => {
+    let cancelled = false;
+    async function syncFromBackend() {
+      try {
+        if (!hasSyncedInitialRef.current) {
+          hasSyncedInitialRef.current = true;
+          const resp = await fetch('/api/py/chat/conversations/sync', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ conversations }),
+          });
+          const data = await resp.json();
+          if (!cancelled && data.ok && Array.isArray(data.conversations) && data.conversations.length > 0) {
+            const hydrated: ConversationThread[] = data.conversations.map((c: any) => ({
+              id: c.id,
+              title: c.title,
+              updatedAt: c.updatedAt?.includes('T')
+                ? new Date(c.updatedAt).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
+                : (c.updatedAt || ''),
+              messages: Array.isArray(c.messages) && c.messages.length > 0 ? c.messages : INITIAL_CONVERSATIONS[0].messages,
+            }));
+            setConversations((prev) =>
+              mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+            );
+          }
+        } else {
+          const resp = await fetch('/api/py/chat/conversations');
+          const data = await resp.json();
+          if (!cancelled && data.ok && Array.isArray(data.conversations) && data.conversations.length > 0) {
+            const hydrated: ConversationThread[] = data.conversations.map((c: any) => ({
+              id: c.id,
+              title: c.title,
+              updatedAt: c.updatedAt?.includes('T')
+                ? new Date(c.updatedAt).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
+                : (c.updatedAt || ''),
+              messages: Array.isArray(c.messages) && c.messages.length > 0 ? c.messages : INITIAL_CONVERSATIONS[0].messages,
+            }));
+            setConversations((prev) =>
+              mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+            );
+          }
+        }
+      } catch {
+        // fallback cleanly to local cache if backend still starting
+      }
+    }
+    void syncFromBackend();
+    return () => {
+      cancelled = true;
+    };
+  }, [syncRevision]);
 
   useEffect(() => {
     if (healthData?.ollama?.ollama_host) {
@@ -285,49 +355,90 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     }
   };
 
-  const appendMessageToActive = (msg: ChatMessage, newTitle?: string) => {
+  const persistMessageToSqlite = async (convId: string, convTitle: string, msg: ChatMessage) => {
+    pendingMsgIdsRef.current.add(msg.id);
+    try {
+      await fetch('/api/py/chat/conversations/message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: convId,
+          title: convTitle,
+          model: selectedModel,
+          message: msg,
+        }),
+      });
+    } catch {
+      // ignore transient persist failure
+    } finally {
+      pendingMsgIdsRef.current.delete(msg.id);
+    }
+  };
+
+  const appendMessageToThread = (convId: string, convTitle: string, msg: ChatMessage) => {
+    pendingMsgIdsRef.current.add(msg.id);
     setConversations((prev) =>
       prev.map((c) => {
-        if (c.id !== activeConv.id) return c;
+        if (c.id !== convId) return c;
         return {
           ...c,
-          title: newTitle || c.title,
+          title: convTitle,
           updatedAt: msg.timestamp,
           messages: [...c.messages, msg],
         };
       }),
     );
+    void persistMessageToSqlite(convId, convTitle, msg);
   };
 
   const handleCreateConversation = () => {
     const newId = `conv-${Date.now()}`;
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+    const initMsg: ChatMessage = {
+      id: `msg-${Date.now()}`,
+      role: 'assistant',
+      sender: 'SVL System Kernel',
+      agentId: 'system',
+      modelUsed: 'SVLSystemKernel v5.6.0',
+      timestamp: nowTime,
+      content: 'Rozpoczęto nową konwersację. Wpisz `podłącz moje ai` lub zadaj pytanie wybranemu agentowi.',
+    };
     const newThread: ConversationThread = {
       id: newId,
       title: `Nowa sesja (${nowTime})`,
       updatedAt: nowTime,
-      messages: [
-        {
-          id: `msg-${Date.now()}`,
-          role: 'assistant',
-          sender: 'SVL System Kernel',
-          agentId: 'system',
-          modelUsed: 'SVLSystemKernel v5.6.0',
-          timestamp: nowTime,
-          content: 'Rozpoczęto nową konwersację. Wpisz `podłącz moje ai` lub zadaj pytanie wybranemu agentowi.',
-        },
-      ],
+      messages: [initMsg],
     };
+    pendingMsgIdsRef.current.add(initMsg.id);
     setConversations((prev) => [newThread, ...prev]);
     setActiveConvId(newId);
+    void persistMessageToSqlite(newId, newThread.title, initMsg);
   };
 
   const handleDeleteConversation = (id: string) => {
     if (conversations.length <= 1) return;
+    deletedConvIdsRef.current.add(id);
     const remaining = conversations.filter((c) => c.id !== id);
     setConversations(remaining);
     if (activeConvId === id && remaining[0]) {
       setActiveConvId(remaining[0].id);
+    }
+    void fetch('/api/py/chat/conversations/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversation_id: id }),
+    }).catch(() => {});
+  };
+
+  const handleTriggerFullSync = async () => {
+    if (!onFullSync) {
+      await onRefreshSystem();
+      return;
+    }
+    const res = await onFullSync(conversations);
+    if (res?.ok) {
+      setSyncNotice(`Zsynchronizowano SQLite, agentów (4/4) i Ollama (${new Date().toLocaleTimeString('pl-PL', { hour12: false })})`);
+      setTimeout(() => setSyncNotice(null), 4500);
     }
   };
 
@@ -378,12 +489,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       fileName: attachedTextFile?.name || attachedImage?.name,
     };
 
-    const updatedTitle =
+    const targetConvId = activeConv.id;
+    const targetTitle =
       activeConv.messages.length <= 1 && trimmed
         ? trimmed.slice(0, 42)
-        : undefined;
+        : activeConv.title;
 
-    appendMessageToActive(userMsg, updatedTitle);
+    appendMessageToThread(targetConvId, targetTitle, userMsg);
     if (overrideText === undefined) setInput('');
     const currentImage = attachedImage;
     setAttachedImage(null);
@@ -408,7 +520,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       const data = await resp.json();
 
       if (!resp.ok || data.ok === false) {
-        appendMessageToActive({
+        appendMessageToThread(targetConvId, targetTitle, {
           id: `err-${Date.now()}`,
           role: 'system',
           sender: 'Diagnostyka połączenia AI',
@@ -433,9 +545,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         content: data.reply || 'Brak odpowiedzi z serwera.',
         connectionReport: data.connectionReport,
       };
-      appendMessageToActive(replyMsg);
+      appendMessageToThread(targetConvId, targetTitle, replyMsg);
     } catch (err: any) {
-      appendMessageToActive({
+      appendMessageToThread(targetConvId, targetTitle, {
         id: `err-${Date.now()}`,
         role: 'system',
         sender: 'System Error',
@@ -754,6 +866,15 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           <span className="text-xs text-slate-500 shrink-0">Szybkie polecenia:</span>
           <button
             type="button"
+            onClick={handleTriggerFullSync}
+            disabled={isSyncing}
+            className="px-2.5 py-1 rounded bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+            {isSyncing ? 'Synchronizacja...' : 'Synchronizuj aplikację'}
+          </button>
+          <button
+            type="button"
             onClick={() => handleSendMessage('podłącz moje ai')}
             disabled={isSending || isConnectingAi}
             className="px-2.5 py-1 rounded bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/40 text-violet-300 text-xs font-mono whitespace-nowrap shrink-0 transition-colors"
@@ -784,6 +905,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             <Terminal className="w-3.5 h-3.5 text-violet-400" />
             Otwórz Terminale (5)
           </button>
+          {(syncNotice || lastSyncedAt) && (
+            <span className="ml-auto text-[11px] font-mono text-slate-400 whitespace-nowrap shrink-0">
+              {syncNotice || `Sync: ${lastSyncedAt}`}
+            </span>
+          )}
         </div>
 
         {/* Chat Messages Stream */}

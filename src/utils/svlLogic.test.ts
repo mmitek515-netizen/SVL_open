@@ -7,6 +7,7 @@ import {
   classifyCommandRisk,
   compactifyValue,
   isConnectMyAiCommand,
+  mergeConversationThreads,
   selectOllamaModelName,
   validateOllamaHostUrl,
   validateOperatorTokenFormat,
@@ -85,3 +86,47 @@ test('selectOllamaModelName honors explicit selection and prefers llama3.2-visio
   assert.equal(selectOllamaModelName('svl-hybrid-router', models, false), 'llama3.2-vision:11b');
 });
 
+test('mergeConversationThreads preserves pending in-flight messages and respects deleted threads', () => {
+  const remote = [
+    {
+      id: 'c1',
+      title: 'Sesja 1',
+      updatedAt: '12:00',
+      messages: [
+        { id: 'm1', role: 'user' as const, sender: 'Op', content: 'Cześć', timestamp: '12:00' },
+      ],
+    },
+    {
+      id: 'c-deleted',
+      title: 'Stara',
+      updatedAt: '11:00',
+      messages: [
+        { id: 'm0', role: 'user' as const, sender: 'Op', content: 'Usuń mnie', timestamp: '11:00' },
+      ],
+    },
+  ];
+  const local = [
+    {
+      id: 'c1',
+      title: 'Sesja 1',
+      updatedAt: '12:01',
+      messages: [
+        { id: 'm1', role: 'user' as const, sender: 'Op', content: 'Cześć', timestamp: '12:00' },
+        { id: 'm2', role: 'assistant' as const, sender: 'Alex', content: 'Odpowiedź w locie', timestamp: '12:01' },
+      ],
+    },
+    {
+      id: 'c-new',
+      title: 'Nowa sesja',
+      updatedAt: '12:02',
+      messages: [
+        { id: 'm3', role: 'assistant' as const, sender: 'SVL System Kernel', content: 'Start', timestamp: '12:02' },
+      ],
+    },
+  ];
+
+  const merged = mergeConversationThreads(remote, local, new Set(['m2', 'm3']), new Set(['c-deleted']));
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].id, 'c-new');
+  assert.deepEqual(merged[1].messages.map((m) => m.id), ['m1', 'm2']);
+});

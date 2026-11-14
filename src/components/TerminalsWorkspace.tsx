@@ -74,11 +74,11 @@ const TERMINAL_TABS: Array<{
   {
     id: 'hyperspace',
     label: 'Binarna Hiperprzestrzeń',
-    subtitle: 'Moduł obliczeniowy 128-bit BinaryHyperspaceKernel (Hamming) + WithoutNLP Euler/Fourier',
+    subtitle: 'Moduł obliczeniowy 128-bit BinaryHyperspaceKernel (Hamming) + Analiza Harmoniczna Eulera/Fouriera',
     defaultPrompt: 'hyper128>',
     quickCommands: [
       'SYSTEM_CALIBRATION_364_QUANTUM_WHEEL',
-      'Analiza widmowa Fouriera i fazora Eulera bez modeli NLP',
+      'Analiza widmowa Fouriera i fazora Eulera (128-bit)',
       'DIAGNOSTIC_SPHERICAL_PXYZ_METRICS',
     ],
   },
@@ -143,7 +143,7 @@ export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
           id: 'init-hyper',
           timestamp: now,
           kind: 'system',
-          text: 'Terminal Binarnej Hiperprzestrzeni (zaimportowany z SVL_System/Nowy_system/kernel/binary_hyperspace_kernel.py oraz withoutNlpEngine.ts). Oblicza 128-bitowe wektory Hamminga i szereg Fouriera.',
+          text: 'Terminal Binarnej Hiperprzestrzeni (zaimportowany z SVL_System/Nowy_system/kernel/binary_hyperspace_kernel.py). Oblicza 128-bitowe wektory Hamminga i szereg Fouriera.',
         },
       ],
       agents: [

@@ -207,3 +207,69 @@ export function selectOllamaModelName(
   return preferredFallback;
 }
 
+export interface SyncableMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  sender: string;
+  agentId?: string;
+  modelUsed?: string;
+  content: string;
+  timestamp: string;
+  imagePreview?: string;
+  fileName?: string;
+  connectionReport?: any;
+}
+
+export interface SyncableConversation {
+  id: string;
+  title: string;
+  updatedAt: string;
+  messages: SyncableMessage[];
+}
+
+export function mergeConversationThreads(
+  remoteThreads: SyncableConversation[],
+  localThreads: SyncableConversation[],
+  pendingMessageIds: Set<string> = new Set(),
+  deletedConversationIds: Set<string> = new Set(),
+): SyncableConversation[] {
+  const localById = new Map<string, SyncableConversation>();
+  for (const lt of localThreads) {
+    if (!deletedConversationIds.has(lt.id)) {
+      localById.set(lt.id, lt);
+    }
+  }
+
+  const merged: SyncableConversation[] = [];
+  const seenIds = new Set<string>();
+
+  for (const rt of remoteThreads) {
+    if (deletedConversationIds.has(rt.id)) continue;
+    seenIds.add(rt.id);
+    const lt = localById.get(rt.id);
+    if (!lt) {
+      merged.push(rt);
+      continue;
+    }
+
+    const remoteMsgIds = new Set(rt.messages.map((m) => m.id));
+    const pendingExtras = lt.messages.filter(
+      (m) => !remoteMsgIds.has(m.id) && pendingMessageIds.has(m.id),
+    );
+    merged.push({
+      ...rt,
+      title: lt.title && lt.title !== 'Nowa sesja' && pendingExtras.length > 0 ? lt.title : rt.title,
+      messages: [...rt.messages, ...pendingExtras],
+    });
+  }
+
+  for (const lt of localThreads) {
+    if (seenIds.has(lt.id) || deletedConversationIds.has(lt.id)) continue;
+    const hasPending = lt.messages.some((m) => pendingMessageIds.has(m.id));
+    if (hasPending) {
+      merged.unshift(lt);
+    }
+  }
+
+  return merged;
+}

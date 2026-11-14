@@ -19,6 +19,9 @@ export default function App() {
   const [kernelData, setKernelData] = useState<any>(null);
   const [agentsData, setAgentsData] = useState<any>(null);
   const [isConnectingAi, setIsConnectingAi] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncRevision, setSyncRevision] = useState(0);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
   const fetchAllSystemState = useCallback(async () => {
     try {
@@ -30,6 +33,7 @@ export default function App() {
       if (hResp.ok) setHealthData(await hResp.json());
       if (kResp.ok) setKernelData(await kResp.json());
       if (aResp.ok) setAgentsData(await aResp.json());
+      setLastSyncedAt(new Date().toLocaleTimeString('pl-PL', { hour12: false }));
     } catch {
       // retry silently on next poll
     }
@@ -39,6 +43,81 @@ export default function App() {
     fetchAllSystemState();
     const timer = setInterval(fetchAllSystemState, 6000);
     return () => clearInterval(timer);
+  }, [fetchAllSystemState]);
+
+  // Real-time cross-component & cross-tab synchronization via WebSocket (/ws/svl) + BroadcastChannel
+  useEffect(() => {
+    let channel: BroadcastChannel | null = null;
+    if (typeof BroadcastChannel !== 'undefined') {
+      channel = new BroadcastChannel('svl_python_os_sync');
+      channel.onmessage = () => {
+        void fetchAllSystemState();
+        setSyncRevision((r) => r + 1);
+      };
+    }
+
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let closedByUnmount = false;
+
+    const connectWs = () => {
+      if (closedByUnmount) return;
+      try {
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${proto}//${window.location.host}/ws/svl`);
+        ws.onmessage = (evt) => {
+          try {
+            const payload = JSON.parse(String(evt.data || '{}'));
+            if (payload.type === 'svl_sync') {
+              void fetchAllSystemState();
+              setSyncRevision((r) => r + 1);
+            }
+          } catch {
+            // ignore non-json frame
+          }
+        };
+        ws.onclose = () => {
+          if (!closedByUnmount) {
+            reconnectTimer = setTimeout(connectWs, 4000);
+          }
+        };
+      } catch {
+        // ignore ws init failure
+      }
+    };
+    connectWs();
+
+    return () => {
+      closedByUnmount = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
+      channel?.close();
+    };
+  }, [fetchAllSystemState]);
+
+  const handleFullSystemSync = useCallback(async (localConversations?: any[]) => {
+    setIsSyncing(true);
+    try {
+      const resp = await fetch('/api/py/system/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          triggered_by: 'operator_sync_button',
+          conversations: localConversations || [],
+        }),
+      });
+      const data = await resp.json();
+      await fetchAllSystemState();
+      setSyncRevision((r) => r + 1);
+      if (typeof BroadcastChannel !== 'undefined') {
+        const bc = new BroadcastChannel('svl_python_os_sync');
+        bc.postMessage({ type: 'svl_sync', at: Date.now() });
+        bc.close();
+      }
+      return data;
+    } finally {
+      setIsSyncing(false);
+    }
   }, [fetchAllSystemState]);
 
   const handleConnectMyAi = useCallback(async () => {
@@ -51,6 +130,7 @@ export default function App() {
       });
       const data = await resp.json();
       await fetchAllSystemState();
+      setSyncRevision((r) => r + 1);
       return data;
     } finally {
       setIsConnectingAi(false);
@@ -168,6 +248,10 @@ export default function App() {
             onRefreshSystem={fetchAllSystemState}
             targetAgent={chatTargetAgent}
             onChangeTargetAgent={setChatTargetAgent}
+            syncRevision={syncRevision}
+            isSyncing={isSyncing}
+            lastSyncedAt={lastSyncedAt}
+            onFullSync={handleFullSystemSync}
           />
         )}
         {activeTab === 'agents' && (
