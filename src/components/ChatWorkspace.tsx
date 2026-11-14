@@ -370,7 +370,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const prevMsgCountRef = useRef<number>(0);
 
-  const [duplexActive, setDuplexActive] = useState(true);
+  const [duplexActive, setDuplexActive] = useState(false);
   const [isProactiveLoading, setIsProactiveLoading] = useState(false);
   const lastInteractionTimeRef = useRef<number>(Date.now());
 
@@ -685,13 +685,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         if (Array.isArray(data?.appliedActions) && data.appliedActions.length > 0) {
           void refreshDomainModules(['modules', 'agents', 'kernel', 'health']);
         }
-        await appendAndPersistChatMessage(targetConvId, targetTitle, selectedModel, {
-          id: createUniqueId('err'),
-          role: 'system',
-          sender: 'Diagnostyka połączenia AI',
-          timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-          content: res.error || data?.error || `Błąd serwera HTTP ${res.status}`,
-        });
+        setChatActionError(res.error || data?.error || `Błąd serwera HTTP ${res.status}`);
         return;
       }
 
@@ -740,6 +734,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       if (appliedActions) {
         notifyLocalMutation('module', 'chat', data.latestServerRevision || undefined);
       }
+    } catch (error: any) {
+      setChatActionError(`Błąd wysyłania wiadomości: ${error?.message || String(error)}`);
     } finally {
       sendingRef.current = false;
       setIsSending(false);

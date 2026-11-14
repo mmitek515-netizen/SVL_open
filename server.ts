@@ -56,7 +56,7 @@ function redactForSync(input: any): any {
 
 // Server-side Gemini client initialized strictly per @google/genai skill guidelines
 function getGeminiClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.API_KEY;
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY' || apiKey.trim().length < 10) {
     return null;
   }
@@ -1882,7 +1882,7 @@ async function startServer() {
       const batchReplies: Record<string, string> = {};
 
       if (aiClient && others.length > 0) {
-        const followModels = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
+        const followModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
         for (const fModel of followModels) {
           try {
             const props: Record<string, any> = {};
@@ -2059,10 +2059,11 @@ async function startServer() {
     // 2) Full Conversational & Tool-Calling Engine (serves all Ollama models, SVL-364 Router, and Gemini models)
     const ai = getGeminiClient();
     if (ai && !directExecResult) {
-      const candidateModels =
-        effectiveModel === 'gemini-4-hydrogen'
-          ? ['gemini-3.1-flash-lite', 'gemini-4-hydrogen']
-          : ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
+      const candidateModels = [...new Set(
+        [process.env.GEMINI_MODEL, effectiveModel.startsWith('gemini-') ? effectiveModel : null,
+          'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash']
+          .filter((entry): entry is string => Boolean(entry)),
+      )];
       const wantsSystemTool =
         /\b(dodaj\s+modu|utwórz\s+modu|usuń\s+modu|pobierz\s+model|pull\s+model|zapisz\s+w\s+pamięci|zapisz\s+sobie|skonfiguruj\s+agenta|wykonaj\s+polecenie|uruchom\s+komend)\b/i.test(
           cleanMsg,
@@ -2195,7 +2196,7 @@ async function startServer() {
               ok: true,
               sender: selectedDisplayName,
               agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
-              modelUsed: imageBase64 ? `${displayModelBadge} (Vision)` : displayModelBadge,
+              modelUsed: imageBase64 ? `${candidate} (Vision)` : candidate,
               reply: replyText,
               followUpMessages: followUps,
               appliedActions,
@@ -2304,7 +2305,7 @@ async function startServer() {
     const displayModel = model.startsWith('ollama:') ? model.replace('ollama:', 'Ollama (') + ')' : 'SVL-364 (Duplex Autonomia)';
 
     if (aiClient) {
-      const pModels = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
+      const pModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
       for (const pMod of pModels) {
         try {
           const gen = await aiClient.models.generateContent({
