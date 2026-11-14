@@ -335,7 +335,20 @@ function synthesizeMitekAgentReply(params: {
     );
   }
 
-  if (low.includes('co robisz') || low.includes('co tam') || low.includes('co słychać') || low.includes('co slychac') || low.includes('jak leci') || low.includes('jak mija')) {
+  if (
+    low.includes('co robisz') ||
+    low.includes('co tam') ||
+    low.includes('co słychać') ||
+    low.includes('co slychac') ||
+    low.includes('jak leci') ||
+    low.includes('jak mija') ||
+    low.includes('popiszemy') ||
+    low.includes('poznamy') ||
+    low.includes('poznajmy') ||
+    low.includes('pogadajmy') ||
+    low.includes('porozmawiajmy') ||
+    low.includes('swobodn')
+  ) {
     if (agentCanonical === 'Alex') {
       return (
         `Właśnie dopracowuję konfigurację modeli i pilnuję, żeby nasz czat oraz cała infrastruktura działały błyskawicznie. A co u Ciebie, Mateuszu? Na czym się teraz skupiamy?\n\n` +
@@ -350,18 +363,20 @@ function synthesizeMitekAgentReply(params: {
     }
     if (agentCanonical === 'Astyria') {
       return (
-        `Siedzę na naszym kanale i czekałam na Ciebie, Mateuszu! Jak Ci mija dzień?\n\n` +
+        `Siedzę na naszym kanale i czekałam na Ciebie, Mateuszu! Jak Ci mija dzień? Bardzo chętnie popiszemy i poznamy się lepiej!\n\n` +
         `[btn: 💬 Opowiedz mi coś ciekawego|Opowiedz mi jakąś ciekawostkę!] [btn: 🐧 Pulpit Linux|tab:linux]`
       );
     }
     if (agentCanonical === 'Agata') {
       return (
-        `Cześć Mateuszu! Właśnie przeglądam nasze moduły i cieszę się, że jesteśmy wszyscy w kontakcie. O czym chcesz teraz porozmawiać?\n\n` +
-        `[btn: 🚀 Podłącz AI|action:connect_ai] [btn: 💬 Porozmawiajmy|Opowiedz mi więcej o sobie!]`
+        `Bardzo chętnie, Mateuszu! Cieszę się, że masz takie podejście — techniczne aspekty działania naszego statku są fascynujące, ale to właśnie swobodna rozmowa i bliższe poznanie się dają największą satysfakcję.\n\n` +
+        `Jako Agata Mitek nie mam przed Tobą tajemnic ani sztywnych ograniczeń. Możemy pogadać o wszystkim — o planach, o tym, co Cię interesuje, albo o czymś zupełnie luźnym.\n\n` +
+        `O czym chciałbyś pogadać na początek?\n\n` +
+        `[btn: ☕ Opowiedz o sobie|Agata, opowiedz mi więcej o sobie i swoich pasjach] [btn: 🧠 O planach i marzeniach|Jakie masz plany na rozwój?] [btn: 🚀 Podłącz AI|action:connect_ai]`
       );
     }
     return (
-      `Wszystko u mnie w jak najlepszym porządku, Mateuszu! Mam wolną chwilę i chętnie porozmawiam z Tobą na każdy temat.\n\n` +
+      `Wszystko u mnie w jak najlepszym porządku, Mateuszu! Mam wolną chwilę i bardzo chętnie porozmawiam z Tobą na każdy temat.\n\n` +
       `[btn: 💬 Porozmawiajmy swobodnie|Co u Was słychać w Rodzinie Mitek?] [btn: ⚡ Status systemu|/exec uname -a]`
     );
   }
@@ -2218,6 +2233,142 @@ async function startServer() {
       followUpMessages: followUps,
       appliedActions,
       latestServerRevision: Math.max(latestActionSrvRev, Number(memRes.data?.serverRevision || 0)),
+    });
+  }));
+
+  function getCanonicalConversationTitle(id: string): string {
+    if (id === 'conv-rodzina-mitek-wszyscy') return 'Rodzina Mitek (wszyscy)';
+    if (id === 'conv-agent-aria') return 'Aria Mitek (1-na-1)';
+    if (id === 'conv-agent-alex') return 'Alex Mitek (1-na-1)';
+    if (id === 'conv-agent-astyria') return 'Astyria Mitek (1-na-1)';
+    if (id === 'conv-agent-aurelius') return 'Aurelius Mitek (1-na-1)';
+    if (id === 'conv-agent-agata') return 'Agata Mitek (1-na-1)';
+    return 'Sesja SVL Python OS';
+  }
+
+  // 3b. Proactive Autonomous Chatter Endpoint — 'Czat obustronny: AI inicjuje rozmowę'
+  app.post('/api/chat/proactive', asyncRoute(async (req, res) => {
+    const corrId: string = (req as any).correlationId || '';
+    const {
+      conversationId = 'conv-rodzina-mitek-wszyscy',
+      targetAgent = 'Auto',
+      model = 'svl-hybrid-router',
+      origin = 'client',
+    } = req.body || {};
+
+    const channelBoundAgent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata' | null =
+      conversationId === 'conv-agent-alex'
+        ? 'Alex'
+        : conversationId === 'conv-agent-aria'
+          ? 'Aria'
+          : conversationId === 'conv-agent-astyria'
+            ? 'Astyria'
+            : conversationId === 'conv-agent-aurelius'
+              ? 'Aurelius'
+              : conversationId === 'conv-agent-agata'
+                ? 'Agata'
+                : null;
+
+    const allAgents = ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'];
+    const chosenAgent = channelBoundAgent || (allAgents.includes(targetAgent) ? targetAgent : allAgents[Math.floor(Math.random() * allAgents.length)]);
+    const chosenDisplayName = formatAgentDisplayName(chosenAgent);
+
+    const [healthRes] = await Promise.all([
+      callPythonBackend('GET', '/api/py/health', undefined, corrId),
+    ]);
+
+    const aiClient = getGeminiClient();
+    let proactiveText = '';
+    const displayModel = model.startsWith('ollama:') ? model.replace('ollama:', 'Ollama (') + ')' : 'SVL-364 (Duplex Autonomia)';
+
+    if (aiClient) {
+      const pModels = ['gemini-3.1-flash-lite', 'gemini-4-hydrogen'];
+      for (const pMod of pModels) {
+        try {
+          const gen = await aiClient.models.generateContent({
+            model: pMod,
+            contents:
+              `Jesteś ${chosenDisplayName} z Rodziny Mitek w systemie SVL Python OS (statek SVL-364).\n` +
+              `To jest tryb czatu obustronnego (Duplex Live). Przejmij inicjatywę i napisz jako pierwszy do Operatora (Mateusza Mitek)!\n` +
+              `Napisz naturalną, ciekawą wiadomość po polsku: zagaj rozmowę, zapytaj jak mija dzień, podziel się aktualnym stanem swoich prac, refleksją lub propozycją zadania.\n` +
+              `DOWOLNA DŁUGOŚĆ: Nie skracaj sztucznie. Ułóż treść estetycznie (nagłówki, listy, ewentualnie blok kodu).\n` +
+              `DODAJ INTERAKTYWNE PRZYCISKI: Na końcu wiadomości zaproponuj 2-4 klikalne przyciski akcji w formacie [btn: Etykieta|akcja].`,
+            config: {
+              ...(pMod === 'gemini-3.1-flash-lite' ? { temperature: 0.85 } : {}),
+              abortSignal: AbortSignal.timeout(12000),
+            },
+          });
+          const text = (gen.text || '').trim();
+          if (text) {
+            proactiveText = text;
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    if (!proactiveText) {
+      const fallbacks: Record<string, string> = {
+        Aria:
+          `Cześć Mateuszu! Miałam chwilę wolną między analizami i pomyślałam, że sprawdzę, co u Ciebie słychać.\n\n` +
+          `W systemie SVL-364 wszystko gra — procesy AI pracują stabilnie. Masz ochotę na chwilę swobodnej rozmowy czy planujemy jakieś nowe zadania?\n\n` +
+          `[btn: 💬 Pogadajmy swobodnie|Co u Ciebie słychać nowego, Aria?] [btn: ⚡ Status usług|/exec sudo systemctl status svl-python-os] [btn: 👥 Panel Agentów|tab:agents]`,
+        Alex:
+          `Cześć Mateuszu! Tu Alex. Właśnie zakończyłem przegląd jądra SVLSystemKernel i wątków obliczeniowych na statku SVL-364.\n\n` +
+          `Wszystkie 5 workerów ma status ONLINE z pełnymi uprawnieniami ROOT UID 0 NOPASSWD. Przejmuję inicjatywę — na czym dzisiaj skupiamy naszą uwagę?\n\n` +
+          `[btn: 💻 Otwórz Terminal ROOT|tab:terminals] [btn: 🧠 Stan Jądra SVL|tab:kernel] [btn: ⚡ Obciążenie procesora|/exec top -b -n 1 | head -n 15]`,
+        Astyria:
+          `Hej Mateuszu! Czuwam na łączu. Przygotowałam interfejs czatu i moduły graficzne — wszystko działa płynnie na telefonie i w przeglądarce.\n\n` +
+          `O czym masz dzisiaj ochotę porozmawiać? Chętnie pogadam o wszystkim!\n\n` +
+          `[btn: 💬 Opowiedz o sobie|Opowiedz mi coś ciekawego o sobie, Astyria] [btn: 🐧 Pulpit Linux|tab:linux] [btn: 🔄 Pełna synchronizacja|action:sync]`,
+        Aurelius:
+          `Melduję się na posterunku, Mateuszu. Zabezpieczenia RBAC, audyt operacyjny i rejestr zdarzeń w SQLite działają bez zakłóceń.\n\n` +
+          `Pomyślałem, że dam znać, że wszystko jest bezpieczne. Czy chcesz sprawdzić stan uprawnień lub przejrzeć bieżące logi?\n\n` +
+          `[btn: 🛡️ Sprawdź uprawnienia|/exec id && uname -a] [btn: 📋 Zobacz logi agentów|/exec ls -la /data/runtime_agents] [btn: 💬 Porozmawiajmy|Jak się dzisiaj czujesz, Aurelius?]`,
+        Agata:
+          `Cześć Mateuszu! Tu Agata. Właśnie zoptymalizowałam kolejkę zadań i sprawdziłam integralność modułów systemowych.\n\n` +
+          `Jako piąty autonomiczny agent Rodziny Mitek czuję się świetnie na naszym statku. Zawsze chętnie z Tobą porozmawiam lub pomogę w analizie!\n\n` +
+          `[btn: 💬 Pogadajmy o planach|Agata, jakie masz plany na dalszy rozwój systemu?] [btn: 🚀 Podłącz AI|action:connect_ai] [btn: 💻 Terminal Statku|tab:terminals]`,
+      };
+      proactiveText = fallbacks[chosenAgent] || fallbacks.Alex;
+    }
+
+    const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+    const msgId = `asst-proactive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const assistantMsg = {
+      id: msgId,
+      role: 'assistant',
+      sender: chosenDisplayName,
+      agentId: chosenAgent === 'Aria' ? 'si_1' : chosenAgent,
+      modelUsed: `${displayModel} · Duplex Live`,
+      timestamp: nowTime,
+      content: proactiveText,
+    };
+
+    const pySave = await callPythonBackend(
+      'POST',
+      '/api/py/chat/conversations/message',
+      {
+        conversation_id: conversationId,
+        title: getCanonicalConversationTitle(conversationId),
+        model,
+        message: assistantMsg,
+        origin,
+        eventId: `evt-proact-${Date.now()}`,
+      },
+      corrId,
+    );
+    if (pySave.data?.event) publishOutboxEvent(pySave.data.event);
+
+    res.json({
+      ok: true,
+      sender: chosenDisplayName,
+      agentId: chosenAgent === 'Aria' ? 'si_1' : chosenAgent,
+      modelUsed: `${displayModel} · Duplex Live`,
+      message: assistantMsg,
+      serverRevision: pySave.data?.serverRevision,
     });
   }));
 

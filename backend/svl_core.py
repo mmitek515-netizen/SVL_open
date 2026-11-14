@@ -1388,7 +1388,18 @@ class SVLSystemKernel:
                 (conversation_id,),
             ).fetchone()
             created_at = existing_conv["created_at"] if existing_conv else now_iso
-            resolved_title = title or (existing_conv["title"] if existing_conv else "Sesja SVL Python OS")
+            canonical_channel_titles = {
+                "conv-rodzina-mitek-wszyscy": "Rodzina Mitek (wszyscy)",
+                "conv-agent-aria": "Aria Mitek (1-na-1)",
+                "conv-agent-alex": "Alex Mitek (1-na-1)",
+                "conv-agent-astyria": "Astyria Mitek (1-na-1)",
+                "conv-agent-aurelius": "Aurelius Mitek (1-na-1)",
+                "conv-agent-agata": "Agata Mitek (1-na-1)",
+            }
+            if conversation_id in canonical_channel_titles:
+                resolved_title = canonical_channel_titles[conversation_id]
+            else:
+                resolved_title = title or (existing_conv["title"] if existing_conv else "Sesja SVL Python OS")
             conn.execute(
                 "INSERT OR REPLACE INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 (conversation_id, resolved_title, model or "svl-hybrid-router", created_at, now_iso),

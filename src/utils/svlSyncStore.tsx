@@ -185,12 +185,22 @@ function stripObsoleteDiagnosticMessages(msgs: any[]): SyncableMessage[] {
   return msgs.filter(Boolean);
 }
 
+export function getCanonicalConversationTitle(id: string, fallbackTitle?: string): string {
+  if (id === 'conv-rodzina-mitek-wszyscy') return 'Rodzina Mitek (wszyscy)';
+  if (id === 'conv-agent-aria') return 'Aria Mitek (1-na-1)';
+  if (id === 'conv-agent-alex') return 'Alex Mitek (1-na-1)';
+  if (id === 'conv-agent-astyria') return 'Astyria Mitek (1-na-1)';
+  if (id === 'conv-agent-aurelius') return 'Aurelius Mitek (1-na-1)';
+  if (id === 'conv-agent-agata') return 'Agata Mitek (1-na-1)';
+  return fallbackTitle || 'Sesja SVL Python OS';
+}
+
 function normalizeConversationsFromServer(rawList: any[]): SyncableConversation[] {
   return (rawList || []).map((c: any) => {
     const cleaned = stripObsoleteDiagnosticMessages(c.messages);
     return {
       id: String(c.id),
-      title: String(c.title || 'Sesja SVL Python OS'),
+      title: getCanonicalConversationTitle(String(c.id), c.title),
       updatedAt: formatUpdatedAt(c.updatedAt),
       revision: typeof c.revision === 'number' ? c.revision : Number(c.revision || 1),
       messages:
@@ -1234,7 +1244,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           if (c.messages.some((existing) => existing.id === msg.id)) return c;
           return {
             ...c,
-            title: convTitle,
+            title: getCanonicalConversationTitle(convId, convTitle),
             updatedAt: msg.timestamp,
             messages: [...c.messages, msg],
           };

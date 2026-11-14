@@ -22,6 +22,8 @@ import {
   Play,
   Zap,
   CornerDownRight,
+  Sparkles,
+  Radio,
 } from 'lucide-react';
 import {
   CANONICAL_AGENTS,
@@ -32,7 +34,7 @@ import {
   safeFetchJson,
   validateOllamaHostUrl,
 } from '../utils/svlLogic';
-import { useSvlSync } from '../utils/svlSyncStore';
+import { useSvlSync, getCanonicalConversationTitle } from '../utils/svlSyncStore';
 
 export type ChatMessage = SyncableMessage;
 
@@ -367,6 +369,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const prevMsgCountRef = useRef<number>(0);
 
+  const [duplexActive, setDuplexActive] = useState(true);
+  const [isProactiveLoading, setIsProactiveLoading] = useState(false);
+  const lastInteractionTimeRef = useRef<number>(Date.now());
+
   const activeConv = conversations.find((c) => c.id === activeConvId) || conversations[0];
 
   useEffect(() => {
@@ -408,6 +414,53 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [activeConv?.id, activeConv?.messages.length, isSending]);
+
+  useEffect(() => {
+    lastInteractionTimeRef.current = Date.now();
+  }, [activeConv?.id, activeConv?.messages.length]);
+
+  const handleTriggerProactiveChat = async (agentOverride?: string) => {
+    if (isSending || isProactiveLoading || !activeConv) return;
+    setIsProactiveLoading(true);
+    setChatActionError(null);
+    lastInteractionTimeRef.current = Date.now();
+    try {
+      const chosenTarget =
+        agentOverride ||
+        (['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(targetAgent) ? targetAgent : 'Auto');
+      const res = await safeFetchJson<{
+        ok: boolean;
+        message?: ChatMessage;
+        sender?: string;
+        agentId?: string;
+        modelUsed?: string;
+        serverRevision?: number;
+        error?: string;
+      }>('/api/chat/proactive', {
+        method: 'POST',
+        timeoutMs: 30000,
+        body: JSON.stringify({
+          conversationId: activeConv.id,
+          targetAgent: chosenTarget,
+          model: selectedModel,
+          origin: tabOrigin,
+        }),
+      });
+
+      if (res.ok && res.data?.ok && res.data.message) {
+        const msg = res.data.message;
+        await appendAndPersistChatMessage(activeConv.id, activeConv.title, selectedModel, msg);
+        notifyLocalMutation('chat', activeConv.id, res.data.serverRevision);
+      } else if (!res.ok) {
+        setChatActionError(`Błąd inicjacji rozmowy: ${res.error || res.data?.error || 'brak odpowiedzi'}`);
+      }
+    } finally {
+      setIsProactiveLoading(false);
+    }
+  };
+
+  // Automatic proactive timer disabled to prevent looping messages when operator is idle;
+  // proactive chat is now strictly manual via the [🎙️ Swobodna rozmowa AI] button.
 
   const ollamaReachable = Boolean(healthData?.ollama?.daemon_reachable);
   const ollamaHostUrl: string = healthData?.ollama?.ollama_host || 'http://127.0.0.1:11434';
@@ -578,12 +631,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     };
 
     const targetConvId = overrideConvId || targetConvObj.id;
-    const targetTitle =
-      targetConvId === 'conv-rodzina-mitek-wszyscy'
-        ? 'Rodzina Mitek (wszyscy)'
-        : targetConvObj.messages.length <= 1 && trimmed
-          ? trimmed.slice(0, 42)
-          : targetConvObj.title;
+    const isPermanentChannel =
+      targetConvId === 'conv-rodzina-mitek-wszyscy' || targetConvId.startsWith('conv-agent-');
+    const targetTitle = isPermanentChannel
+      ? getCanonicalConversationTitle(targetConvId, targetConvObj.title)
+      : targetConvObj.messages.length <= 1 && trimmed
+        ? trimmed.slice(0, 42)
+        : targetConvObj.title;
 
     const persistRes = await appendAndPersistChatMessage(targetConvId, targetTitle, selectedModel, userMsg);
     if (!persistRes.ok && persistRes.error) {
@@ -831,6 +885,16 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                     setActiveConvId(conv.id);
                     if (isFamilyChan) {
                       setTargetAgent('Rodzina Mitek');
+                    } else if (conv.id === 'conv-agent-aria') {
+                      setTargetAgent('Aria');
+                    } else if (conv.id === 'conv-agent-alex') {
+                      setTargetAgent('Alex');
+                    } else if (conv.id === 'conv-agent-astyria') {
+                      setTargetAgent('Astyria');
+                    } else if (conv.id === 'conv-agent-aurelius') {
+                      setTargetAgent('Aurelius');
+                    } else if (conv.id === 'conv-agent-agata') {
+                      setTargetAgent('Agata');
                     }
                     setMobileSidebarOpen(false);
                   }}
@@ -859,10 +923,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           })}
         </div>
 
-        {/* Four Agents Live Sidebar Summary */}
+        {/* Agents Live Sidebar Summary */}
         <div className="p-4 border-t border-slate-800/80 bg-[#0D1018] space-y-2.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-300">Rodzina Mitek (4 AI)</span>
+            <span className="text-xs font-semibold text-slate-300">
+              Rodzina Mitek ({CANONICAL_AGENTS.length} AI)
+            </span>
             <button
               type="button"
               onClick={() => {
@@ -871,7 +937,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               }}
               className="text-xs text-violet-400 hover:text-violet-300 hover:underline whitespace-nowrap"
             >
-              Panel (4)
+              Panel ({CANONICAL_AGENTS.length})
             </button>
           </div>
           <div className="space-y-1.5">
@@ -879,9 +945,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               const live = agentsStatus.find((a) => a.canonical_name === meta.canonicalName);
               const isOnline = live?.status === 'ONLINE_LOCAL_WORKER';
               return (
-                <div
+                <button
+                  type="button"
                   key={meta.id}
-                  className="flex items-center justify-between text-xs py-1 px-2 rounded bg-slate-900/70 border border-slate-800/60"
+                  onClick={() => {
+                    openAgentChannel(meta.canonicalName);
+                    setMobileSidebarOpen(false);
+                  }}
+                  className="w-full flex items-center justify-between text-xs py-1 px-2 rounded bg-slate-900/70 hover:bg-slate-800/80 border border-slate-800/60 transition-colors text-left cursor-pointer"
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <span className={`font-semibold ${meta.textClass} truncate`}>
@@ -892,9 +963,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                     </span>
                   </div>
                   <span className="text-[11px] font-mono tabular-nums text-slate-400 shrink-0">
-                    {isOnline ? `PID ${live.pid}` : 'Definicja'}
+                    {isOnline ? `PID ${live.pid}` : '1-na-1'}
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -981,6 +1052,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setDuplexActive((v) => !v)}
+              title={duplexActive ? "Czat obustronny aktywny (AI rozmawia swobodnie i przejmuje inicjatywę)" : "Czat obustronny wstrzymany"}
+              aria-label="Przełącz czat obustronny"
+              className={`px-2 py-1 rounded-md border text-[11px] font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all ${
+                duplexActive
+                  ? 'bg-violet-600/25 border-violet-500/50 text-violet-200 hover:bg-violet-600/35 shadow-sm'
+                  : 'bg-[#0B0D13] border-slate-700/80 text-slate-400 hover:text-slate-300'
+              }`}
+            >
+              <Radio className={`w-3 h-3 ${duplexActive ? 'text-emerald-400 animate-pulse' : 'text-slate-500'}`} />
+              <span className="hidden sm:inline">{duplexActive ? 'Czat obustronny: WŁ' : 'Obustronny: WYŁ'}</span>
+              <span className="sm:hidden">{duplexActive ? '2-Way' : 'Ręczny'}</span>
+            </button>
             <button
               type="button"
               onClick={() => void handleTriggerFullSync()}
@@ -1439,6 +1525,51 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           }}
           className="p-3 md:p-4 border-t border-slate-800/80 bg-[#111520]"
         >
+          {/* Quick Action Toolbar / Duplex Trigger */}
+          <div className="max-w-4xl mx-auto mb-2.5 flex items-center justify-between gap-2 px-1">
+            <div className="flex items-center gap-2 overflow-x-auto py-0.5 scrollbar-none">
+              <button
+                type="button"
+                onClick={() => void handleTriggerProactiveChat()}
+                disabled={isSending || isProactiveLoading}
+                aria-label="Swobodna rozmowa AI — niech agent zainicjuje rozmowę"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 active:scale-95 text-white text-xs font-semibold transition-all shadow-md disabled:opacity-50 cursor-pointer whitespace-nowrap"
+              >
+                <Sparkles className={`w-3.5 h-3.5 ${isProactiveLoading ? 'animate-spin' : ''}`} />
+                <span>{isProactiveLoading ? 'AI myśli i pisze...' : '🎙️ Swobodna rozmowa AI'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setInput('/exec sudo systemctl status svl-python-os');
+                  inputFieldRef.current?.focus();
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0B0D13] hover:bg-slate-800 border border-slate-700/70 text-slate-300 text-xs font-mono whitespace-nowrap transition-colors"
+              >
+                <Terminal className="w-3 h-3 text-emerald-400" />
+                <span>systemctl status</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setInput('Aria, Alex, Astyria, Aurelius, Agata — opowiedzcie jak mija Wam dzień i jakie macie plany.');
+                  inputFieldRef.current?.focus();
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0B0D13] hover:bg-slate-800 border border-slate-700/70 text-slate-300 text-xs font-sans whitespace-nowrap transition-colors"
+              >
+                <Users className="w-3 h-3 text-cyan-400" />
+                <span>Pogadajmy ze wszystkimi</span>
+              </button>
+            </div>
+
+            <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 font-mono shrink-0">
+              <span className={`w-2 h-2 rounded-full ${duplexActive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+              <span>{duplexActive ? 'Czat obustronny czuwa' : 'Tryb ręczny'}</span>
+            </div>
+          </div>
+
           <div className="max-w-4xl mx-auto flex items-center gap-2">
             <input
               ref={fileInputRef}
