@@ -9,10 +9,11 @@ import { AgentsPanel } from './components/AgentsPanel';
 import { TerminalsWorkspace } from './components/TerminalsWorkspace';
 import { KernelDiagnosticsView } from './components/KernelDiagnosticsView';
 import { LinuxDeployDashboard } from './components/LinuxDeployDashboard';
+import { Svl364CommandCenter } from './components/Svl364CommandCenter';
 import { SvlSyncProvider, useSvlSync } from './utils/svlSyncStore';
 import { CANONICAL_AGENTS } from './utils/svlLogic';
 
-type ActiveWorkspaceTab = 'chat' | 'agents' | 'terminals' | 'kernel' | 'linux';
+type ActiveWorkspaceTab = 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux';
 
 function SVLWorkspaceShell() {
   const [activeTab, setActiveTab] = useState<ActiveWorkspaceTab>('chat');
@@ -26,6 +27,8 @@ function SVLWorkspaceShell() {
   useEffect(() => {
     if (activeTab === 'chat') {
       void refreshDomainModules(['chat', 'agents', 'health', 'workspace']);
+    } else if (activeTab === 'svl364') {
+      void refreshDomainModules(['modules', 'kernel', 'agents', 'health', 'chat', 'terminals']);
     } else if (activeTab === 'agents') {
       void refreshDomainModules(['agents', 'health', 'workspace']);
     } else if (activeTab === 'terminals') {
@@ -71,6 +74,17 @@ function SVLWorkspaceShell() {
             }`}
           >
             Czat
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('svl364')}
+            className={`py-0.5 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+              activeTab === 'svl364'
+                ? 'text-violet-300 border-violet-500 font-semibold'
+                : 'border-transparent hover:text-slate-100'
+            }`}
+          >
+            SVL-364
           </button>
           <button
             type="button"
@@ -138,6 +152,7 @@ function SVLWorkspaceShell() {
       {/* Main Workspace Viewport */}
       <main className="flex-1 min-h-0 w-full overflow-hidden">
         {activeTab === 'chat' && <ChatWorkspace onNavigateTab={setActiveTab} />}
+        {activeTab === 'svl364' && <Svl364CommandCenter onNavigate={setActiveTab} />}
         {activeTab === 'agents' && (
           <AgentsPanel
             onNavigateToChat={() => setActiveTab('chat')}

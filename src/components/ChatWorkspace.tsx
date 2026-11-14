@@ -39,7 +39,7 @@ import { useSvlSync, getCanonicalConversationTitle } from '../utils/svlSyncStore
 export type ChatMessage = SyncableMessage;
 
 interface ChatWorkspaceProps {
-  onNavigateTab: (tab: 'chat' | 'agents' | 'terminals' | 'kernel' | 'linux') => void;
+  onNavigateTab: (tab: 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux') => void;
 }
 
 const InteractiveCodeBlock: React.FC<{
@@ -752,7 +752,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
 
     // 1. Tab navigation
     if (val.startsWith('tab:')) {
-      const tabName = val.slice(4).trim() as 'chat' | 'agents' | 'terminals' | 'kernel' | 'linux';
+      const tabName = val.slice(4).trim() as 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux';
       onNavigateTab(tabName);
       return;
     }
