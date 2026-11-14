@@ -890,6 +890,9 @@ async def handle_api_request(
                 "workspaceState": runtime.kernel.get_workspace_ui_state(),
             }
 
+    if method == "GET" and path == "/api/py/chat/diagnostics":
+        return 200, {"ok": True, **runtime.kernel.get_chat_diagnostics()}
+
     if method == "GET" and path == "/api/py/chat/conversations":
         meta = runtime.kernel.get_sync_snapshot_meta()
         return 200, {

@@ -1,7 +1,7 @@
 import express from 'express';
 import { createServer as createHttpServer, IncomingMessage } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { spawn, ChildProcess, execFile } from 'node:child_process';
+import { spawn, ChildProcess, execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -878,6 +878,27 @@ async function startServer() {
     }) as typeof res.json;
 
     next();
+  });
+
+  // Read-only build provenance: a GitHub commit is not proof of deployed code.
+  app.get('/api/deployment-info', (_req, res) => {
+    let commit = process.env.GITHUB_SHA || process.env.VITE_GIT_SHA || '';
+    let source = commit ? 'environment' : 'unknown';
+    try {
+      const localCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: __dirname,
+        encoding: 'utf8',
+        timeout: 1500,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      if (/^[0-9a-f]{40}$/.test(localCommit)) {
+        commit = localCommit;
+        source = 'local_git';
+      }
+    } catch {
+      // AI Studio may not include the .git directory in its preview container.
+    }
+    res.json({ ok: true, commit: commit || null, source });
   });
 
   interface WsClientMeta {

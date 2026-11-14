@@ -1290,6 +1290,25 @@ class SVLSystemKernel:
             "event": sync_res["event"],
         }
 
+    def get_chat_diagnostics(self) -> dict[str, Any]:
+        """Read live SQLite counts; does not confuse browser cache with persisted messages."""
+        def _read(conn: sqlite3.Connection) -> dict[str, Any]:
+            rows = conn.execute(
+                "SELECT conversation_id, COUNT(*) AS count FROM chat_messages GROUP BY conversation_id"
+            ).fetchall()
+            marker = conn.execute(
+                "SELECT value FROM sync_meta WHERE key = 'chat_history_reset_2026_11_15_v1'"
+            ).fetchone()
+            counts = {str(row["conversation_id"]): int(row["count"]) for row in rows}
+            return {
+                "totalMessages": sum(counts.values()),
+                "byConversation": counts,
+                "resetApplied": marker is not None,
+                "databaseName": self.db_path.name,
+            }
+
+        return self.run_db(_read, write=False)
+
     def list_conversations_with_messages(self) -> list[dict[str, Any]]:
         """Zwraca wszystkie wątki czatu wraz z wiadomościami i ich rewizjami z SQLite."""
         def _read(conn: sqlite3.Connection) -> tuple[list[sqlite3.Row], list[sqlite3.Row], dict[str, int]]:

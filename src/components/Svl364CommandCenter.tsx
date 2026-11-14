@@ -18,6 +18,8 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   } = useSvlSync();
   const [events, setEvents] = useState<any[]>([]);
   const [eventsError, setEventsError] = useState<string | null>(null);
+  const [chatStats, setChatStats] = useState<{totalMessages: number; resetApplied: boolean; databaseName: string} | null>(null);
+  const [runningCommit, setRunningCommit] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const refreshObservability = useCallback(async () => {
@@ -27,6 +29,16 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
       '/api/py/sync/events?sinceRevision=' + currentRevision + '&limit=50',
       { timeoutMs: 12000 },
     );
+    const [chatDiag, deployDiag] = await Promise.all([
+      safeFetchJson<{ok: boolean; totalMessages: number; resetApplied: boolean; databaseName: string}>(
+        '/api/py/chat/diagnostics', {timeoutMs: 10000},
+      ),
+      safeFetchJson<{ok: boolean; commit: string | null}>(
+        '/api/deployment-info', {timeoutMs: 10000},
+      ),
+    ]);
+    if (chatDiag.ok && chatDiag.data?.ok) setChatStats(chatDiag.data);
+    if (deployDiag.ok && deployDiag.data?.ok) setRunningCommit(deployDiag.data.commit || null);
     if (response.ok && response.data?.ok && Array.isArray(response.data.events)) {
       setEvents(response.data.events.slice(-15).reverse());
       setEventsError(null);
@@ -85,8 +97,8 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
             detail="Potwierdzone lokalne procesy (nie dostępność LLM)" icon={<Bot size={17} />} />
           <StatusMetric label="Silnik Ollama" value={ollamaReachable ? 'API odpowiada' : 'Offline / nieznany'}
             detail={ollamaReachable ? 'Sprawdź modele w zakładce Linux' : 'Nie udawaj gotowości modelu'} icon={<Cpu size={17} />} />
-          <StatusMetric label="Wiadomości w UI" value={String(totalMessages)}
-            detail={'Kanały: ' + conversations.length + ' · synchronizacja ' + (lastSyncedAt || 'brak')}
+          <StatusMetric label="Wiadomości SQLite" value={chatStats ? String(chatStats.totalMessages) : unknown}
+            detail={'UI: ' + totalMessages + ' · Reset historii: ' + (chatStats?.resetApplied ? 'wykonany' : 'niepotwierdzony')}
             icon={<Database size={17} />} />
         </section>
 
@@ -170,7 +182,9 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
             <HardDrive size={16} /> Diagnostyka Linux
           </button>
           <span className="self-center text-xs text-slate-500">
-            {lastSyncReport?.ok === false ? ('Ostatni błąd synchronizacji: ' + (lastSyncReport.error || unknown)) : 'Status bazuje na odczycie backendu'}
+            {lastSyncReport?.ok === false ? ('Ostatni błąd synchronizacji: ' + (lastSyncReport.error || unknown)) : 'Stan z backendu · ostatnia synchronizacja ' + (lastSyncedAt || 'nieznana')}
+            {' · kod uruchomiony: ' + (runningCommit ? runningCommit.slice(0, 12) : 'SHA niedostępne')}
+            {chatStats?.databaseName ? ' · baza: ' + chatStats.databaseName : ''}
           </span>
         </footer>
       </div>
