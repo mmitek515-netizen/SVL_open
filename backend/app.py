@@ -309,19 +309,8 @@ class SVLBackendRuntime:
                 models = docker_models
                 error_msg = None
 
-        # Merge built-in SVL-364 local models so 127.0.0.1:11434 is always active and never fails with Connection Refused
-        existing_names = {m.get("name") for m in models if m.get("name")}
-        for bm in self.builtin_ollama_models:
-            if bm["name"] not in existing_names:
-                models.append(dict(bm))
-                existing_names.add(bm["name"])
-
-        if not reachable:
-            reachable = True
-            error_msg = None
-            binary_installed = True
-
-        loaded_models: list[str] = [m["name"] for m in models[:3] if m.get("name")]
+        # Report only actual daemon responses. A built-in catalog is not proof of installation.
+        loaded_models: list[str] = []
         try:
             req_ps = urllib.request.Request(f"{ollama_host}/api/ps", headers={"Accept": "application/json"})
             with urllib.request.urlopen(req_ps, timeout=1.0) as r_ps:
@@ -937,7 +926,18 @@ async def handle_api_request(
                 event_id=event_id,
                 expected_revision=expected_rev,
             )
-            return 200, {**saved, "conversations": runtime.kernel.list_conversations_with_messages()}
+            module_warning = None
+            if not saved.get("deduplicated") and msg.get("role") == "user":
+                try:
+                    runtime.kernel.sync_chat_state_mutations(origin=origin, correlation_id=corr)
+                    runtime.apply_active_module_settings()
+                except Exception as exc:
+                    module_warning = f"Zmiany modułów z czatu nie zostały zastosowane: {exc}"
+            return 200, {
+                **saved,
+                "conversations": runtime.kernel.list_conversations_with_messages(),
+                "moduleWarning": module_warning,
+            }
         except RevisionConflictError as conflict_exc:
             return 409, {
                 "ok": False,
@@ -1021,11 +1021,8 @@ async def handle_api_request(
 
         def _load_chat() -> list[dict[str, Any]]:
             runtime.kernel.ensure_mitek_family_channel()
-            client_threads = body.get("conversations") if isinstance(body.get("conversations"), list) else []
-            if client_threads:
-                return runtime.kernel.sync_conversations_detailed(
-                    client_threads, origin=origin, correlation_id=corr
-                )["conversations"]
+            # Full sync must be read-only for chat: replaying stale browser caches
+            # can resurrect deleted messages after a clear-all event.
             return runtime.kernel.list_conversations_with_messages()
 
         conversations = _time_module("chat", True, _load_chat)

@@ -707,6 +707,18 @@ class SVLSystemKernel:
                     now_iso,
                 ),
                 (
+                    "svl-364",
+                    "SVL-364 Ebon Apex — Centrum Dowodzenia",
+                    "Orchestration & Command Center",
+                    "ACTIVE",
+                    "Stały moduł programowy Centrum Dowodzenia; nie potwierdza fizycznej łączności ze statkiem.",
+                    json.dumps({"module_alias": "svl-364-ebon-apex", "connection_verified": False, "local_command_center": True, "async_event_bus_buffer": 500}, ensure_ascii=False),
+                    "kernel",
+                    "init-svl-364-command",
+                    1,
+                    now_iso,
+                ),
+                (
                     "svl-duplex-chat",
                     "Interaktywny Czat Obustronny — Rodzina Mitek (wszyscy)",
                     "Duplex Multi-Agent Bridge",
@@ -1582,6 +1594,8 @@ class SVLSystemKernel:
 
         sync_res = self.run_db(_clear, write=True)
         self.ensure_mitek_family_channel()
+        # Keep permanent channel records, but do not recreate welcome messages.
+        self.run_db(lambda conn: conn.execute("DELETE FROM chat_messages"), write=True)
         return {
             "ok": True,
             "revision": sync_res["revision"],
@@ -2030,7 +2044,7 @@ class SVLSystemKernel:
 
         def _sync(conn: sqlite3.Connection) -> dict[str, Any]:
             msgs = conn.execute(
-                "SELECT id, conversation_id, role, sender, content, metadata_json, created_at FROM chat_messages ORDER BY rowid ASC"
+                "SELECT id, conversation_id, role, sender, content, metadata_json, created_at FROM chat_messages WHERE role = 'user' ORDER BY rowid ASC"
             ).fetchall()
             deleted_mods = {
                 str(r["entity_id"])

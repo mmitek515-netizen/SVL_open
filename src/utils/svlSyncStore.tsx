@@ -518,13 +518,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const t0 = performance.now();
         setIsSyncing(true);
         try {
-          const payloadConversations = conversationsRef.current
-            .filter((c) => !deletedConvIdsRef.current.has(c.id))
-            .map((c) => ({
-              ...c,
-              messages: stripObsoleteDiagnosticMessages(c.messages),
-            }));
-
+          // A snapshot reads from the authoritative server; it must not replay local cache.
           const res = await safeFetchJson<SvlSystemSnapshot>('/api/py/system/sync', {
             method: 'POST',
             timeoutMs: 25000,
@@ -532,7 +526,6 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
               triggered_by: reason,
               origin: tabOrigin,
               clientRevision: serverRevisionRef.current,
-              conversations: payloadConversations,
             }),
           });
 
@@ -777,12 +770,12 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           setActiveConvIdState(val);
         } else if (
           key === 'selected_target_agent' &&
-          ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(val))
+          ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(val))
         ) {
           setTargetAgentState(val);
         } else if (
           key === 'selected_agent_panel_id' &&
-          ['Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(val))
+          ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(val))
         ) {
           setSelectedAgentPanelState(val);
         }
@@ -1375,7 +1368,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const previousTargetAgent = targetAgentState;
     deletedConvIdsRef.current.clear();
     pendingMsgIdsRef.current.clear();
-    setConversations(INITIAL_WELCOME_CONVERSATIONS);
+    setConversations(INITIAL_WELCOME_CONVERSATIONS.map((c) => ({ ...c, messages: [] })));
     setActiveConvIdState('conv-rodzina-mitek-wszyscy');
     setTargetAgentState('Rodzina Mitek');
 
@@ -1393,7 +1386,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     if (res.ok && res.data?.ok && Array.isArray(res.data.conversations)) {
       const hydrated = normalizeConversationsFromServer(res.data.conversations);
-      setConversations(hydrated.length > 0 ? hydrated : INITIAL_WELCOME_CONVERSATIONS);
+      setConversations(hydrated.length > 0 ? hydrated : INITIAL_WELCOME_CONVERSATIONS.map((c) => ({ ...c, messages: [] })));
       notifyLocalMutation('chat', 'all', res.data.serverRevision);
       return { ok: true };
     }

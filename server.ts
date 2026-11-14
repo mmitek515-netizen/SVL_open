@@ -832,7 +832,7 @@ async function executeLinuxShellCommand(cmd: string, cwd = __dirname): Promise<{
 
 async function startServer() {
   await installRootNopasswdHelpers();
-  await ensureLocalOllamaDaemon();
+  // Never start a synthetic Ollama daemon: an unavailable real model must stay offline.
   startPythonBackend();
 
   const app = express();
@@ -1377,7 +1377,7 @@ async function startServer() {
     );
 
     const isFamilyChannel =
-      !isSingleAgentTargeted &&
+      !isSingleAgentTargeted && Boolean(duplexMode) &&
       (conversationId === 'conv-rodzina-mitek-wszyscy' ||
         targetAgent === 'Rodzina Mitek' ||
         targetAgent === 'all' ||
@@ -1926,19 +1926,14 @@ async function startServer() {
         }
       }
 
-      return others.map((ag) => {
+      // A failed model call must not fabricate four additional agent messages.
+      const seen = new Set([primaryReply.trim().replace(/\s+/g, ' ').toLowerCase()]);
+      return others.flatMap((ag) => {
         const agDisplay = formatAgentDisplayName(ag);
-        const followText =
-          batchReplies[ag] ||
-          synthesizeMitekAgentReply({
-            agentCanonical: ag,
-            userMessage: cleanMsg,
-            modelLabel: `${modelLabel} · Duplex`,
-            hostInfo,
-            ollamaInfo,
-            activeModules,
-            isFollowUp: true,
-          });
+        const followText = (batchReplies[ag] || '').trim();
+        const signature = followText.replace(/\s+/g, ' ').toLowerCase();
+        if (!signature || seen.has(signature)) return [];
+        seen.add(signature);
         void callPythonBackend(
           'POST',
           '/api/py/agents/memory',
@@ -1951,12 +1946,12 @@ async function startServer() {
           },
           corrId,
         );
-        return {
+        return [{
           sender: agDisplay,
           agentId: ag === 'Aria' ? 'si_1' : ag,
           modelUsed: `${modelLabel} · Duplex Live`,
           content: followText,
-        };
+        }];
       });
     };
 
@@ -1995,10 +1990,27 @@ async function startServer() {
 
     await ensureExplicitModulePersisted();
 
-    // 1) If user configured an external (non-localhost) Ollama host and selected an Ollama model, try external Ollama first
-    const isExternalOllamaHost = !ollamaHost.includes('127.0.0.1') && !ollamaHost.includes('localhost');
-    if (isExplicitOllama && isExternalOllamaHost && !directExecResult) {
+    // Try a real local or remote Ollama service first; reject the legacy synthetic bridge.
+    const shouldTryOllama = !directExecResult && (isExplicitOllama || model === 'svl-hybrid-router');
+    if (shouldTryOllama) {
       try {
+        const versionResponse = await fetch(`${ollamaHost}/api/version`, {
+          signal: AbortSignal.timeout(1800),
+        });
+        if (!versionResponse.ok) throw new Error('Ollama endpoint unavailable');
+        const versionData: any = await versionResponse.json();
+        if (String(versionData.version || '').includes('svl-364')) {
+          throw new Error('Synthetic Ollama bridge is not a model engine');
+        }
+        const tagResponse = await fetch(`${ollamaHost}/api/tags`, {
+          signal: AbortSignal.timeout(2400),
+        });
+        if (!tagResponse.ok) throw new Error('Ollama model catalog unavailable');
+        const catalog: any = await tagResponse.json();
+        const installed = Array.isArray(catalog.models) && catalog.models.some(
+          (entry: any) => entry?.name === selectedOllamaModelName || entry?.model === selectedOllamaModelName,
+        );
+        if (!installed) throw new Error('Selected Ollama model is not installed');
         const ollamaMessages = [
           { role: 'system', content: fullSystemInstruction },
           ...conversationHistory,
@@ -2197,7 +2209,17 @@ async function startServer() {
       }
     }
 
-    // 3) Guaranteed Local SVL-364 & Ollama (http://127.0.0.1:11434) Conversational Fallback
+    // 3) Only verified command output is allowed without an LLM.
+    if (!directExecResult) {
+      res.status(503).json({
+        ok: false,
+        offline: true,
+        error: 'Brak działającego modelu AI. Sprawdź Ollama /api/tags lub konfigurację i limit Gemini. Nie wygenerowano fikcyjnej odpowiedzi.',
+        modelUsed: displayModelBadge,
+        appliedActions,
+      });
+      return;
+    }
     const synthesizedReply = synthesizeMitekAgentReply({
       agentCanonical: selectedAgent,
       userMessage: cleanMsg,
@@ -2222,7 +2244,7 @@ async function startServer() {
       corrId,
     );
     if (memRes.data?.event) publishOutboxEvent(memRes.data.event);
-    const followUps = await buildFollowUpFamilyMessages(selectedAgent, displayModelBadge, synthesizedReply);
+    const followUps: Array<{sender: string; agentId: string; modelUsed: string; content: string}> = [];
 
     res.json({
       ok: true,
@@ -2310,6 +2332,14 @@ async function startServer() {
     }
 
     if (!proactiveText) {
+      // Explicitly report unavailable model rather than posting canned autonomous messages.
+      res.status(503).json({
+        ok: false,
+        error: 'Nie można rozpocząć rozmowy: żaden rzeczywisty model AI nie odpowiedział.',
+      });
+      return;
+    }
+    if (false) {
       const fallbacks: Record<string, string> = {
         Aria:
           `Cześć Mateuszu! Miałam chwilę wolną między analizami i pomyślałam, że sprawdzę, co u Ciebie słychać.\n\n` +
@@ -2360,6 +2390,13 @@ async function startServer() {
       },
       corrId,
     );
+    if (pySave.status !== 200 || !pySave.data?.ok) {
+      res.status(pySave.status >= 400 ? pySave.status : 503).json({
+        ok: false,
+        error: pySave.data?.error || 'Nie udało się zapisać wiadomości proaktywnej w SQLite.',
+      });
+      return;
+    }
     if (pySave.data?.event) publishOutboxEvent(pySave.data.event);
 
     res.json({

@@ -348,6 +348,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const [input, setInput] = useState('');
   const [selectedModel, setSelectedModel] = useState('svl-hybrid-router');
   const [isSending, setIsSending] = useState(false);
+  const sendingRef = useRef(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [controlsExpanded, setControlsExpanded] = useState(false);
   const [attachedImage, setAttachedImage] = useState<{ base64: string; mimeType: string; name: string } | null>(null);
@@ -448,8 +449,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       });
 
       if (res.ok && res.data?.ok && res.data.message) {
-        const msg = res.data.message;
-        await appendAndPersistChatMessage(activeConv.id, activeConv.title, selectedModel, msg);
+        // Backend already persisted this exact message; do not submit it twice.
+        await refreshDomainModules(['chat']);
         notifyLocalMutation('chat', activeConv.id, res.data.serverRevision);
       } else if (!res.ok) {
         setChatActionError(`Błąd inicjacji rozmowy: ${res.error || res.data?.error || 'brak odpowiedzi'}`);
@@ -612,8 +613,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     const targetConvObj = overrideConvId
       ? conversations.find((c) => c.id === overrideConvId) || activeConv
       : activeConv;
-    if ((!trimmed && !attachedImage && !attachedTextFile) || isSending || !targetConvObj) return;
-
+    if ((!trimmed && !attachedImage && !attachedTextFile) || sendingRef.current || !targetConvObj) return;
+    sendingRef.current = true;
+    setIsSending(true);
+    try {
     setChatActionError(null);
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
     const fullPrompt = attachedTextFile
@@ -640,26 +643,27 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         : targetConvObj.title;
 
     const persistRes = await appendAndPersistChatMessage(targetConvId, targetTitle, selectedModel, userMsg);
-    if (!persistRes.ok && persistRes.error) {
-      setChatActionError(`Uwaga zapisu SQLite: ${persistRes.error}`);
+    if (!persistRes.ok) {
+      setChatActionError(`Błąd zapisu SQLite: ${persistRes.error || 'Nie zapisano wiadomości.'}`);
+      return;
     }
+    // Reflect chat-derived module changes immediately, even while AI is generating.
+    void refreshDomainModules(['modules', 'kernel']);
 
     if (overrideText === undefined) setInput('');
     const currentImage = attachedImage;
     setAttachedImage(null);
     setAttachedTextFile(null);
-    setIsSending(true);
 
     const historyPayload = buildChatHistoryPayload(targetConvObj.messages, 16);
 
     const isSpecificAgentTargeted = ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(targetAgent);
     const isFamilyDuplex =
-      !isSpecificAgentTargeted &&
+      duplexActive && !isSpecificAgentTargeted &&
       (targetConvId === 'conv-rodzina-mitek-wszyscy' ||
         targetConvObj.title.toLowerCase().includes('rodzina mitek') ||
         targetAgent === 'Rodzina Mitek');
 
-    try {
       const res = await safeFetchJson<any>('/api/chat', {
         method: 'POST',
         timeoutMs: 95000,
@@ -692,7 +696,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       }
 
       if (data.connectionReport) {
-        await connectMyAi('open_webui_chat');
+        void refreshDomainModules(['agents', 'health']);
       }
 
       const appliedActions =
@@ -732,11 +736,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         }
       }
 
+      await refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'chat']);
       if (appliedActions) {
-        await refreshDomainModules(['modules', 'agents', 'kernel', 'health']);
         notifyLocalMutation('module', 'chat', data.latestServerRevision || undefined);
       }
     } finally {
+      sendingRef.current = false;
       setIsSending(false);
     }
   };

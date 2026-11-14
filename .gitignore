@@ -3,6 +3,11 @@ build/
 dist/
 coverage/
 .DS_Store
+.log
 *.log
+data/*.sqlite3
+data/*.sqlite3-wal
+data/*.sqlite3-shm
+data/runtime_agents/
 .env*
 !.env.example
