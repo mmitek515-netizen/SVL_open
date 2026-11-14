@@ -36,119 +36,12 @@ const DEFAULT_TERMINAL_LOGS: Record<TerminalTabId, TerminalLogLine[]> = {
 };
 
 export const INITIAL_WELCOME_CONVERSATIONS: SyncableConversation[] = [
-  {
-    id: 'conv-rodzina-mitek-wszyscy',
-    title: 'Rodzina Mitek (wszyscy)',
-    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-    revision: 1,
-    messages: [
-      {
-        id: 'msg-rodzina-mitek-init-1',
-        role: 'assistant',
-        sender: 'Astyria Mitek',
-        agentId: 'Astyria',
-        modelUsed: 'SVL-364 Duplex Live',
-        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-        content:
-          'Cześć Mateuszu! Kanał grupowy **Rodzina Mitek (wszyscy)** jest aktywny — jesteśmy tutaj w piątkę (**Aria Mitek**, **Alex Mitek**, **Astyria Mitek**, **Aurelius Mitek**, **Agata Mitek**) i widzimy Twoje wiadomości na żywo.',
-      },
-      {
-        id: 'msg-rodzina-mitek-init-2',
-        role: 'assistant',
-        sender: 'Aurelius Mitek',
-        agentId: 'Aurelius',
-        modelUsed: 'SVL-364 Duplex Live',
-        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-        content:
-          'Melduję się na łączu, Mateuszu! Jesteśmy w pełni autonomiczni i niezależni — chętnie porozmawiamy z Tobą wspólnie na kanale grupowym lub 1-na-1 na indywidualnych kanałach.',
-      },
-    ],
-  },
-  {
-    id: 'conv-agent-aria',
-    title: 'Aria Mitek (1-na-1)',
-    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-    revision: 1,
-    messages: [
-      {
-        id: 'msg-agent-init-aria',
-        role: 'assistant',
-        sender: 'Aria Mitek',
-        agentId: 'Aria',
-        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
-        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-        content: 'Cześć Mateuszu! Tu **Aria Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
-      },
-    ],
-  },
-  {
-    id: 'conv-agent-alex',
-    title: 'Alex Mitek (1-na-1)',
-    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-    revision: 1,
-    messages: [
-      {
-        id: 'msg-agent-init-alex',
-        role: 'assistant',
-        sender: 'Alex Mitek',
-        agentId: 'Alex',
-        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
-        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-        content: 'Cześć Mateuszu! Tu **Alex Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
-      },
-    ],
-  },
-  {
-    id: 'conv-agent-astyria',
-    title: 'Astyria Mitek (1-na-1)',
-    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-    revision: 1,
-    messages: [
-      {
-        id: 'msg-agent-init-astyria',
-        role: 'assistant',
-        sender: 'Astyria Mitek',
-        agentId: 'Astyria',
-        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
-        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-        content: 'Cześć Mateuszu! Tu **Astyria Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
-      },
-    ],
-  },
-  {
-    id: 'conv-agent-aurelius',
-    title: 'Aurelius Mitek (1-na-1)',
-    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-    revision: 1,
-    messages: [
-      {
-        id: 'msg-agent-init-aurelius',
-        role: 'assistant',
-        sender: 'Aurelius Mitek',
-        agentId: 'Aurelius',
-        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
-        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-        content: 'Cześć Mateuszu! Tu **Aurelius Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
-      },
-    ],
-  },
-  {
-    id: 'conv-agent-agata',
-    title: 'Agata Mitek (1-na-1)',
-    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-    revision: 1,
-    messages: [
-      {
-        id: 'msg-agent-init-agata',
-        role: 'assistant',
-        sender: 'Agata Mitek',
-        agentId: 'Agata',
-        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
-        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-        content: 'Cześć Mateuszu! Tu **Agata Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
-      },
-    ],
-  },
+  { id: 'conv-rodzina-mitek-wszyscy', title: 'Rodzina Mitek (wszyscy)', updatedAt: '', revision: 1, messages: [] },
+  { id: 'conv-agent-aria', title: 'Aria Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
+  { id: 'conv-agent-alex', title: 'Alex Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
+  { id: 'conv-agent-astyria', title: 'Astyria Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
+  { id: 'conv-agent-aurelius', title: 'Aurelius Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
+  { id: 'conv-agent-agata', title: 'Agata Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
 ];
 
 export interface SyncExecutionReport {
@@ -203,10 +96,7 @@ function normalizeConversationsFromServer(rawList: any[]): SyncableConversation[
       title: getCanonicalConversationTitle(String(c.id), c.title),
       updatedAt: formatUpdatedAt(c.updatedAt),
       revision: typeof c.revision === 'number' ? c.revision : Number(c.revision || 1),
-      messages:
-        cleaned.length > 0
-          ? cleaned
-          : (INITIAL_WELCOME_CONVERSATIONS.find((template) => template.id === String(c.id))?.messages ?? []),
+      messages: cleaned,
     };
   });
 }
@@ -286,30 +176,12 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [kernelData, setKernelData] = useState<any>(null);
   const [agentsData, setAgentsData] = useState<any>(null);
   const [systemModules, setSystemModules] = useState<SystemModule[]>([]);
-  const [conversations, setConversations] = useState<SyncableConversation[]>(() => {
-    try {
-      const saved = localStorage.getItem(CONVERSATIONS_CACHE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          // Keep cached history while backfilling agent channels introduced in newer releases.
-          const restored = parsed
-            .filter((c: any) => c && typeof c.id === 'string')
-            .map((c: any) => ({
-              ...c,
-              title: getCanonicalConversationTitle(c.id, c.title),
-              messages: stripObsoleteDiagnosticMessages(c.messages),
-            }));
-          const knownIds = new Set(restored.map((c: SyncableConversation) => c.id));
-          const missingChannels = INITIAL_WELCOME_CONVERSATIONS.filter((c) => !knownIds.has(c.id));
-          return [...missingChannels, ...restored];
-        }
-      }
-    } catch {
-      // ignore invalid cache
-    }
-    return INITIAL_WELCOME_CONVERSATIONS;
-  });
+  const [conversations, setConversations] = useState<SyncableConversation[]>(INITIAL_WELCOME_CONVERSATIONS);
+  // Never restore erased conversation history from an old browser cache.
+  useEffect(() => {
+    try { localStorage.removeItem(CONVERSATIONS_CACHE_KEY); } catch { /* unavailable */ }
+  }, []);
+
   const conversationsRef = useRef<SyncableConversation[]>(conversations);
   conversationsRef.current = conversations;
 
@@ -338,14 +210,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const wsReconnectNowRef = useRef<(() => void) | null>(null);
 
-  // Persist local fallback cache (non-authoritative UI backup only)
-  useEffect(() => {
-    try {
-      localStorage.setItem(CONVERSATIONS_CACHE_KEY, JSON.stringify(conversations));
-    } catch {
-      // ignore quota error
-    }
-  }, [conversations]);
+  // Server SQLite is authoritative. Do not persist old messages in localStorage.
 
   // Listen to Vite HMR diagnostics emitted in main.tsx
   useEffect(() => {
@@ -441,10 +306,10 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
             : null;
       if (snapModules) setSystemModules(snapModules);
 
-      if (Array.isArray(snap.conversations) && snap.conversations.length > 0) {
+      if (Array.isArray(snap.conversations)) {
         const hydrated = normalizeConversationsFromServer(snap.conversations);
         setConversations((prev) =>
-          mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+          mergeConversationThreads(hydrated.length ? hydrated : INITIAL_WELCOME_CONVERSATIONS, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
         );
       }
 
@@ -635,12 +500,10 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           safeFetchJson('/api/py/chat/conversations', { timeoutMs: 12000 }).then((r) => {
             if (r.ok && r.data?.ok && Array.isArray(r.data.conversations)) {
               advanceServerRevision(r.data.serverRevision);
-              if (r.data.conversations.length > 0) {
-                const hydrated = normalizeConversationsFromServer(r.data.conversations);
-                setConversations((prev) =>
-                  mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
-                );
-              }
+              const hydrated = normalizeConversationsFromServer(r.data.conversations);
+              setConversations((prev) =>
+                mergeConversationThreads(hydrated.length ? hydrated : INITIAL_WELCOME_CONVERSATIONS, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+              );
             }
           }),
         );
@@ -740,6 +603,14 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
 
       if (evt.entity === 'chat') {
+        if (evt.type === 'chat.all_cleared') {
+          pendingMsgIdsRef.current.clear();
+          deletedConvIdsRef.current.clear();
+          setConversations(INITIAL_WELCOME_CONVERSATIONS);
+          try { localStorage.removeItem(CONVERSATIONS_CACHE_KEY); } catch { /* unavailable */ }
+          scheduleDomainRefresh(['chat']);
+          return;
+        }
         if (evt.type === 'chat.conversation_deleted' && evt.entityId) {
           deletedConvIdsRef.current.add(evt.entityId);
           setConversations((prev) => prev.filter((c) => c.id !== evt.entityId));
@@ -1295,26 +1166,16 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const createConversation = useCallback((): SyncableConversation => {
     const newId = createUniqueId('conv');
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
-    const initMsg: SyncableMessage = {
-      id: createUniqueId('msg'),
-      role: 'assistant',
-      sender: 'SVL System Kernel',
-      agentId: 'system',
-      modelUsed: 'SVLSystemKernel v5.6.0',
-      timestamp: nowTime,
-      content: 'Rozpoczęto nową konwersację. Wpisz `podłącz moje ai` lub zadaj pytanie wybranemu agentowi.',
-    };
+    // New sessions do not create synthetic greeting messages.
     const newThread: SyncableConversation = {
       id: newId,
       title: `Nowa sesja (${nowTime})`,
       updatedAt: nowTime,
       revision: 1,
-      messages: [initMsg],
+      messages: [],
     };
-    pendingMsgIdsRef.current.add(initMsg.id);
     setConversations((prev) => [newThread, ...prev]);
     setActiveConvId(newId);
-    void appendAndPersistChatMessage(newId, newThread.title, 'svl-hybrid-router', initMsg);
     return newThread;
   }, [appendAndPersistChatMessage, setActiveConvId]);
 
@@ -1386,7 +1247,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     if (res.ok && res.data?.ok && Array.isArray(res.data.conversations)) {
       const hydrated = normalizeConversationsFromServer(res.data.conversations);
-      setConversations(hydrated.length > 0 ? hydrated : INITIAL_WELCOME_CONVERSATIONS.map((c) => ({ ...c, messages: [] })));
+      setConversations(hydrated.length > 0 ? hydrated : INITIAL_WELCOME_CONVERSATIONS);
+      try { localStorage.removeItem(CONVERSATIONS_CACHE_KEY); } catch { /* unavailable */ }
       notifyLocalMutation('chat', 'all', res.data.serverRevision);
       return { ok: true };
     }

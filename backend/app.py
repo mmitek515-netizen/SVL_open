@@ -899,14 +899,12 @@ async def handle_api_request(
         }
 
     if method == "POST" and path == "/api/py/chat/conversations/sync":
-        threads = body.get("conversations") if isinstance(body.get("conversations"), list) else []
-        detailed = runtime.kernel.sync_conversations_detailed(
-            threads,
-            origin=origin,
-            correlation_id=corr,
-            event_id=event_id,
-        )
-        return 200, {"ok": True, **detailed}
+        # Block legacy bulk imports that could resurrect purged history.
+        return 409, {
+            "ok": False,
+            "error": "Bulk chat import disabled; refresh history from SQLite and write individual messages.",
+            "conversations": runtime.kernel.list_conversations_with_messages(),
+        }
 
     if method == "POST" and path == "/api/py/chat/conversations/message":
         cid = str(body.get("conversation_id", "")).strip()
