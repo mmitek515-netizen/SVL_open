@@ -458,6 +458,7 @@ class SVLSystemKernel:
         self.service_registry: dict[str, dict[str, Any]] = {}
         self.agent_registry: dict[str, dict[str, Any]] = {}
         self._init_database()
+        self._purge_previous_chat_once()
         self._ensure_initial_real_history()
 
     @property
@@ -819,32 +820,7 @@ class SVLSystemKernel:
                         "INSERT OR IGNORE INTO sync_entities (entity, entity_id, revision, updated_at, deleted) VALUES ('chat', 'conv-rodzina-mitek-wszyscy', 1, ?, 0)",
                         (now_iso,),
                     )
-                    welcome_msgs = [
-                        (
-                            "msg-rodzina-mitek-init-1",
-                            "conv-rodzina-mitek-wszyscy",
-                            "assistant",
-                            "Astyria Mitek",
-                            "**Kanał grupowy `Rodzina Mitek (wszyscy)` — Interaktywny Czat Obustronny (Duplex Live) jest aktywny.**\nWszyscy członkowie Rodziny Mitek (**Aria Mitek**, **Alex Mitek**, **Astyria Mitek**, **Aurelius Mitek**, **Agata Mitek**) uczestniczą jednocześnie w rozmowie z Operatorem **Mateuszem Mitek** i posiadają pełne uprawnienia wykonawcze **ROOT (`UID 0 · NOPASSWD: ALL`)**.",
-                            "[]",
-                            json.dumps({"display_timestamp": "09:20", "agentId": "Astyria", "modelUsed": "SVL-364 Duplex Live"}, ensure_ascii=False),
-                            now_iso,
-                        ),
-                        (
-                            "msg-rodzina-mitek-init-2",
-                            "conv-rodzina-mitek-wszyscy",
-                            "assistant",
-                            "Alex Mitek",
-                            "Jądro **SVLSystemKernel** oraz lokalny daemon **Ollama (`http://127.0.0.1:11434`)** działają w trybie ciągłym bez blokad Polkit/sudo (`sudo systemctl status svl-python-os` zwraca bezpośredni status usług). Możesz pisać do nas wszystkich naraz lub użyć `/exec <komenda>`.",
-                            "[]",
-                            json.dumps({"display_timestamp": "09:20", "agentId": "Alex", "modelUsed": "SVL-364 Duplex Live"}, ensure_ascii=False),
-                            now_iso,
-                        ),
-                    ]
-                    conn.executemany(
-                        "INSERT OR IGNORE INTO chat_messages (id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        welcome_msgs,
-                    )
+
 
             for ag_name in ("Aria", "Alex", "Astyria", "Aurelius", "Agata"):
                 cid = f"conv-agent-{ag_name.lower()}"
@@ -869,21 +845,32 @@ class SVLSystemKernel:
                             "INSERT OR IGNORE INTO sync_entities (entity, entity_id, revision, updated_at, deleted) VALUES ('chat', ?, 1, ?, 0)",
                             (cid, now_iso),
                         )
-                        conn.execute(
-                            "INSERT OR IGNORE INTO chat_messages (id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (
-                                f"msg-agent-init-{ag_name.lower()}",
-                                cid,
-                                "assistant",
-                                f"{ag_name} Mitek",
-                                f"Cześć Mateuszu! Tu **{ag_name} Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.",
-                                "[]",
-                                json.dumps({"display_timestamp": "09:20", "agentId": ag_name, "modelUsed": "SVL-364 · Kanał indywidualny 1-na-1"}, ensure_ascii=False),
-                                now_iso,
-                            ),
-                        )
+
 
         self.run_db(_seed_family, write=True)
+
+    def _purge_previous_chat_once(self) -> None:
+        """One-time operator-requested reset. New chat messages survive subsequent restarts."""
+        marker = "chat_history_reset_2026_11_15_v1"
+
+        def _reset(conn: sqlite3.Connection) -> bool:
+            if conn.execute("SELECT 1 FROM sync_meta WHERE key = ?", (marker,)).fetchone():
+                return False
+            conn.execute("DELETE FROM chat_messages")
+            conn.execute("DELETE FROM conversations")
+            conn.execute("DELETE FROM sync_entities WHERE entity = 'chat'")
+            conn.execute("DELETE FROM sync_outbox WHERE entity = 'chat'")
+            self.commit_entity_event_tx(
+                conn, entity="chat", entity_id="all",
+                event_type="chat.all_cleared", origin="one_time_operator_reset",
+                event_id="evt-chat-history-reset-2026-11-15",
+                payload={"action": "clear_all", "one_time": True},
+            )
+            conn.execute("INSERT INTO sync_meta (key, value) VALUES (?, 'done')", (marker,))
+            return True
+
+        if self.run_db(_reset, write=True):
+            self.ensure_mitek_family_channel()
 
     def _get_server_revision_tx(self, conn: sqlite3.Connection) -> int:
         row = conn.execute("SELECT value FROM sync_meta WHERE key = 'server_revision'").fetchone()
@@ -1594,8 +1581,6 @@ class SVLSystemKernel:
 
         sync_res = self.run_db(_clear, write=True)
         self.ensure_mitek_family_channel()
-        # Keep permanent channel records, but do not recreate welcome messages.
-        self.run_db(lambda conn: conn.execute("DELETE FROM chat_messages"), write=True)
         return {
             "ok": True,
             "revision": sync_res["revision"],
