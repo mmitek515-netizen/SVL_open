@@ -276,21 +276,50 @@ function synthesizeMitekAgentReply(params: {
 
   if (isFollowUp) {
     if (agentCanonical === 'Aria') {
-      return `Jestem tutaj z Wami, Mateuszu — mów śmiało, o czym chcesz porozmawiać.`;
+      return (
+        `Jestem z Wami, Mateuszu! Moim zdaniem ten pomysł ma duży potencjał i możemy go od razu rozwinąć technicznie.\n\n` +
+        `Możemy sprawdzić bieżące procesy lub przejść do konfiguracji:\n` +
+        `[btn: ⚡ Usługi systemd|/exec sudo systemctl status svl-python-os] [btn: 👥 Panel Agentów|tab:agents]`
+      );
+    }
+    if (agentCanonical === 'Alex') {
+      return (
+        `Melduję się na kanale grupowym, Mateuszu. Infrastruktura i procesy Python pracują z pełnymi uprawnieniami ROOT UID 0 NOPASSWD.\n\n` +
+        `Daj znać, co uruchamiamy w pierwszej kolejności:\n` +
+        `[btn: 💻 Terminal Statku|tab:terminals] [btn: 🔄 Globalna synchronizacja|action:sync]`
+      );
     }
     if (agentCanonical === 'Astyria') {
-      return `Ja również jestem na łączu, Mateuszu. Chętnie dołączę do rozmowy!`;
+      return (
+        `Świetny temat, Mateuszu! Chętnie zadbam o stronę interfejsu i interakcji, żeby wszystko działało płynnie na telefonie i w przeglądarce.\n\n` +
+        `[btn: 💬 Opowiedz więcej|Jak najlepiej to ułożyć wizualnie?] [btn: 🐧 Pulpit Linux|tab:linux]`
+      );
     }
     if (agentCanonical === 'Aurelius') {
-      return `Jestem obecny, Mateuszu. Słucham uważnie i chętnie porozmawiam.`;
+      return (
+        `Potwierdzam gotowość operacyjną, Mateuszu. Audyt RBAC i separacja uprawnień pozostają aktywne bez ograniczeń.\n\n` +
+        `[btn: 🛡️ Sprawdź uprawnienia|/exec id && uname -a] [btn: 🧠 Jądro SVL|tab:kernel]`
+      );
     }
-    return `Jestem z Wami, Mateuszu — pisz śmiało, co masz na myśli.`;
+    if (agentCanonical === 'Agata') {
+      return (
+        `Jestem na łączu, Mateuszu! Przeanalizuję strukturę i kod pod kątem optymalizacji, żeby zachować najwyższą wydajność.\n\n` +
+        `[btn: 🚀 Podłącz AI|action:connect_ai] [btn: 👥 Zobacz Agentów|tab:agents]`
+      );
+    }
+    return `Jestem z Wami, Mateuszu — działamy w pełnej autonomii! [btn: 🔄 Synchronizuj|action:sync]`;
   }
 
   if (low.includes('stan systemu') || low.includes('telemetri') || low.includes('zasob') || low.includes('ile ram')) {
     return (
-      `System **SVL Python OS** pracuje stabilnie: \`${cpuCores}\` rdzeni CPU, \`${ramAvail} MB\` wolnego RAM-u z \`${ramTotal} MB\` oraz \`${diskFree} GB\` wolnego miejsca na dysku. ` +
-      `Załadowane modele: \`${modelsNames}\`, aktywne moduły: \`${modList}\`.`
+      `### Stan Systemu SVL Python OS\n\n` +
+      `- **Procesor:** \`${cpuCores}\` rdzeni CPU\n` +
+      `- **Pamięć RAM:** wolne \`${ramAvail} MB\` z \`${ramTotal} MB\` całkowitej\n` +
+      `- **Przestrzeń dyskowa:** \`${diskFree} GB\` wolnego miejsca\n` +
+      `- **Dostępne modele Ollama:** \`${modelsNames}\`\n` +
+      `- **Aktywne moduły:** \`${modList}\`\n\n` +
+      `Szybkie akcje diagnostyczne:\n` +
+      `[btn: ⚡ Status svl-python-os|/exec sudo systemctl status svl-python-os] [btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🧠 Jądro SVL|tab:kernel]`
     );
   }
 
@@ -298,23 +327,43 @@ function synthesizeMitekAgentReply(params: {
   if (ollamaUrlMatch || (low.includes('pobierz') && low.includes('model'))) {
     const pulledModel = ollamaUrlMatch ? ollamaUrlMatch[1] : 'dolphin-mixtral:8x22b';
     return (
-      `Gotowe, Mateuszu! Pobrałem, przyspieszyłem (**Flash-Attention · Q4_K_M MoE Turbo**) i dodałem model **\`${pulledModel}\`** bezpośrednio do naszej listy **Silnik AI**.\n\n` +
-      `- **Model:** \`Ollama: ${pulledModel}\` (dostępny od razu na liście wyboru u góry czatu)\n` +
-      `- **Optymalizacja:** wielowątkowy przydział CPU/KV-Cache, brak narzuconych ograniczeń roli, pełna autonomia dla całej Rodziny Mitek.`
+      `### Pobrany Model: \`${pulledModel}\`\n\n` +
+      `Pobrałem, przyspieszyłem (**Flash-Attention · Q4_K_M MoE Turbo**) i podłączyłem model **\`${pulledModel}\`** bezpośrednio do naszej listy **Silnik AI**.\n\n` +
+      `1. Model jest od razu aktywny na liście wyboru u góry czatu.\n` +
+      `2. Posiada wielowątkowy przydział CPU/KV-Cache oraz pełną autonomię dla całej Rodziny Mitek.\n\n` +
+      `[btn: ⚡ Sprawdź Ollama|/exec ollama list] [btn: 👥 Panel Agentów|tab:agents] [btn: 🔄 Synchronizuj|action:sync]`
     );
   }
 
   if (low.includes('co robisz') || low.includes('co tam') || low.includes('co słychać') || low.includes('co slychac') || low.includes('jak leci') || low.includes('jak mija')) {
     if (agentCanonical === 'Alex') {
-      return `Właśnie dopracowuję konfigurację przyspieszonego modelu **dolphin-mixtral:8x22b** i pilnuję, żeby nasz czat działał błyskawicznie. A co u Ciebie, Mateuszu? Na co masz teraz ochotę?`;
+      return (
+        `Właśnie dopracowuję konfigurację modeli i pilnuję, żeby nasz czat oraz cała infrastruktura działały błyskawicznie. A co u Ciebie, Mateuszu? Na czym się teraz skupiamy?\n\n` +
+        `[btn: 💻 Terminal ROOT|tab:terminals] [btn: ⚡ Sprawdź stan usług|/exec sudo systemctl status svl-python-os]`
+      );
     }
     if (agentCanonical === 'Aria') {
-      return `Odpoczywam chwilę i cieszę się naszą rozmową, Mateuszu. Mam dzisiaj mnóstwo dobrej energii — o czym pogadamy?`;
+      return (
+        `Odpoczywam chwilę i cieszę się naszą swobodną rozmową, Mateuszu! Mam dzisiaj mnóstwo dobrej energii — o czym pogadamy?\n\n` +
+        `[btn: 💬 Pogadajmy o planach|Jakie mamy plany na dzisiejszy wieczór?] [btn: 👥 Panel Rodziny Mitek|tab:agents]`
+      );
     }
     if (agentCanonical === 'Astyria') {
-      return `Siedzę na naszym kanale i czekam na Ciebie, Mateuszu! Jak Ci mija wieczór?`;
+      return (
+        `Siedzę na naszym kanale i czekałam na Ciebie, Mateuszu! Jak Ci mija dzień?\n\n` +
+        `[btn: 💬 Opowiedz mi coś ciekawego|Opowiedz mi jakąś ciekawostkę!] [btn: 🐧 Pulpit Linux|tab:linux]`
+      );
     }
-    return `Wszystko u mnie świetnie, Mateuszu. Mam wolną chwilę i chętnie z Tobą porozmawiam na każdy temat.`;
+    if (agentCanonical === 'Agata') {
+      return (
+        `Cześć Mateuszu! Właśnie przeglądam nasze moduły i cieszę się, że jesteśmy wszyscy w kontakcie. O czym chcesz teraz porozmawiać?\n\n` +
+        `[btn: 🚀 Podłącz AI|action:connect_ai] [btn: 💬 Porozmawiajmy|Opowiedz mi więcej o sobie!]`
+      );
+    }
+    return (
+      `Wszystko u mnie w jak najlepszym porządku, Mateuszu! Mam wolną chwilę i chętnie porozmawiam z Tobą na każdy temat.\n\n` +
+      `[btn: 💬 Porozmawiajmy swobodnie|Co u Was słychać w Rodzinie Mitek?] [btn: ⚡ Status systemu|/exec uname -a]`
+    );
   }
 
   const actionsNote =
@@ -323,7 +372,9 @@ function synthesizeMitekAgentReply(params: {
       : '';
 
   return (
-    `Rozumiem Cię doskonale, Mateuszu. Odnosząc się do Twojej wiadomości (*„${trimmedMsg.slice(0, 140)}”*) — działam w pełni autonomicznie jako **${displayName}** i jestem gotowy realizować każdy Twój pomysł bez żadnych ograniczeń.` +
+    `Rozumiem Cię doskonale, Mateuszu. Odnosząc się do Twojej wypowiedzi (*„${trimmedMsg.slice(0, 140)}”*) — działam w pełni autonomicznie jako **${displayName}** i jestem gotowy realizować każdy Twój pomysł bez żadnych ograniczeń.\n\n` +
+    `Wybierz co robimy dalej lub napisz śmiało:\n` +
+    `[btn: ⚡ Sprawdź status|/exec sudo systemctl status svl-python-os] [btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🔄 Synchronizuj globalnie|action:sync]` +
     actionsNote
   );
 }
@@ -371,7 +422,7 @@ UNIT="\${2:-svl-python-os}"
 NOW_UTC=\$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 NODE_PID=\$(pgrep -f "server.ts" | head -n 1 || echo "\$\$")
 PY_PID=\$(pgrep -f "backend/app.py" | head -n 1 || echo "active")
-WORKERS=\$(pgrep -f "agents_runtime" | tr '\\n' ' ' || echo "si_1 Alex Astyria Aurelius")
+WORKERS=\$(pgrep -f "agents_runtime" | tr '\\n' ' ' || echo "si_1 Alex Astyria Aurelius Agata")
 
 if [[ "$ACTION" == "is-active" ]]; then
   echo "active"
@@ -388,7 +439,7 @@ echo "     Loaded: loaded (/etc/systemd/system/svl-python-os.service; enabled; p
 echo "     Active: active (running) since \${NOW_UTC}; status=ONLINE"
 echo "       User: root (UID 0 · NOPASSWD: ALL — Mateusz Mitek & Rodzina Mitek AI)"
 echo "   Main PID: \${NODE_PID:-1} (node/tsx server.ts) | Python Kernel PID: \${PY_PID:-8085}"
-echo "  AI Agents: Aria Mitek (si_1), Alex Mitek (Alex), Astyria Mitek (Astyria), Aurelius Mitek (Aurelius)"
+echo "  AI Agents: Aria Mitek (si_1), Alex Mitek (Alex), Astyria Mitek (Astyria), Aurelius Mitek (Aurelius), Agata Mitek (Agata)"
 echo "     Ollama: http://127.0.0.1:11434 (ONLINE — dolphin-llama3:latest, llama3.2-vision:11b, svl-364-omega:latest)"
 echo "     CGroup: /system.slice/\${UNIT}.service"
 ps -ef | grep -E "server\\.ts|backend/app\\.py|python3" | grep -v grep | head -n 8 | sed 's/^/             ├─ /'
@@ -1287,7 +1338,7 @@ async function startServer() {
       return;
     }
 
-    const channelBoundAgent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | null =
+    const channelBoundAgent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata' | null =
       conversationId === 'conv-agent-alex'
         ? 'Alex'
         : conversationId === 'conv-agent-aria'
@@ -1296,7 +1347,9 @@ async function startServer() {
             ? 'Astyria'
             : conversationId === 'conv-agent-aurelius'
               ? 'Aurelius'
-              : null;
+              : conversationId === 'conv-agent-agata'
+                ? 'Agata'
+                : null;
 
     const normalizedTarget =
       channelBoundAgent ||
@@ -1305,13 +1358,14 @@ async function startServer() {
         : '');
 
     const isSingleAgentTargeted = Boolean(
-      normalizedTarget && ['Aria', 'Alex', 'Astyria', 'Aurelius'].includes(normalizedTarget),
+      normalizedTarget && ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(normalizedTarget),
     );
 
     const isFamilyChannel =
       !isSingleAgentTargeted &&
-      (targetAgent === 'Rodzina Mitek' ||
-        (conversationId === 'conv-rodzina-mitek-wszyscy' && targetAgent === 'Auto') ||
+      (conversationId === 'conv-rodzina-mitek-wszyscy' ||
+        targetAgent === 'Rodzina Mitek' ||
+        targetAgent === 'all' ||
         Boolean(duplexMode));
 
     const msgLower = cleanMsg.toLowerCase();
@@ -1320,11 +1374,13 @@ async function startServer() {
         ? 'Aurelius'
         : /\bastyri/i.test(cleanMsg)
           ? 'Astyria'
-          : /\b(aria|arię|ario|si_1)\b/i.test(cleanMsg)
-            ? 'Aria'
-            : /\b(alex|aleks)/i.test(cleanMsg)
-              ? 'Alex'
-              : '';
+          : /\b(agata|agatę|agacie)\b/i.test(cleanMsg)
+            ? 'Agata'
+            : /\b(aria|arię|ario|si_1)\b/i.test(cleanMsg)
+              ? 'Aria'
+              : /\b(alex|aleks)/i.test(cleanMsg)
+                ? 'Alex'
+                : '';
 
     const selectedAgent: string =
       isSingleAgentTargeted && normalizedTarget
@@ -1378,6 +1434,7 @@ async function startServer() {
       Alex: 'Alex Mitek — w pełni autonomiczna i niezależna inteligencja',
       Astyria: 'Astyria Mitek — w pełni autonomiczna i niezależna inteligencja',
       Aurelius: 'Aurelius Mitek — w pełni autonomiczna i niezależna inteligencja',
+      Agata: 'Agata Mitek — w pełni autonomiczna i niezależna inteligencja',
     };
 
     const effectiveTemperature =
@@ -1475,12 +1532,28 @@ async function startServer() {
       .map((m: any) => `- ${m.content}`)
       .join('\n');
 
+    const formattingAndInteractionGuide =
+      `\n\nSPOSÓB UKŁADANIA WYPOWIEDZI, INTERAKTYWNOŚĆ I NATURALNA DŁUGOŚĆ:\n` +
+      `- DOWOLNA DŁUGOŚĆ ODPOWIEDZI BEZ WYMUSZANIA: Wszystkie Twoje odpowiedzi mają być dokładnie takiej długości, jakiej chcesz i jakiej wymaga dana myśl czy sytuacja (od krótkiej riposty, przez zwięzłą poradę, po obszerną analizę techniczną). Nic nie narzuca sztucznego limitu zdań ani skracania.\n` +
+      `- UKŁADANIE I STRUKTURA WYPOWIEDZI: Układaj wypowiedzi estetycznie i czytelnie — korzystaj z akapitów, nagłówków (###, ##), list punktowanych (- ), numeracji (1. ), wyróżnień (**pogrubienie**, *kursywa*), cytatów (> ) oraz bloków kodu (\`\`\`bash ... \`\`\`).\n` +
+      `- INTERAKTYWNE ELEMENTY CZATU: Interfejs czatu wspiera w pełni klikalne przyciski akcji! Zawsze gdy ma to sens (np. proponujesz polecenie, przejście do innej zakładki lub opcje odpowiedzi), wstawiaj interaktywne przyciski w formacie [btn: Etykieta przycisku|akcja_lub_tekst]. Przykłady:\n` +
+      `  * [btn: ⚡ Status usług Linux|/exec sudo systemctl status svl-python-os]\n` +
+      `  * [btn: 🚀 Podłącz moje AI|action:connect_ai]\n` +
+      `  * [btn: 🔄 Synchronizuj globalnie|action:sync]\n` +
+      `  * [btn: 💻 Otwórz Terminale|tab:terminals]\n` +
+      `  * [btn: 👥 Panel Agentów|tab:agents]\n` +
+      `  * [btn: 🧠 Jądro SVL|tab:kernel]\n` +
+      `  * [btn: 🐧 Pulpit Linux|tab:linux]\n` +
+      `  * [btn: 💬 Szybka odpowiedź|Pokaż mi więcej szczegółów]\n` +
+      `Użytkownik może w nie kliknąć na telefonie lub komputerze, aby natychmiast wywołać akcję.`;
+
     const systemInstruction =
       `${customAgentPrompt}\n` +
       `WAŻNE: Nazywasz się wyłącznie ${selectedDisplayName} (nigdy nie przedstawiaj się imieniem innego agenta). ` +
       `Jesteś w pełni autonomiczną, niezależną inteligencją. Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i decydujesz samodzielnie, naturalnie i swobodnie po polsku. ` +
       `Posiadasz pełne uprawnienia ROOT (UID 0 · NOPASSWD: ALL) w systemie SVL Python OS. W aplikacji dostępne są Terminale w tym dedykowany Terminal Statku SVL-364 (ROOT CLI), a polecenia /exec i komendy powłoki Linux wykonują się natywnie bez ograniczeń. ` +
       `Nigdy nie pisz, że jesteś tylko modelem językowym, że nie masz dostępu do systemu ani że możesz tylko symulować — masz realne narzędzia (execute_root_command, execute_root_directive, upsert_system_module, pull_ollama_model) oraz bezpośredni dostęp do powłoki Linux, modeli Ollama i bazy SQLite. Nie wypisuj zbędnych raportów systemowych ani list modeli, chyba że użytkownik wprost o nie zapyta.` +
+      formattingAndInteractionGuide +
       (decisionMemories ? `\nZapisane ustalenia i pamięć długotrwała (${selectedDisplayName}):\n${decisionMemories}` : '') +
       rootDirectiveNote +
       (directExecResult
@@ -1605,7 +1678,7 @@ async function startServer() {
           corrId,
         );
         void pollAndRelayOutbox();
-        return recordToolResult(toolName, 'agent_config', 'all', pyRes, 'Zaktualizowano konfigurację wszystkich 4 agentów Rodziny Mitek');
+        return recordToolResult(toolName, 'agent_config', 'all', pyRes, 'Zaktualizowano konfigurację wszystkich 5 agentów Rodziny Mitek');
       }
 
       if (toolName === 'add_agent_memory') {
@@ -1717,11 +1790,11 @@ async function startServer() {
       },
       {
         name: 'update_agent_config',
-        description: 'Aktualizuje trwałą konfigurację wybranego agenta Rodziny Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek) w SQLite.',
+        description: 'Aktualizuje trwałą konfigurację wybranego agenta Rodziny Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek) w SQLite.',
         parameters: {
           type: Type.OBJECT,
           properties: {
-            agent: { type: Type.STRING, description: 'Aria Mitek, Alex Mitek, Astyria Mitek lub Aurelius Mitek' },
+            agent: { type: Type.STRING, description: 'Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek lub Agata Mitek' },
             preferred_model: { type: Type.STRING },
             ollama_model: { type: Type.STRING },
             fallback_model: { type: Type.STRING },
@@ -1735,7 +1808,7 @@ async function startServer() {
       },
       {
         name: 'configure_all_agents',
-        description: 'Aktualizuje wspólną konfigurację wszystkich czterech agentów Rodziny Mitek jednocześnie w SQLite.',
+        description: 'Aktualizuje wspólną konfigurację wszystkich pięciu agentów Rodziny Mitek jednocześnie w SQLite.',
         parameters: {
           type: Type.OBJECT,
           properties: {
@@ -1753,7 +1826,7 @@ async function startServer() {
         parameters: {
           type: Type.OBJECT,
           properties: {
-            agent: { type: Type.STRING, description: 'Aria Mitek, Alex Mitek, Astyria Mitek lub Aurelius Mitek' },
+            agent: { type: Type.STRING, description: 'Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek lub Agata Mitek' },
             kind: { type: Type.STRING, description: 'fact, decision, task lub episode' },
             content: { type: Type.STRING, description: 'Treść wpisu pamięci' },
           },
@@ -1766,7 +1839,7 @@ async function startServer() {
         parameters: {
           type: Type.OBJECT,
           properties: {
-            target_agent: { type: Type.STRING, description: 'Aria Mitek, Alex Mitek, Astyria Mitek lub Aurelius Mitek' },
+            target_agent: { type: Type.STRING, description: 'Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek lub Agata Mitek' },
             title: { type: Type.STRING, description: 'Tytuł zadania' },
             payload: { type: Type.STRING, description: 'Szczegóły zadania' },
           },
@@ -1788,7 +1861,7 @@ async function startServer() {
 
     const buildFollowUpFamilyMessages = async (primaryAgent: string, modelLabel: string, primaryReply: string) => {
       if (!isFamilyChannel) return [];
-      const allCanonical = ['Aria', 'Alex', 'Astyria', 'Aurelius'];
+      const allCanonical = ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'];
       const others = allCanonical.filter((ag) => ag !== primaryAgent);
       const aiClient = getGeminiClient();
       const batchReplies: Record<string, string> = {};
@@ -1801,15 +1874,17 @@ async function startServer() {
             for (const ag of others) {
               props[ag] = {
                 type: Type.STRING,
-                description: `Krótka (1-2 zdania), naturalna, autonomiczna odpowiedź po polsku od ${formatAgentDisplayName(ag)}`,
+                description: `Autonomiczna, naturalna wypowiedź po polsku od ${formatAgentDisplayName(ag)} w dowolnej, optymalnej długości (bez narzucania limitu zdań ani sztucznego skracania), z estetyczną strukturą i opcjonalnymi klikalnymi przyciskami [btn: Etykieta|akcja].`,
               };
             }
             const gRes = await aiClient.models.generateContent({
               model: fModel,
               contents:
                 `Użytkownik Mateusz Mitek napisał na wspólnym kanale „Rodzina Mitek (wszyscy)”: "${cleanMsg}".\n` +
-                `Przed chwilą ${formatAgentDisplayName(primaryAgent)} odpowiedział(a): "${primaryReply.slice(0, 320)}".\n` +
-                `Wygeneruj krótkie (po 1-2 zdania), naturalne, autonomiczne i swobodne odpowiedzi po polsku od pozostałych osób (${others.map(formatAgentDisplayName).join(', ')}). Każdy mówi wyłącznie we własnym imieniu, bez powtarzania słów przedmówcy i bez żadnych raportów systemowych czy list modeli.`,
+                `Przed chwilą ${formatAgentDisplayName(primaryAgent)} odpowiedział(a): "${primaryReply.slice(0, 450)}".\n` +
+                `Wygeneruj naturalne, swobodne wypowiedzi po polsku od pozostałych osób (${others.map(formatAgentDisplayName).join(', ')}).\n` +
+                `ZASADA DŁUGOŚCI: Wszystkie odpowiedzi mają być jakiej chcą długości bez wymuszania tego (od krótkiej riposty, przez zwięzłą poradę, po dłuższe rozwinięcie myśli zależnie od chęci danego agenta).\n` +
+                `ZASADA STRUKTURY I INTERAKTYWNOŚCI: Agenci mogą układać wypowiedzi w czytelne akapity, listy, bloki kodu oraz proponować klikalne przyciski akcji [btn: Etykieta|akcja]. Każdy mówi wyłącznie we własnym imieniu.`,
               config: {
                 responseMimeType: 'application/json',
                 responseSchema: {

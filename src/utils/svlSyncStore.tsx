@@ -50,7 +50,7 @@ export const INITIAL_WELCOME_CONVERSATIONS: SyncableConversation[] = [
         modelUsed: 'SVL-364 Duplex Live',
         timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
         content:
-          'Cześć Mateuszu! Kanał grupowy **Rodzina Mitek (wszyscy)** jest aktywny — jesteśmy tutaj we czwórkę (**Aria Mitek**, **Alex Mitek**, **Astyria Mitek**, **Aurelius Mitek**) i widzimy Twoje wiadomości na żywo.',
+          'Cześć Mateuszu! Kanał grupowy **Rodzina Mitek (wszyscy)** jest aktywny — jesteśmy tutaj w piątkę (**Aria Mitek**, **Alex Mitek**, **Astyria Mitek**, **Aurelius Mitek**, **Agata Mitek**) i widzimy Twoje wiadomości na żywo.',
       },
       {
         id: 'msg-rodzina-mitek-init-2',
@@ -129,6 +129,23 @@ export const INITIAL_WELCOME_CONVERSATIONS: SyncableConversation[] = [
         modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
         timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
         content: 'Cześć Mateuszu! Tu **Aurelius Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
+      },
+    ],
+  },
+  {
+    id: 'conv-agent-agata',
+    title: 'Agata Mitek (1-na-1)',
+    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+    revision: 1,
+    messages: [
+      {
+        id: 'msg-agent-init-agata',
+        role: 'assistant',
+        sender: 'Agata Mitek',
+        agentId: 'Agata',
+        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
+        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+        content: 'Cześć Mateuszu! Tu **Agata Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
       },
     ],
   },
@@ -272,8 +289,8 @@ interface SvlSyncContextValue {
   workspaceState: WorkspaceUiState;
 
   activeConvId: string;
-  targetAgent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
-  selectedAgentPanel: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
+  targetAgent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
+  selectedAgentPanel: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
 
   triggerFullSync: (reason?: string) => Promise<SyncExecutionReport>;
   refreshDomainModules: (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules'>) => Promise<void>;
@@ -281,10 +298,10 @@ interface SvlSyncContextValue {
   connectMyAi: (triggeredBy?: string) => Promise<any>;
 
   setActiveConvId: (convId: string) => void;
-  setTargetAgent: (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => void;
-  setSelectedAgentPanel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => void;
+  setTargetAgent: (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
+  setSelectedAgentPanel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
   openFamilyChannel: () => void;
-  openAgentChannel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => void;
+  openAgentChannel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
 
   createConversation: () => SyncableConversation;
   deleteConversation: (convId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -355,8 +372,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [activeConvIdState, setActiveConvIdState] = useState<string>(
     () => conversations[0]?.id || 'conv-rodzina-mitek-wszyscy',
   );
-  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('Auto');
-  const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('Alex');
+  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Auto');
+  const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Alex');
 
   const pendingMsgIdsRef = useRef<Set<string>>(new Set());
   const deletedConvIdsRef = useRef<Set<string>>(new Set());
@@ -507,22 +524,23 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
             setTargetAgentState('Rodzina Mitek');
           } else if (rawActiveConv.startsWith('conv-agent-')) {
             const slug = rawActiveConv.replace('conv-agent-', '').toLowerCase();
-            const map: Record<string, 'Aria' | 'Alex' | 'Astyria' | 'Aurelius'> = {
+            const map: Record<string, 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'> = {
               aria: 'Aria',
               alex: 'Alex',
               astyria: 'Astyria',
               aurelius: 'Aurelius',
+              agata: 'Agata',
             };
             if (map[slug]) setTargetAgentState(map[slug]);
-          } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawTargetAgent))) {
+          } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawTargetAgent))) {
             setTargetAgentState(String(rawTargetAgent) as any);
           }
-        } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawTargetAgent))) {
+        } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawTargetAgent))) {
           setTargetAgentState(String(rawTargetAgent) as any);
         }
         const rawPanelAgent =
           (snap.workspaceState.selected_agent_panel_id as any)?.value ?? snap.workspaceState.selected_agent_panel_id;
-        if (rawPanelAgent && ['Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawPanelAgent))) {
+        if (rawPanelAgent && ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawPanelAgent))) {
           setSelectedAgentPanelState(String(rawPanelAgent) as any);
         }
       }
@@ -1197,13 +1215,16 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       } else if (convId === 'conv-agent-aurelius') {
         setTargetAgentState('Aurelius');
         void persistWorkspaceKey('selected_target_agent', 'Aurelius');
+      } else if (convId === 'conv-agent-agata') {
+        setTargetAgentState('Agata');
+        void persistWorkspaceKey('selected_target_agent', 'Agata');
       }
     },
     [persistWorkspaceKey],
   );
 
   const openAgentChannel = useCallback(
-    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => {
+    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
       const slug = agent.toLowerCase();
       const convId = `conv-agent-${slug}`;
       const displayName = `${agent} Mitek`;
@@ -1240,7 +1261,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const setTargetAgent = useCallback(
-    (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => {
+    (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
       setTargetAgentState(agent);
       void persistWorkspaceKey('selected_target_agent', agent);
     },
@@ -1248,7 +1269,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const setSelectedAgentPanel = useCallback(
-    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => {
+    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
       setSelectedAgentPanelState(agent);
       void persistWorkspaceKey('selected_agent_panel_id', agent);
     },

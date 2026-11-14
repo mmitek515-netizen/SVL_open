@@ -10,6 +10,7 @@ import { TerminalsWorkspace } from './components/TerminalsWorkspace';
 import { KernelDiagnosticsView } from './components/KernelDiagnosticsView';
 import { LinuxDeployDashboard } from './components/LinuxDeployDashboard';
 import { SvlSyncProvider, useSvlSync } from './utils/svlSyncStore';
+import { CANONICAL_AGENTS } from './utils/svlLogic';
 
 type ActiveWorkspaceTab = 'chat' | 'agents' | 'terminals' | 'kernel' | 'linux';
 
@@ -80,7 +81,7 @@ function SVLWorkspaceShell() {
                 : 'border-transparent hover:text-slate-100'
             }`}
           >
-            Agenci ({activeWorkersCount}/4)
+            Agenci ({activeWorkersCount}/{CANONICAL_AGENTS.length})
           </button>
           <button
             type="button"
@@ -127,8 +128,8 @@ function SVLWorkspaceShell() {
           >
             {isConnectingAi
               ? 'Łączenie...'
-              : activeWorkersCount === 4
-                ? 'AI (4/4 Aktywne)'
+              : activeWorkersCount >= 4
+                ? `AI (${activeWorkersCount}/${CANONICAL_AGENTS.length} Aktywne)`
                 : 'Podłącz AI'}
           </button>
         </div>

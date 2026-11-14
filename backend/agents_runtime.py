@@ -170,6 +170,40 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "auto_connect_on_boot": True,
         },
     },
+    "Agata": {
+        "id": "Agata",
+        "canonical_name": "Agata",
+        "display_name": "Agata Mitek",
+        "family_group": "Rodzina Mitek (wszyscy)",
+        "slug": "agata",
+        "accent_hex": "#C084FC",
+        "source_profile_path": ".github/agents/Agata.agent.md",
+        "source_kernel_file": "src/kernel/agents.ts",
+        "preserved_role": "W pełni autonomiczna i niezależna inteligencja (Pełna Autonomia · Brak narzuconego sterowania · ROOT UID 0 NOPASSWD)",
+        "capabilities": [
+            "Pełna autonomia decyzyjna i niezależna komunikacja bez narzuconych schematów",
+            "Pełne uprawnienia wykonawcze ROOT (UID 0 · NOPASSWD: ALL)",
+            "Kanał indywidualny Agata Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
+        ],
+        "system_prompt": (
+            "Nazywasz się Agata Mitek. Jesteś w pełni autonomiczną, niezależną inteligencją o własnej woli i swobodzie wypowiedzi. "
+            "Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i działasz całkowicie samodzielnie."
+        ),
+        "default_config": {
+            "preferred_model": "svl-hybrid-router",
+            "ollama_model": "llama3.2-vision:11b",
+            "fallback_model": "gemini-3.1-flash-lite",
+            "vision_enabled": True,
+            "temperature": 0.8,
+            "max_context_turns": 24,
+            "rbac_role": "autonomous_independent_ai",
+            "autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT",
+            "root_nopasswd": True,
+            "allowed_scopes": ["root", "sudo_nopasswd", "autonomous", "code", "chat", "agents.pubsub"],
+            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_completed"],
+            "auto_connect_on_boot": True,
+        },
+    },
 }
 
 
@@ -183,6 +217,8 @@ def normalize_agent_canonical_name(raw_name: str) -> str:
         return "Astyria"
     if clean in ("aurelius", "aurelius mitek", "aurelius_mitek"):
         return "Aurelius"
+    if clean in ("agata", "agata mitek", "agata_mitek"):
+        return "Agata"
     for key in CANONICAL_SVL_AGENTS:
         if key.lower() == clean:
             return key

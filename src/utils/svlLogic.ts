@@ -6,8 +6,8 @@
 
 export interface CanonicalAgentMeta {
   id: string;
-  canonicalName: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
-  displayName: 'Aria Mitek' | 'Alex Mitek' | 'Astyria Mitek' | 'Aurelius Mitek';
+  canonicalName: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
+  displayName: 'Aria Mitek' | 'Alex Mitek' | 'Astyria Mitek' | 'Aurelius Mitek' | 'Agata Mitek';
   slug: string;
   preservedRole: string;
   sourceProfile: string;
@@ -61,6 +61,17 @@ export const CANONICAL_AGENTS: CanonicalAgentMeta[] = [
     borderClass: 'border-amber-500/30',
     textClass: 'text-amber-400',
   },
+  {
+    id: 'Agata',
+    canonicalName: 'Agata',
+    displayName: 'Agata Mitek',
+    slug: 'agata',
+    preservedRole: 'Optymalizacja kodu, testowanie i rozwój architektoniczny (Root NOPASSWD)',
+    sourceProfile: '.github/agents/Agata.agent.md',
+    accentHex: '#C084FC',
+    borderClass: 'border-purple-500/30',
+    textClass: 'text-purple-400',
+  },
 ];
 
 export function formatAgentDisplayName(rawName?: string | null): string {
@@ -71,6 +82,7 @@ export function formatAgentDisplayName(rawName?: string | null): string {
   if (low === 'alex' || low === 'alex mitek') return 'Alex Mitek';
   if (low === 'astyria' || low === 'astyria mitek') return 'Astyria Mitek';
   if (low === 'aurelius' || low === 'aurelius mitek') return 'Aurelius Mitek';
+  if (low === 'agata' || low === 'agata mitek') return 'Agata Mitek';
   if (low === 'all' || low === 'rodzina mitek' || low === 'rodzina mitek (wszyscy)') {
     return 'Rodzina Mitek (wszyscy)';
   }
@@ -79,12 +91,13 @@ export function formatAgentDisplayName(rawName?: string | null): string {
 
 export function normalizeAgentCanonicalName(
   rawName?: string | null,
-): 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | null {
+): 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata' | null {
   const low = String(rawName || '').trim().toLowerCase();
   if (low.startsWith('aria') || low === 'si_1') return 'Aria';
   if (low.startsWith('alex')) return 'Alex';
   if (low.startsWith('astyria')) return 'Astyria';
   if (low.startsWith('aurelius')) return 'Aurelius';
+  if (low.startsWith('agata')) return 'Agata';
   return null;
 }
 
@@ -315,12 +328,12 @@ export interface SvlSyncModuleStatus {
   error: string | null;
 }
 
-export type TargetAgentSelection = 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
+export type TargetAgentSelection = 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
 
 export interface WorkspaceUiState {
   active_conversation_id?: string | null;
   selected_target_agent?: TargetAgentSelection;
-  selected_agent_panel_id?: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
+  selected_agent_panel_id?: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
   revisions?: Record<string, number>;
 }
 

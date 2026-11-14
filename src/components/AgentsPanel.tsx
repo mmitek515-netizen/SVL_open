@@ -31,7 +31,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     systemModules,
   } = useSvlSync();
 
-  const [senderActor, setSenderActor] = useState<'operator' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('operator');
+  const [senderActor, setSenderActor] = useState<'operator' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('operator');
   const [taskTitle, setTaskTitle] = useState('');
   const [taskPayload, setTaskPayload] = useState('');
   const [memoryContent, setMemoryContent] = useState('');
@@ -268,7 +268,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
         notifyLocalMutation('agent_config', 'all', data.serverRevision);
         setConfigStatus({
           ok: true,
-          msg: 'Skonfigurowano i podłączono wszystkich 4 agentów (Ollama llama3.2-vision:11b + Gemini 3.1 + Magistrala Sferyczna).',
+          msg: 'Skonfigurowano i podłączono wszystkich 5 agentów (Ollama llama3.2-vision:11b + Gemini 3.1 + Magistrala Sferyczna).',
         });
       } else {
         setConfigStatus({
@@ -287,7 +287,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <h1 className="text-xl font-bold text-slate-100">
-            01. Panel Czterech Agentów AI — Rodzina Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek)
+            01. Panel Pięciu Agentów AI — Rodzina Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek)
           </h1>
           <p className="text-xs text-slate-400 mt-1">
             Zachowane oryginalne identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, osobne procesy Python (PID/UID 0 · ROOT NOPASSWD: ALL), izolowana pamięć SQLite, konfiguracja Ollama i magistrala zdarzeń (rev {serverRevision}).

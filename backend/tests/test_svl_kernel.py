@@ -113,7 +113,7 @@ class TestSVLKernelSuite(unittest.TestCase):
             bus = SphericalEventBus()
             orchestrator = SVLAgentOrchestrator(kernel, bus)
 
-            self.assertEqual(set(CANONICAL_SVL_AGENTS.keys()), {"Aria", "Alex", "Astyria", "Aurelius"})
+            self.assertEqual(set(CANONICAL_SVL_AGENTS.keys()), {"Aria", "Alex", "Astyria", "Aurelius", "Agata"})
             self.assertEqual(orchestrator.agent_states["Aria"]["id"], "si_1")
             self.assertEqual(orchestrator.agent_states["Aria"]["config"]["ollama_model"], "llama3.2-vision:11b")
 

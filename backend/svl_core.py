@@ -711,7 +711,7 @@ class SVLSystemKernel:
                     "Interaktywny Czat Obustronny — Rodzina Mitek (wszyscy)",
                     "Duplex Multi-Agent Bridge",
                     "ACTIVE",
-                    "Dwukierunkowy czat interaktywny wszystkich agentów Rodziny Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek) z mostkiem wykonawczym ROOT (UID 0 NOPASSWD).",
+                    "Dwukierunkowy czat interaktywny wszystkich agentów Rodziny Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek) z mostkiem wykonawczym ROOT (UID 0 NOPASSWD).",
                     json.dumps(
                         {
                             "channel": "Rodzina Mitek (wszyscy)",
@@ -719,7 +719,7 @@ class SVLSystemKernel:
                             "bidirectional_duplex": True,
                             "root_nopasswd": True,
                             "exec_bridge": True,
-                            "agents": ["Aria Mitek", "Alex Mitek", "Astyria Mitek", "Aurelius Mitek"],
+                            "agents": ["Aria Mitek", "Alex Mitek", "Astyria Mitek", "Aurelius Mitek", "Agata Mitek"],
                         },
                         ensure_ascii=False,
                     ),
@@ -749,6 +749,7 @@ class SVLSystemKernel:
                 ("Alex", "Alex Mitek"),
                 ("Astyria", "Astyria Mitek"),
                 ("Aurelius", "Aurelius Mitek"),
+                ("Agata", "Agata Mitek"),
             ):
                 conn.execute(
                     "UPDATE chat_messages SET sender = ? WHERE sender = ?",
@@ -770,6 +771,7 @@ class SVLSystemKernel:
                 ("Alex", "Alex Mitek"),
                 ("Astyria", "Astyria Mitek"),
                 ("Aurelius", "Aurelius Mitek"),
+                ("Agata", "Agata Mitek"),
             ):
                 conn.execute(
                     "UPDATE chat_messages SET sender = ? WHERE sender = ?",
@@ -804,7 +806,7 @@ class SVLSystemKernel:
                             "conv-rodzina-mitek-wszyscy",
                             "assistant",
                             "Astyria Mitek",
-                            "**Kanał grupowy `Rodzina Mitek (wszyscy)` — Interaktywny Czat Obustronny (Duplex Live) jest aktywny.**\nWszyscy członkowie Rodziny Mitek (**Aria Mitek**, **Alex Mitek**, **Astyria Mitek**, **Aurelius Mitek**) uczestniczą jednocześnie w rozmowie z Operatorem **Mateuszem Mitek** i posiadają pełne uprawnienia wykonawcze **ROOT (`UID 0 · NOPASSWD: ALL`)**.",
+                            "**Kanał grupowy `Rodzina Mitek (wszyscy)` — Interaktywny Czat Obustronny (Duplex Live) jest aktywny.**\nWszyscy członkowie Rodziny Mitek (**Aria Mitek**, **Alex Mitek**, **Astyria Mitek**, **Aurelius Mitek**, **Agata Mitek**) uczestniczą jednocześnie w rozmowie z Operatorem **Mateuszem Mitek** i posiadają pełne uprawnienia wykonawcze **ROOT (`UID 0 · NOPASSWD: ALL`)**.",
                             "[]",
                             json.dumps({"display_timestamp": "09:20", "agentId": "Astyria", "modelUsed": "SVL-364 Duplex Live"}, ensure_ascii=False),
                             now_iso,
@@ -825,7 +827,7 @@ class SVLSystemKernel:
                         welcome_msgs,
                     )
 
-            for ag_name in ("Aria", "Alex", "Astyria", "Aurelius"):
+            for ag_name in ("Aria", "Alex", "Astyria", "Aurelius", "Agata"):
                 cid = f"conv-agent-{ag_name.lower()}"
                 del_ag = conn.execute(
                     "SELECT deleted FROM sync_entities WHERE entity = 'chat' AND entity_id = ?",

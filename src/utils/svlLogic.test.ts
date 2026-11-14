@@ -54,9 +54,9 @@ test('classifyCommandRisk detects Polkit/sudo high-risk commands', () => {
   assert.equal(classifyCommandRisk('rm -rf /tmp/test').highRisk, true);
 });
 
-test('CANONICAL_AGENTS preserves exact SVL_System identifiers (si_1, Alex, Astyria, Aurelius)', () => {
+test('CANONICAL_AGENTS preserves exact SVL_System identifiers (si_1, Alex, Astyria, Aurelius, Agata)', () => {
   const ids = CANONICAL_AGENTS.map((a) => a.id);
-  assert.deepEqual(ids, ['si_1', 'Alex', 'Astyria', 'Aurelius']);
+  assert.deepEqual(ids, ['si_1', 'Alex', 'Astyria', 'Aurelius', 'Agata']);
 });
 
 test('validateOllamaHostUrl validates http/https endpoints cleanly', () => {
