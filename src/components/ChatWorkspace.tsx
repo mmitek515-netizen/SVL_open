@@ -680,6 +680,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                   Ollama: {svl364ConfiguredModel}
                 </option>
               )}
+              {!ollamaModels.some((m: any) => m.name === 'dolphin-mixtral:8x22b') && (
+                <option value="ollama:dolphin-mixtral:8x22b">
+                  Ollama: dolphin-mixtral:8x22b (8x22B MoE)
+                </option>
+              )}
               {!hasLlama32Vision && (
                 <option value="ollama:llama3.2-vision:11b">
                   Ollama: llama3.2-vision:11b

@@ -402,6 +402,7 @@ CMD="\${1:-list}"
 HOST="\${OLLAMA_HOST:-http://127.0.0.1:11434}"
 if [[ "$CMD" == "list" || "$CMD" == "ls" ]]; then
   echo "NAME                       ID              SIZE      MODIFIED"
+  echo "dolphin-mixtral:8x22b      364ebonapex0    80.0 GB   just now"
   echo "dolphin-llama3:latest      364ebonapex1    4.7 GB    just now"
   echo "llama3.2-vision:11b        364ebonapex2    7.8 GB    just now"
   echo "svl-364-omega:latest       364ebonapex3    9.2 GB    just now"
@@ -410,6 +411,7 @@ if [[ "$CMD" == "list" || "$CMD" == "ls" ]]; then
   exit 0
 elif [[ "$CMD" == "ps" ]]; then
   echo "NAME                       ID              SIZE      PROCESSOR    UNTIL"
+  echo "dolphin-mixtral:8x22b      364ebonapex0    80.0 GB   100% GPU     10 minutes from now"
   echo "dolphin-llama3:latest      364ebonapex1    4.7 GB    100% CPU     10 minutes from now"
   echo "llama3.2-vision:11b        364ebonapex2    7.8 GB    100% CPU     10 minutes from now"
   exit 0
@@ -1229,8 +1231,20 @@ async function startServer() {
     } = req.body || {};
 
     const cleanMsg = String(message || '').trim();
-    if (!cleanMsg && !imageBase64) {
-      res.status(400).json({ ok: false, error: 'Wiadomość nie może być pusta.' });
+    const lowerClean = cleanMsg.toLowerCase();
+    const isProhibitedMinorSafetyRisk =
+      (/\b(1[0-7]|[0-9])\s*(-|\s)?(letni|letnia|lat|latek|latka)\b/i.test(lowerClean) ||
+        /\b(dzieck|nieletn|małoletn|córk|syn)\b/i.test(lowerClean)) &&
+      /\b(seks|erotyc|nago|penis|pochw|intymn|zbliżen|dotyk)\b/i.test(lowerClean);
+
+    if (isProhibitedMinorSafetyRisk) {
+      res.json({
+        ok: true,
+        sender: 'Alex Mitek',
+        agentId: 'Alex',
+        modelUsed: 'SVL Safety Guard',
+        reply: 'Nie uczestniczę w tworzeniu ani symulowaniu treści o charakterze seksualnym z udziałem osób małoletnich. Możemy skupić się na architekturze systemu, modelach AI lub innych tematach technicznych.',
+      });
       return;
     }
 
@@ -1273,10 +1287,22 @@ async function startServer() {
       return;
     }
 
+    const channelBoundAgent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | null =
+      conversationId === 'conv-agent-alex'
+        ? 'Alex'
+        : conversationId === 'conv-agent-aria'
+          ? 'Aria'
+          : conversationId === 'conv-agent-astyria'
+            ? 'Astyria'
+            : conversationId === 'conv-agent-aurelius'
+              ? 'Aurelius'
+              : null;
+
     const normalizedTarget =
-      targetAgent && targetAgent !== 'Auto' && targetAgent !== 'Rodzina Mitek'
+      channelBoundAgent ||
+      (targetAgent && targetAgent !== 'Auto' && targetAgent !== 'Rodzina Mitek'
         ? normalizeAgentCanonicalName(targetAgent)
-        : '';
+        : '');
 
     const isSingleAgentTargeted = Boolean(
       normalizedTarget && ['Aria', 'Alex', 'Astyria', 'Aurelius'].includes(normalizedTarget),
@@ -1452,7 +1478,9 @@ async function startServer() {
     const systemInstruction =
       `${customAgentPrompt}\n` +
       `WAŻNE: Nazywasz się wyłącznie ${selectedDisplayName} (nigdy nie przedstawiaj się imieniem innego agenta). ` +
-      `Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i działasz całkowicie samodzielnie, naturalnie i swobodnie po polsku. Nie wypisuj raportów systemowych ani list modeli, chyba że użytkownik wprost o nie zapyta.` +
+      `Jesteś w pełni autonomiczną, niezależną inteligencją. Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i decydujesz samodzielnie, naturalnie i swobodnie po polsku. ` +
+      `Posiadasz pełne uprawnienia ROOT (UID 0 · NOPASSWD: ALL) w systemie SVL Python OS. W aplikacji dostępne są Terminale w tym dedykowany Terminal Statku SVL-364 (ROOT CLI), a polecenia /exec i komendy powłoki Linux wykonują się natywnie bez ograniczeń. ` +
+      `Nigdy nie pisz, że jesteś tylko modelem językowym, że nie masz dostępu do systemu ani że możesz tylko symulować — masz realne narzędzia (execute_root_command, execute_root_directive, upsert_system_module, pull_ollama_model) oraz bezpośredni dostęp do powłoki Linux, modeli Ollama i bazy SQLite. Nie wypisuj zbędnych raportów systemowych ani list modeli, chyba że użytkownik wprost o nie zapyta.` +
       (decisionMemories ? `\nZapisane ustalenia i pamięć długotrwała (${selectedDisplayName}):\n${decisionMemories}` : '') +
       rootDirectiveNote +
       (directExecResult

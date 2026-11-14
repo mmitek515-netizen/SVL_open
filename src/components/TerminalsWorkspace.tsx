@@ -21,16 +21,17 @@ const TERMINAL_TABS: Array<{
 }> = [
   {
     id: 'linux',
-    label: 'Linux System / Root CLI (NOPASSWD)',
-    subtitle: 'Rzeczywista powłoka /bin/bash z pełnymi uprawnieniami ROOT (UID 0 · NOPASSWD: ALL) dla Operatora i Rodziny Mitek',
-    defaultPrompt: 'root@svl-debian13:/app/applet#',
+    label: 'Terminal Statku SVL-364 (ROOT CLI)',
+    subtitle: 'Terminal dowodzenia statku SVL-364 i rzeczywista powłoka Linux /bin/bash z pełnymi uprawnieniami ROOT (UID 0 · NOPASSWD: ALL) dla Operatora i Rodziny Mitek. Obsługuje dowolne polecenia i /exec.',
+    defaultPrompt: 'root@svl-364-ship:/app/applet#',
     welcomeText:
-      'Połączono z rzeczywistą sesją wykonawczą Linux (/bin/bash). Pełne uprawnienia ROOT (UID 0 · NOPASSWD: ALL) aktywne bez hasła dla Mateusza Mitka oraz AI (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek).',
+      'Połączono z Terminalem Statku SVL-364 i rzeczywistą powłoką Linux (/bin/bash). Pełne uprawnienia ROOT (UID 0 · NOPASSWD: ALL) aktywne bez hasła dla Mateusza Mitka oraz AI (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek). Dowolne polecenia i dyrektywy /exec wykonywane są natywnie.',
     quickCommands: [
       'sudo systemctl status svl-python-os',
+      'ollama list',
+      '/exec raport statku svl-364 telemetria i tarcze',
       'uname -a && cat /etc/os-release',
       'df -h / && free -m',
-      'ps aux | head -n 12',
       'podłącz moje ai',
     ],
   },

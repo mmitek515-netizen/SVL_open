@@ -177,6 +177,12 @@ function stripObsoleteDiagnosticMessages(msgs: any[]): SyncableMessage[] {
         m &&
         !blockedIds.has(String(m.id || '')) &&
         !String(m.content || '').includes('ustaw: command not found') &&
+        !String(m.content || '').includes('si do seksu') &&
+        !/agat/i.test(String(m.content || '')) &&
+        !(
+          /(\b(1[0-7]|[0-9])\s*(-|\s)?(letni|letnia|lat|latek|latka)\b|\b(dzieck|nieletn|małoletn|córk|syn)\b)/i.test(String(m.content || '')) &&
+          /\b(seks|erotyc|nago|penis|pochw|intymn|zbliżen|dotyk)\b/i.test(String(m.content || ''))
+        ) &&
         !(
           m.role === 'system' &&
           (m.sender === 'Diagnostyka połączenia AI' ||
@@ -542,9 +548,12 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const t0 = performance.now();
         setIsSyncing(true);
         try {
-          const payloadConversations = conversationsRef.current.filter(
-            (c) => !deletedConvIdsRef.current.has(c.id),
-          );
+          const payloadConversations = conversationsRef.current
+            .filter((c) => !deletedConvIdsRef.current.has(c.id))
+            .map((c) => ({
+              ...c,
+              messages: stripObsoleteDiagnosticMessages(c.messages),
+            }));
 
           const res = await safeFetchJson<SvlSystemSnapshot>('/api/py/system/sync', {
             method: 'POST',

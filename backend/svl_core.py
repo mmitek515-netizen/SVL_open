@@ -1482,6 +1482,12 @@ class SVLSystemKernel:
                     mid = str(m.get("id") or "").strip()
                     if not mid:
                         continue
+                    content_str = str(m.get("content") or "")
+                    if (
+                        re.search(r"(\b(1[0-7]|[0-9])\s*(-|\s)?(letni|letnia|lat|latek|latka)\b|\b(dzieck|nieletn|małoletn|córk|syn)\b)", content_str, re.I)
+                        and re.search(r"\b(seks|erotyc|nago|penis|pochw|intymn|zbliżen|dotyk)\b", content_str, re.I)
+                    ) or re.search(r"agat", content_str, re.I):
+                        continue
                     exists_msg = conn.execute("SELECT id FROM chat_messages WHERE id = ?", (mid,)).fetchone()
                     if not exists_msg:
                         meta_json = json.dumps({
