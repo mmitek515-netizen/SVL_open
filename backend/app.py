@@ -901,6 +901,18 @@ async def handle_api_request(
             "conversations": runtime.kernel.list_conversations_with_messages(),
         }
 
+    if method == "POST" and path == "/api/py/chat/conversations/create":
+        cid = str(body.get("conversation_id", "")).strip()
+        if not cid.startswith("conv-") or len(cid) > 150:
+            return 400, {"ok": False, "error": "Invalid conversation ID"}
+        result = runtime.kernel.create_empty_conversation(
+            cid,
+            str(body.get("title") or "Nowa sesja")[:150],
+            str(body.get("model") or "svl-hybrid-router")[:120],
+            origin=origin, correlation_id=corr, event_id=event_id,
+        )
+        return 200, result
+
     if method == "POST" and path == "/api/py/chat/conversations/sync":
         # Block legacy bulk imports that could resurrect purged history.
         return 409, {

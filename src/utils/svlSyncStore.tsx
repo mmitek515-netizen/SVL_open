@@ -1176,8 +1176,28 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
     setConversations((prev) => [newThread, ...prev]);
     setActiveConvId(newId);
+    void safeFetchJson<{ok: boolean; serverRevision?: number; event?: SvlSyncEvent}>(
+      '/api/py/chat/conversations/create',
+      {
+        method: 'POST',
+        timeoutMs: 12000,
+        body: JSON.stringify({
+          conversation_id: newId,
+          title: newThread.title,
+          model: 'svl-hybrid-router',
+          origin: tabOrigin,
+          eventId: createUniqueId('evt-create-conv'),
+        }),
+      },
+    ).then((response) => {
+      if (response.ok && response.data?.ok) {
+        notifyLocalMutation('chat', newId, response.data.serverRevision, response.data.event);
+      } else {
+        console.warn('[SVL] Nie udało się zapisać pustej sesji; kolejna wiadomość ponowi zapis.');
+      }
+    });
     return newThread;
-  }, [appendAndPersistChatMessage, setActiveConvId]);
+  }, [notifyLocalMutation, setActiveConvId, tabOrigin]);
 
   const deleteConversation = useCallback(
     async (convId: string) => {

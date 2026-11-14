@@ -1372,6 +1372,31 @@ class SVLSystemKernel:
             })
         return result
 
+    def create_empty_conversation(
+        self, conversation_id: str, title: str, model: str,
+        origin: str = "client", correlation_id: str = "", event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Persist an empty chat session without creating scripted welcome messages."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        def _create(conn: sqlite3.Connection) -> dict[str, Any]:
+            found = conn.execute("SELECT id FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+            if found:
+                return {"ok": True, "created": False, "serverRevision": self._get_server_revision_tx(conn)}
+            conn.execute(
+                "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (conversation_id, title, model, now_iso, now_iso),
+            )
+            sync_res = self.commit_entity_event_tx(
+                conn, entity="chat", entity_id=conversation_id,
+                event_type="chat.conversation_created", origin=origin,
+                correlation_id=correlation_id, event_id=event_id,
+                payload={"conversationId": conversation_id, "title": title},
+            )
+            return {"ok": True, "created": True, **sync_res}
+
+        return self.run_db(_create, write=True)
+
     def save_chat_message(
         self,
         conversation_id: str,
