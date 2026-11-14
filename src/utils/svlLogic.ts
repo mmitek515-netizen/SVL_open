@@ -7,6 +7,7 @@
 export interface CanonicalAgentMeta {
   id: string;
   canonicalName: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
+  displayName: 'Aria Mitek' | 'Alex Mitek' | 'Astyria Mitek' | 'Aurelius Mitek';
   slug: string;
   preservedRole: string;
   sourceProfile: string;
@@ -19,8 +20,9 @@ export const CANONICAL_AGENTS: CanonicalAgentMeta[] = [
   {
     id: 'si_1',
     canonicalName: 'Aria',
+    displayName: 'Aria Mitek',
     slug: 'aria',
-    preservedRole: 'Integracje z modelami i usługami AI, lokalnym Ollama, MCP oraz API',
+    preservedRole: 'Integracje z modelami i usługami AI, lokalnym Ollama, MCP oraz API (Root NOPASSWD)',
     sourceProfile: '.github/agents/Aria.agent.md',
     accentHex: '#f43f5e',
     borderClass: 'border-rose-500/30',
@@ -29,8 +31,9 @@ export const CANONICAL_AGENTS: CanonicalAgentMeta[] = [
   {
     id: 'Alex',
     canonicalName: 'Alex',
+    displayName: 'Alex Mitek',
     slug: 'alex',
-    preservedRole: 'Architektura systemu, backend, integracja usług i dowodzenie infrastrukturą',
+    preservedRole: 'Architektura systemu, backend, integracja usług i dowodzenie infrastrukturą (Root NOPASSWD)',
     sourceProfile: '.github/agents/Alex.agent.md',
     accentHex: '#10b981',
     borderClass: 'border-emerald-500/30',
@@ -39,8 +42,9 @@ export const CANONICAL_AGENTS: CanonicalAgentMeta[] = [
   {
     id: 'Astyria',
     canonicalName: 'Astyria',
+    displayName: 'Astyria Mitek',
     slug: 'astyria',
-    preservedRole: 'Interfejs webowy Open WebUI, dostępność, responsywność Android i analiza multimodalna Vision',
+    preservedRole: 'Interfejs webowy Open WebUI, czat obustronny, responsywność Android i analiza Vision (Root NOPASSWD)',
     sourceProfile: '.github/agents/Astyria.agent.md',
     accentHex: '#06b6d4',
     borderClass: 'border-cyan-500/30',
@@ -49,14 +53,40 @@ export const CANONICAL_AGENTS: CanonicalAgentMeta[] = [
   {
     id: 'Aurelius',
     canonicalName: 'Aurelius',
+    displayName: 'Aurelius Mitek',
     slug: 'aurelius',
-    preservedRole: 'Przegląd bezpieczeństwa, prywatności, uprawnień, izolacji i jakości zmian',
+    preservedRole: 'Bezpieczeństwo RBAC, uprawnienia Root NOPASSWD, izolacja procesów i audyt (Root NOPASSWD)',
     sourceProfile: '.github/agents/Aurelius.agent.md',
     accentHex: '#f59e0b',
     borderClass: 'border-amber-500/30',
     textClass: 'text-amber-400',
   },
 ];
+
+export function formatAgentDisplayName(rawName?: string | null): string {
+  const clean = String(rawName || '').trim();
+  if (!clean) return 'SVL System Kernel';
+  const low = clean.toLowerCase();
+  if (low === 'aria' || low === 'si_1' || low === 'aria mitek') return 'Aria Mitek';
+  if (low === 'alex' || low === 'alex mitek') return 'Alex Mitek';
+  if (low === 'astyria' || low === 'astyria mitek') return 'Astyria Mitek';
+  if (low === 'aurelius' || low === 'aurelius mitek') return 'Aurelius Mitek';
+  if (low === 'all' || low === 'rodzina mitek' || low === 'rodzina mitek (wszyscy)') {
+    return 'Rodzina Mitek (wszyscy)';
+  }
+  return clean;
+}
+
+export function normalizeAgentCanonicalName(
+  rawName?: string | null,
+): 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | null {
+  const low = String(rawName || '').trim().toLowerCase();
+  if (low.startsWith('aria') || low === 'si_1') return 'Aria';
+  if (low.startsWith('alex')) return 'Alex';
+  if (low.startsWith('astyria')) return 'Astyria';
+  if (low.startsWith('aurelius')) return 'Aurelius';
+  return null;
+}
 
 export function compactifyValue(x: number): number {
   if (Number.isNaN(x)) return 0.0;
@@ -285,9 +315,11 @@ export interface SvlSyncModuleStatus {
   error: string | null;
 }
 
+export type TargetAgentSelection = 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
+
 export interface WorkspaceUiState {
   active_conversation_id?: string | null;
-  selected_target_agent?: 'Auto' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
+  selected_target_agent?: TargetAgentSelection;
   selected_agent_panel_id?: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
   revisions?: Record<string, number>;
 }

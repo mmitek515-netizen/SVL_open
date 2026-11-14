@@ -8,7 +8,7 @@ import {
   Sliders,
   AlertTriangle,
 } from 'lucide-react';
-import { CANONICAL_AGENTS, createUniqueId, safeFetchJson } from '../utils/svlLogic';
+import { CANONICAL_AGENTS, createUniqueId, formatAgentDisplayName, safeFetchJson } from '../utils/svlLogic';
 import { useSvlSync } from '../utils/svlSyncStore';
 
 interface AgentsPanelProps {
@@ -28,6 +28,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     setTargetAgent,
     notifyLocalMutation,
     serverRevision,
+    systemModules,
   } = useSvlSync();
 
   const [senderActor, setSenderActor] = useState<'operator' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('operator');
@@ -46,6 +47,18 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
   const sphericalBus = agentsData?.spherical_bus || {};
   const lastReport = agentsData?.last_sync_report;
   const ollamaModels: any[] = healthData?.ollama?.models || [];
+  const pullState = healthData?.ollama?.pull_state;
+  const svl364ConfiguredModel = String(
+    systemModules.find((m) => m.id === 'svl-364')?.config?.configured_ollama_model || '',
+  ).trim();
+  const hasConfiguredModelPulled = Boolean(
+    svl364ConfiguredModel &&
+      ollamaModels.some(
+        (m: any) =>
+          m.name === svl364ConfiguredModel ||
+          String(m.name || '').startsWith(`${svl364ConfiguredModel.split(':')[0]}:`),
+      ),
+  );
 
   const activeAgentObj = agentsList.find((a) => a.canonical_name === selectedAgent) || {};
   const activeAgentCfg = activeAgentObj.config || {};
@@ -274,10 +287,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <h1 className="text-xl font-bold text-slate-100">
-            01. Panel Czterech Agentów AI (Aria, Alex, Astyria, Aurelius)
+            01. Panel Czterech Agentów AI — Rodzina Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek)
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Zachowane oryginalne identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, osobne procesy Python (PID/UID), izolowana pamięć SQLite, konfiguracja Ollama 11B Vision i magistrala zdarzeń (rev {serverRevision}).
+            Zachowane oryginalne identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, osobne procesy Python (PID/UID 0 · ROOT NOPASSWD: ALL), izolowana pamięć SQLite, konfiguracja Ollama i magistrala zdarzeń (rev {serverRevision}).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
@@ -352,7 +365,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <span className={`text-base font-bold ${meta.textClass}`}>
-                    {meta.canonicalName}
+                    {meta.displayName}
                   </span>
                   <span className="text-xs font-mono text-slate-400">
                     id: {meta.id}
@@ -360,7 +373,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                 </div>
 
                 <div className="text-[11px] font-mono tabular-nums text-slate-400">
-                  <span>{isOnline ? `ONLINE (PID ${live.pid} · UID ${live.uid})` : 'STAN: DEFINICJA KODU'}</span>
+                  <span>{isOnline ? `ONLINE (PID ${live.pid} · ROOT UID 0)` : 'STAN: DEFINICJA KODU'}</span>
                   <span aria-hidden="true"> · </span>
                   <span>CB: {cb.state}</span>
                 </div>
@@ -378,9 +391,9 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span>RBAC / Temp:</span>
-                  <span className="text-slate-200 truncate max-w-[170px]">
-                    {live.config?.rbac_role || 'worker'} · {live.config?.temperature ?? 0.7}
+                  <span>Uprawnienia / Temp:</span>
+                  <span className="text-emerald-300 truncate max-w-[170px]">
+                    ROOT NOPASSWD · {live.config?.temperature ?? 0.7}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -388,10 +401,8 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   <span className="text-violet-300">{live.memory_entries_count ?? 0} wpisów</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Heartbeat:</span>
-                  <span className="text-slate-300">
-                    {live.heartbeat_at ? new Date(live.heartbeat_at).toLocaleTimeString('pl-PL') : 'Brak (nieuruchomiony)'}
-                  </span>
+                  <span>Kanał grupowy:</span>
+                  <span className="text-slate-300">Rodzina Mitek (wszyscy)</span>
                 </div>
                 {onNavigateToChat && (
                   <button
@@ -404,7 +415,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                     className="mt-2 w-full py-1.5 px-2.5 rounded-lg bg-violet-600/20 hover:bg-violet-600/35 border border-violet-500/40 text-violet-200 text-xs font-sans font-medium flex items-center justify-center gap-1.5 transition-colors"
                   >
                     <MessageSquare className="w-3.5 h-3.5" />
-                    Rozmawiaj z {meta.canonicalName}
+                    Rozmawiaj z {meta.displayName}
                   </button>
                 )}
               </div>
@@ -431,11 +442,11 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   onChange={(e) => setSenderActor(e.target.value as any)}
                   className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
                 >
-                  <option value="operator">Mateusz Mitek (Operator)</option>
-                  <option value="Aria">Agent: Aria (id: si_1)</option>
-                  <option value="Alex">Agent: Alex (id: Alex)</option>
-                  <option value="Astyria">Agent: Astyria (id: Astyria)</option>
-                  <option value="Aurelius">Agent: Aurelius (id: Aurelius)</option>
+                  <option value="operator">Mateusz Mitek (Operator · ROOT)</option>
+                  <option value="Aria">Agent: Aria Mitek (id: si_1)</option>
+                  <option value="Alex">Agent: Alex Mitek (id: Alex)</option>
+                  <option value="Astyria">Agent: Astyria Mitek (id: Astyria)</option>
+                  <option value="Aurelius">Agent: Aurelius Mitek (id: Aurelius)</option>
                 </select>
               </div>
               <div>
@@ -448,10 +459,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   onChange={(e) => setSelectedAgent(e.target.value as any)}
                   className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
                 >
-                  <option value="Aria">Aria (id: si_1)</option>
-                  <option value="Alex">Alex (id: Alex)</option>
-                  <option value="Astyria">Astyria (id: Astyria)</option>
-                  <option value="Aurelius">Aurelius (id: Aurelius)</option>
+                  <option value="Aria">Aria Mitek (id: si_1)</option>
+                  <option value="Alex">Alex Mitek (id: Alex)</option>
+                  <option value="Astyria">Astyria Mitek (id: Astyria)</option>
+                  <option value="Aurelius">Aurelius Mitek (id: Aurelius)</option>
                 </select>
               </div>
             </div>
@@ -495,13 +506,13 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
               className="min-h-[40px] px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap"
             >
               <Send className="w-3.5 h-3.5" />
-              Wyślij zadanie do {selectedAgent}
+              Wyślij zadanie do {formatAgentDisplayName(selectedAgent)}
             </button>
           </form>
 
           <div className="pt-3 border-t border-slate-800 space-y-2">
             <div className="text-xs font-semibold text-slate-300">
-              Dziennik zdarzeń workera: {selectedAgent} ({(agentLogs[selectedAgent] || []).length} wpisów)
+              Dziennik zdarzeń workera: {formatAgentDisplayName(selectedAgent)} ({(agentLogs[selectedAgent] || []).length} wpisów)
             </div>
             <div className="max-h-44 overflow-y-auto space-y-1.5 bg-[#0B0D13] p-3 rounded-lg border border-slate-800 font-mono text-[11px]">
               {(agentLogs[selectedAgent] || []).length === 0 ? (
@@ -593,7 +604,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <h2 className="text-sm font-semibold text-slate-100">
-              04. Pełna Konfiguracja Agenta: {selectedAgent} (id: {activeAgentObj.id || selectedAgent})
+              04. Pełna Konfiguracja Agenta: {formatAgentDisplayName(selectedAgent)} (id: {activeAgentObj.id || selectedAgent})
             </h2>
             {isConfigDirty && (
               <span className="text-[11px] font-mono text-amber-400">
@@ -652,6 +663,16 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                     Tylko Ollama: {m.name} ({m.parameter_size || 'LLM'})
                   </option>
                 ))}
+                {svl364ConfiguredModel && !hasConfiguredModelPulled && (
+                  <option value={`ollama:${svl364ConfiguredModel}`}>
+                    Tylko Ollama: {svl364ConfiguredModel} (
+                    {pullState?.active &&
+                    String(pullState?.model || '').split(':')[0] === svl364ConfiguredModel.split(':')[0]
+                      ? `Pobieranie ${pullState?.percent ?? 0}%`
+                      : 'Do pobrania'}
+                    )
+                  </option>
+                )}
                 {!ollamaModels.some((m: any) => m.name === 'llama3.2-vision:11b') && (
                   <option value="ollama:llama3.2-vision:11b">Tylko Ollama: llama3.2-vision:11b</option>
                 )}
@@ -677,6 +698,9 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
               />
               <datalist id="ollama-pulled-models">
                 <option value="llama3.2-vision:11b" />
+                {svl364ConfiguredModel && !hasConfiguredModelPulled && (
+                  <option value={svl364ConfiguredModel} />
+                )}
                 {ollamaModels.map((m: any) => (
                   <option key={m.name} value={m.name} />
                 ))}

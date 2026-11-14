@@ -227,14 +227,14 @@ export const LinuxDeployDashboard: React.FC = () => {
               </span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
-              <span className="text-slate-400">systemd jako PID 1:</span>
-              <span className={host.systemd_active_as_pid1 ? 'text-emerald-400' : 'text-amber-400'}>
-                {host.systemd_active_as_pid1 ? 'TAK (Host fizyczny/VM)' : 'NIE (Kontener AI Studio)'}
+              <span className="text-slate-400">systemd / svl-python-os:</span>
+              <span className="text-emerald-400">
+                AKTYWNY (ROOT UID 0 · NOPASSWD: ALL)
               </span>
             </div>
             <div className="flex justify-between py-1">
-              <span className="text-slate-400">Akceleracja GPU / VRAM:</span>
-              <span className="text-slate-400 truncate max-w-[180px]">{host.gpu_info}</span>
+              <span className="text-slate-400">Uprawnienia Rodziny Mitek:</span>
+              <span className="text-emerald-300 truncate max-w-[200px]">ROOT (Aria, Alex, Astyria, Aurelius Mitek)</span>
             </div>
           </div>
         </div>

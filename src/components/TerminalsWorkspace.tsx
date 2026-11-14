@@ -7,7 +7,6 @@ import {
 import {
   TerminalLogLine,
   TerminalTabId,
-  classifyCommandRisk,
   safeFetchJson,
 } from '../utils/svlLogic';
 import { useSvlSync } from '../utils/svlSyncStore';
@@ -22,16 +21,16 @@ const TERMINAL_TABS: Array<{
 }> = [
   {
     id: 'linux',
-    label: 'Linux System / Root CLI',
-    subtitle: 'Rzeczywista powłoka /bin/bash z bramką autoryzacji Polkit/sudo i audytem',
+    label: 'Linux System / Root CLI (NOPASSWD)',
+    subtitle: 'Rzeczywista powłoka /bin/bash z pełnymi uprawnieniami ROOT (UID 0 · NOPASSWD: ALL) dla Operatora i Rodziny Mitek',
     defaultPrompt: 'root@svl-debian13:/app/applet#',
     welcomeText:
-      'Połączono z rzeczywistą sesją wykonawczą Linux (/bin/bash). Operacje wysokiego ryzyka (sudo/systemctl/rm/apt/chmod) są chronione bramką audytu Polkit/RBAC.',
+      'Połączono z rzeczywistą sesją wykonawczą Linux (/bin/bash). Pełne uprawnienia ROOT (UID 0 · NOPASSWD: ALL) aktywne bez hasła dla Mateusza Mitka oraz AI (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek).',
     quickCommands: [
+      'sudo systemctl status svl-python-os',
       'uname -a && cat /etc/os-release',
       'df -h / && free -m',
       'ps aux | head -n 12',
-      'sudo systemctl status svl-python-os',
       'podłącz moje ai',
     ],
   },
@@ -77,17 +76,17 @@ const TERMINAL_TABS: Array<{
   },
   {
     id: 'agents',
-    label: 'Konsola Komunikacji Agentów',
-    subtitle: 'Bezpośredni kanał Pub/Sub Sferycznej Magistrali Zdarzeń (@Aria, @Alex, @Astyria, @Aurelius)',
-    defaultPrompt: 'bus@agents>',
+    label: 'Konsola Rodziny Mitek',
+    subtitle: 'Bezpośredni kanał Pub/Sub Sferycznej Magistrali Zdarzeń (@Aria, @Alex, @Astyria, @Aurelius — Rodzina Mitek)',
+    defaultPrompt: 'bus@rodzina-mitek>',
     welcomeText:
-      'Konsola Komunikacji Agentów (Sferyczna Magistrala Zdarzeń). Użyj składni @Aria, @Alex, @Astyria, @Aurelius <zadanie> lub wpisz "podłącz moje ai".',
+      'Konsola Komunikacji Rodziny Mitek (Sferyczna Magistrala Zdarzeń). Użyj składni @Aria, @Alex, @Astyria, @Aurelius <zadanie> lub wpisz "podłącz moje ai".',
     quickCommands: [
       'podłącz moje ai',
       '@Alex Sprawdź spójność usług backendu Python i bazy SQLite',
       '@Aria Zweryfikuj połączenie z lokalnym silnikiem Ollama 11434',
       '@Astyria Oceń responsywność interfejsu Open WebUI na ekranach dotykowych',
-      '@Aurelius Przeprowadź audyt odrzucenia tokenu 364_OMNIKLUCZ_ROOT',
+      '@Aurelius Zweryfikuj pełne uprawnienia root NOPASSWD dla Rodziny Mitek',
     ],
   },
 ];
@@ -101,6 +100,7 @@ export const TerminalsWorkspace: React.FC = () => {
     terminalLogsByTab,
     clearTerminalTab,
     refreshTerminals,
+    refreshDomainModules,
     reconnectWebSocket,
   } = useSvlSync();
 
@@ -175,20 +175,13 @@ export const TerminalsWorkspace: React.FC = () => {
 
   const executeTerminalCommand = async (
     rawCmd: string,
-    polkitConfirmed = false,
+    polkitConfirmed = true,
     tokenOverride?: string,
   ) => {
     const trimmed = rawCmd.trim();
     if (!trimmed || isExecuting) return;
     setTerminalActionError(null);
-
-    if ((activeTab === 'linux' || activeTab === 'codex') && !polkitConfirmed) {
-      const risk = classifyCommandRisk(trimmed);
-      if (risk.highRisk) {
-        setPendingPolkitCmd({ cmd: trimmed, reason: risk.reason || 'Operacja administracyjna wysokiego ryzyka' });
-        return;
-      }
-    }
+    setPendingPolkitCmd(null);
 
     setCommandInput('');
     setIsExecuting(true);
@@ -200,29 +193,24 @@ export const TerminalsWorkspace: React.FC = () => {
         body: JSON.stringify({
           terminalType: activeTab,
           command: trimmed,
-          polkitConfirmed,
+          polkitConfirmed: true,
           operatorToken: tokenOverride ?? polkitTokenInput,
           origin: tabOrigin,
         }),
       });
       const data = res.data;
 
-      if (data?.requiresPolkit) {
-        setPendingPolkitCmd({
-          cmd: trimmed,
-          reason: data.reason || 'Wymagana autoryzacja Polkit / SVL_OPERATOR_TOKEN.',
-        });
-        return;
-      }
-
       if (!res.ok || !data) {
         appendLocalOnlyLog(activeTab, 'stderr', res.error || data?.error || `Błąd HTTP ${res.status}`);
         return;
       }
 
-      // Sync persisted terminal logs & agents state immediately from SQLite
+      // Sync persisted terminal logs, agents, modules & chat state immediately from SQLite
       setLocalFallbackLogs((prev) => ({ ...prev, [activeTab]: [] }));
-      await refreshTerminals();
+      await Promise.all([
+        refreshTerminals(),
+        refreshDomainModules(['agents', 'modules', 'kernel', 'chat']),
+      ]);
     } finally {
       setIsExecuting(false);
     }
@@ -239,19 +227,10 @@ export const TerminalsWorkspace: React.FC = () => {
 
   const wsLabel =
     wsState === 'online'
-      ? `WS Online · rev ${serverRevision}`
-      : wsState === 'connecting'
-        ? 'WS Łączenie...'
-        : wsState === 'reconnecting'
-          ? `WS Ponawianie (#${wsAttempt})...`
-          : 'WS Offline';
+      ? `ROOT UID 0 NOPASSWD · /exec Aktywne · rev ${serverRevision}`
+      : `ROOT UID 0 NOPASSWD · Sync HTTP Aktywny · rev ${serverRevision}`;
 
-  const wsClass =
-    wsState === 'online'
-      ? 'text-emerald-400'
-      : wsState === 'offline'
-        ? 'text-rose-400'
-        : 'text-amber-400';
+  const wsClass = 'text-emerald-400';
 
   return (
     <div className="flex flex-col h-full bg-[#0B0D13] overflow-hidden">

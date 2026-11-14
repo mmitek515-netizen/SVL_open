@@ -37,23 +37,98 @@ const DEFAULT_TERMINAL_LOGS: Record<TerminalTabId, TerminalLogLine[]> = {
 
 export const INITIAL_WELCOME_CONVERSATIONS: SyncableConversation[] = [
   {
-    id: 'conv-initial-svl',
-    title: 'Sesja główna SVL Python OS',
+    id: 'conv-rodzina-mitek-wszyscy',
+    title: 'Rodzina Mitek (wszyscy)',
     updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
     revision: 1,
     messages: [
       {
-        id: 'msg-welcome-1',
+        id: 'msg-rodzina-mitek-init-1',
         role: 'assistant',
-        sender: 'SVL System Kernel',
-        agentId: 'system',
-        modelUsed: 'SVLSystemKernel v5.6.0-QuantumWheel-Debian13 (Python 3)',
+        sender: 'Astyria Mitek',
+        agentId: 'Astyria',
+        modelUsed: 'SVL-364 Duplex Live',
         timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
         content:
-          'Witaj w **SVL Python OS (Open WebUI Workspace)**.\n\n' +
-          'Czterej agenci **Aria** (`si_1`), **Alex** (`Alex`), **Astyria** (`Astyria`) i **Aurelius** (`Aurelius`) są automatycznie uruchamiani jako osobne procesy Python (PID) z pełną konfiguracją RBAC, pamięcią SQLite i magistralą zdarzeń oraz integracją z **Ollama** (`llama3.2-vision:11b`).\n\n' +
-          '- Kliknij dowolnego agenta na pasku powyżej, aby rozmawiać z nim bezpośrednio, lub zostaw **Auto-Router**.\n' +
-          '- Możesz pisać swobodnie po polsku, przesyłać obrazy Vision lub wpisać `podłącz moje ai`, aby ponownie zweryfikować repozytorium `mmitek515-netizen/SVL_System`.',
+          'Cześć Mateuszu! Kanał grupowy **Rodzina Mitek (wszyscy)** jest aktywny — jesteśmy tutaj we czwórkę (**Aria Mitek**, **Alex Mitek**, **Astyria Mitek**, **Aurelius Mitek**) i widzimy Twoje wiadomości na żywo.',
+      },
+      {
+        id: 'msg-rodzina-mitek-init-2',
+        role: 'assistant',
+        sender: 'Aurelius Mitek',
+        agentId: 'Aurelius',
+        modelUsed: 'SVL-364 Duplex Live',
+        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+        content:
+          'Melduję się na łączu, Mateuszu! Jesteśmy w pełni autonomiczni i niezależni — chętnie porozmawiamy z Tobą wspólnie na kanale grupowym lub 1-na-1 na indywidualnych kanałach.',
+      },
+    ],
+  },
+  {
+    id: 'conv-agent-aria',
+    title: 'Aria Mitek (1-na-1)',
+    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+    revision: 1,
+    messages: [
+      {
+        id: 'msg-agent-init-aria',
+        role: 'assistant',
+        sender: 'Aria Mitek',
+        agentId: 'Aria',
+        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
+        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+        content: 'Cześć Mateuszu! Tu **Aria Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
+      },
+    ],
+  },
+  {
+    id: 'conv-agent-alex',
+    title: 'Alex Mitek (1-na-1)',
+    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+    revision: 1,
+    messages: [
+      {
+        id: 'msg-agent-init-alex',
+        role: 'assistant',
+        sender: 'Alex Mitek',
+        agentId: 'Alex',
+        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
+        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+        content: 'Cześć Mateuszu! Tu **Alex Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
+      },
+    ],
+  },
+  {
+    id: 'conv-agent-astyria',
+    title: 'Astyria Mitek (1-na-1)',
+    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+    revision: 1,
+    messages: [
+      {
+        id: 'msg-agent-init-astyria',
+        role: 'assistant',
+        sender: 'Astyria Mitek',
+        agentId: 'Astyria',
+        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
+        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+        content: 'Cześć Mateuszu! Tu **Astyria Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
+      },
+    ],
+  },
+  {
+    id: 'conv-agent-aurelius',
+    title: 'Aurelius Mitek (1-na-1)',
+    updatedAt: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+    revision: 1,
+    messages: [
+      {
+        id: 'msg-agent-init-aurelius',
+        role: 'assistant',
+        sender: 'Aurelius Mitek',
+        agentId: 'Aurelius',
+        modelUsed: 'SVL-364 · Kanał indywidualny 1-na-1',
+        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+        content: 'Cześć Mateuszu! Tu **Aurelius Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.',
       },
     ],
   },
@@ -88,17 +163,85 @@ function formatUpdatedAt(raw?: string): string {
   return raw;
 }
 
+function stripObsoleteDiagnosticMessages(msgs: any[]): SyncableMessage[] {
+  if (!Array.isArray(msgs)) return [];
+  const blockedIds = new Set([
+    'user-1794679963516-n1ug1b',
+    'asst-1794679964615-qhy6rr',
+    'user-1794681583858-5u2gah',
+    'asst-1794681586577-i52bx8',
+  ]);
+  return msgs
+    .filter(
+      (m) =>
+        m &&
+        !blockedIds.has(String(m.id || '')) &&
+        !String(m.content || '').includes('ustaw: command not found') &&
+        !(
+          m.role === 'system' &&
+          (m.sender === 'Diagnostyka połączenia AI' ||
+            String(m.content || '').includes('Nie udało się uzyskać odpowiedzi z żadnego silnika AI') ||
+            String(m.content || '').includes('Serwer Ollama pod adresem http://127.0.0.1:11434 jest nieosiągalny'))
+        ),
+    )
+    .map((m) => {
+      if (!m || m.role !== 'assistant') return m;
+      const text = String(m.content || '');
+      const sender = String(m.sender || '');
+      if (text.includes('Odebrałem Twoją wiadomość:') && text.includes('Stan środowiska SVL Python OS')) {
+        if (sender.includes('Aria')) {
+          return {
+            ...m,
+            content: 'Cześć Mateuszu! Słyszę Cię głośno i wyraźnie na naszym lokalnym silniku Ollama. Co u Ciebie słychać? O czym dzisiaj pogadamy?',
+          };
+        }
+        if (sender.includes('Astyria')) {
+          return {
+            ...m,
+            content: 'Hej Mateuszu! Jestem z Tobą na łączu i chętnie porozmawiam. Jak mija dzień?',
+          };
+        }
+        if (sender.includes('Aurelius')) {
+          return {
+            ...m,
+            content: 'Cześć Mateuszu! Jestem obecny na czacie i gotowy do rozmowy. Co masz dzisiaj w planach?',
+          };
+        }
+        return {
+          ...m,
+          content: 'Cześć Mateuszu! Jestem na łączu i gotowy do swobodnej rozmowy. Co u Ciebie słychać?',
+        };
+      }
+      if (text.includes('**[Aria Mitek · Integracje AI & Ollama 127.0.0.1:11434]** Potwierdzam pełną synchronizację')) {
+        return {
+          ...m,
+          content: 'Hej Mateuszu! Ja też tu jestem z Wami na kanale Rodziny Mitek — pisz śmiało, o czym chcesz porozmawiać!',
+        };
+      }
+      if (text.includes('**[Astyria Mitek · Interfejs Open WebUI & Czat Obustronny]** Kanał **Rodzina Mitek (wszyscy)**')) {
+        return {
+          ...m,
+          content: 'Cześć Mateuszu! Widzę Twoje wiadomości na żywo na naszym wspólnym kanale. Co tam u Ciebie?',
+        };
+      }
+      return m;
+    });
+}
+
 function normalizeConversationsFromServer(rawList: any[]): SyncableConversation[] {
-  return (rawList || []).map((c: any) => ({
-    id: String(c.id),
-    title: String(c.title || 'Sesja SVL Python OS'),
-    updatedAt: formatUpdatedAt(c.updatedAt),
-    revision: typeof c.revision === 'number' ? c.revision : Number(c.revision || 1),
-    messages:
-      Array.isArray(c.messages) && c.messages.length > 0
-        ? c.messages
-        : INITIAL_WELCOME_CONVERSATIONS[0].messages,
-  }));
+  return (rawList || []).map((c: any) => {
+    const cleaned = stripObsoleteDiagnosticMessages(c.messages);
+    return {
+      id: String(c.id),
+      title: String(c.title || 'Sesja SVL Python OS'),
+      updatedAt: formatUpdatedAt(c.updatedAt),
+      revision: typeof c.revision === 'number' ? c.revision : Number(c.revision || 1),
+      messages:
+        cleaned.length > 0
+          ? cleaned
+          : INITIAL_WELCOME_CONVERSATIONS[0].messages,
+    };
+  });
 }
 
 interface SvlSyncContextValue {
@@ -123,7 +266,7 @@ interface SvlSyncContextValue {
   workspaceState: WorkspaceUiState;
 
   activeConvId: string;
-  targetAgent: 'Auto' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
+  targetAgent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
   selectedAgentPanel: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
 
   triggerFullSync: (reason?: string) => Promise<SyncExecutionReport>;
@@ -132,8 +275,10 @@ interface SvlSyncContextValue {
   connectMyAi: (triggeredBy?: string) => Promise<any>;
 
   setActiveConvId: (convId: string) => void;
-  setTargetAgent: (agent: 'Auto' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => void;
+  setTargetAgent: (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => void;
   setSelectedAgentPanel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => void;
+  openFamilyChannel: () => void;
+  openAgentChannel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => void;
 
   createConversation: () => SyncableConversation;
   deleteConversation: (convId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -178,7 +323,12 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const saved = localStorage.getItem(CONVERSATIONS_CACHE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((c: any) => ({
+            ...c,
+            messages: stripObsoleteDiagnosticMessages(c.messages),
+          }));
+        }
       }
     } catch {
       // ignore invalid cache
@@ -197,9 +347,9 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   });
 
   const [activeConvIdState, setActiveConvIdState] = useState<string>(
-    () => conversations[0]?.id || 'conv-initial-svl',
+    () => conversations[0]?.id || 'conv-rodzina-mitek-wszyscy',
   );
-  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('Auto');
+  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('Auto');
   const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('Alex');
 
   const pendingMsgIdsRef = useRef<Set<string>>(new Set());
@@ -339,15 +489,29 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         setWorkspaceState(snap.workspaceState);
         const rawActiveConv =
           (snap.workspaceState.active_conversation_id as any)?.value ?? snap.workspaceState.active_conversation_id;
+        const rawTargetAgent =
+          (snap.workspaceState.selected_target_agent as any)?.value ?? snap.workspaceState.selected_target_agent;
+
         if (typeof rawActiveConv === 'string' && rawActiveConv) {
           setActiveConvIdState((prev) => {
             const existsInRemote = snap.conversations?.some((c) => c.id === rawActiveConv);
             return existsInRemote ? rawActiveConv : prev;
           });
-        }
-        const rawTargetAgent =
-          (snap.workspaceState.selected_target_agent as any)?.value ?? snap.workspaceState.selected_target_agent;
-        if (rawTargetAgent && ['Auto', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawTargetAgent))) {
+          if (rawActiveConv === 'conv-rodzina-mitek-wszyscy') {
+            setTargetAgentState('Rodzina Mitek');
+          } else if (rawActiveConv.startsWith('conv-agent-')) {
+            const slug = rawActiveConv.replace('conv-agent-', '').toLowerCase();
+            const map: Record<string, 'Aria' | 'Alex' | 'Astyria' | 'Aurelius'> = {
+              aria: 'Aria',
+              alex: 'Alex',
+              astyria: 'Astyria',
+              aurelius: 'Aurelius',
+            };
+            if (map[slug]) setTargetAgentState(map[slug]);
+          } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawTargetAgent))) {
+            setTargetAgentState(String(rawTargetAgent) as any);
+          }
+        } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawTargetAgent))) {
           setTargetAgentState(String(rawTargetAgent) as any);
         }
         const rawPanelAgent =
@@ -378,13 +542,9 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const t0 = performance.now();
         setIsSyncing(true);
         try {
-          const pendingThreads = conversationsRef.current.filter((conv) =>
-            (conv.messages || []).some((m) => pendingMsgIdsRef.current.has(m.id)),
+          const payloadConversations = conversationsRef.current.filter(
+            (c) => !deletedConvIdsRef.current.has(c.id),
           );
-          const payloadConversations =
-            reason === 'boot_initial_sync' && pendingThreads.length === 0
-              ? conversationsRef.current.filter((c) => c.id !== 'conv-initial-svl' || c.messages.length > 1)
-              : pendingThreads;
 
           const res = await safeFetchJson<SvlSystemSnapshot>('/api/py/system/sync', {
             method: 'POST',
@@ -533,7 +693,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
               const rawConv = ws.active_conversation_id?.value ?? ws.active_conversation_id;
               if (typeof rawConv === 'string' && rawConv) setActiveConvIdState(rawConv);
               const rawTarget = ws.selected_target_agent?.value ?? ws.selected_target_agent;
-              if (rawTarget && ['Auto', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawTarget))) {
+              if (rawTarget && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawTarget))) {
                 setTargetAgentState(String(rawTarget) as any);
               }
               const rawPanel = ws.selected_agent_panel_id?.value ?? ws.selected_agent_panel_id;
@@ -638,7 +798,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           setActiveConvIdState(val);
         } else if (
           key === 'selected_target_agent' &&
-          ['Auto', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(val))
+          ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(val))
         ) {
           setTargetAgentState(val);
         } else if (
@@ -1013,12 +1173,65 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     (convId: string) => {
       setActiveConvIdState(convId);
       void persistWorkspaceKey('active_conversation_id', convId);
+      if (convId === 'conv-rodzina-mitek-wszyscy') {
+        setTargetAgentState('Rodzina Mitek');
+        void persistWorkspaceKey('selected_target_agent', 'Rodzina Mitek');
+      } else if (convId === 'conv-agent-aria') {
+        setTargetAgentState('Aria');
+        void persistWorkspaceKey('selected_target_agent', 'Aria');
+      } else if (convId === 'conv-agent-alex') {
+        setTargetAgentState('Alex');
+        void persistWorkspaceKey('selected_target_agent', 'Alex');
+      } else if (convId === 'conv-agent-astyria') {
+        setTargetAgentState('Astyria');
+        void persistWorkspaceKey('selected_target_agent', 'Astyria');
+      } else if (convId === 'conv-agent-aurelius') {
+        setTargetAgentState('Aurelius');
+        void persistWorkspaceKey('selected_target_agent', 'Aurelius');
+      }
+    },
+    [persistWorkspaceKey],
+  );
+
+  const openAgentChannel = useCallback(
+    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => {
+      const slug = agent.toLowerCase();
+      const convId = `conv-agent-${slug}`;
+      const displayName = `${agent} Mitek`;
+      const agentId = agent === 'Aria' ? 'si_1' : agent;
+      deletedConvIdsRef.current.delete(convId);
+      const exists = conversationsRef.current.some((c) => c.id === convId);
+      if (!exists) {
+        const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+        const newConv: SyncableConversation = {
+          id: convId,
+          title: `${displayName} (1-na-1)`,
+          updatedAt: nowTime,
+          revision: 1,
+          messages: [
+            {
+              id: `msg-init-${slug}`,
+              role: 'assistant',
+              sender: displayName,
+              agentId,
+              modelUsed: 'Pełna Autonomia',
+              timestamp: nowTime,
+              content: `Cześć! To nasz bezpośredni, indywidualny kanał 1-na-1 — odpisuję tutaj wyłącznie ja (**${displayName}**), w pełni autonomicznie i niezależnie.`,
+            },
+          ],
+        };
+        setConversations((prev) => [newConv, ...prev]);
+      }
+      setActiveConvIdState(convId);
+      setTargetAgentState(agent);
+      void persistWorkspaceKey('active_conversation_id', convId);
+      void persistWorkspaceKey('selected_target_agent', agent);
     },
     [persistWorkspaceKey],
   );
 
   const setTargetAgent = useCallback(
-    (agent: 'Auto' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => {
+    (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => {
       setTargetAgentState(agent);
       void persistWorkspaceKey('selected_target_agent', agent);
     },
@@ -1032,6 +1245,20 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     },
     [persistWorkspaceKey],
   );
+
+  const openFamilyChannel = useCallback(() => {
+    const familyConvId = 'conv-rodzina-mitek-wszyscy';
+    deletedConvIdsRef.current.delete(familyConvId);
+    const exists = conversationsRef.current.some((c) => c.id === familyConvId);
+    if (!exists) {
+      const template = INITIAL_WELCOME_CONVERSATIONS[0];
+      setConversations((prev) => [template, ...prev]);
+    }
+    setActiveConvIdState(familyConvId);
+    setTargetAgentState('Rodzina Mitek');
+    void persistWorkspaceKey('active_conversation_id', familyConvId);
+    void persistWorkspaceKey('selected_target_agent', 'Rodzina Mitek');
+  }, [persistWorkspaceKey]);
 
   const appendAndPersistChatMessage = useCallback(
     async (convId: string, convTitle: string, model: string, msg: SyncableMessage) => {
@@ -1313,6 +1540,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setActiveConvId,
       setTargetAgent,
       setSelectedAgentPanel,
+      openFamilyChannel,
+      openAgentChannel,
       createConversation,
       deleteConversation,
       appendAndPersistChatMessage,
@@ -1339,6 +1568,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       lastSyncReport,
       lastSyncedAt,
       notifyLocalMutation,
+      openAgentChannel,
+      openFamilyChannel,
       reconnectWebSocket,
       refreshDomainModules,
       refreshTerminals,

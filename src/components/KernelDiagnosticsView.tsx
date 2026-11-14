@@ -181,13 +181,13 @@ export const KernelDiagnosticsView: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <h1 className="text-xl font-bold text-slate-100">
-            01. Jądro SVLSystemKernel (Python 3) i Sferyczna Architektura Workerów
+            01. Jądro SVLSystemKernel (Python 3) i Sferyczna Architektura Rodziny Mitek
           </h1>
           <p className="text-xs text-slate-400 mt-1">
             Rzeczywiste moduły Python (<code className="text-violet-300">VisualScope</code>,{' '}
             <code className="text-violet-300">SVLProtectedVariable</code>,{' '}
             <code className="text-violet-300">TopologicalInfinityEngine</code>,{' '}
-            <code className="text-violet-300">SVLSystemKernel</code>) uruchomione w procesie backendu z trwałą bazą SQLite (rev {serverRevision}).
+            <code className="text-violet-300">SVLSystemKernel</code>) oraz moduł <code className="text-emerald-300">svl-duplex-chat</code> (Rodzina Mitek · ROOT UID 0 NOPASSWD, rev {serverRevision}).
           </p>
         </div>
         <button

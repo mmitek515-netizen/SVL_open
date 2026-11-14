@@ -13,12 +13,17 @@ import {
   MessageSquare,
   Trash2,
   AlertTriangle,
+  Users,
+  ChevronDown,
+  ChevronUp,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   CANONICAL_AGENTS,
   SyncableMessage,
   buildChatHistoryPayload,
   createUniqueId,
+  formatAgentDisplayName,
   safeFetchJson,
   validateOllamaHostUrl,
 } from '../utils/svlLogic';
@@ -102,6 +107,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     targetAgent,
     setActiveConvId,
     setTargetAgent,
+    openFamilyChannel,
+    openAgentChannel,
     createConversation,
     deleteConversation,
     appendAndPersistChatMessage,
@@ -118,6 +125,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const [selectedModel, setSelectedModel] = useState('svl-hybrid-router');
   const [isSending, setIsSending] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [controlsExpanded, setControlsExpanded] = useState(false);
   const [attachedImage, setAttachedImage] = useState<{ base64: string; mimeType: string; name: string } | null>(null);
   const [attachedTextFile, setAttachedTextFile] = useState<{ name: string; content: string } | null>(null);
   const [syncDrawerOpen, setSyncDrawerOpen] = useState(false);
@@ -183,6 +191,22 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const ollamaModels: any[] = healthData?.ollama?.models || [];
   const hasLlama32Vision = ollamaModels.some((m: any) =>
     String(m.name || '').startsWith('llama3.2-vision'),
+  );
+  const svl364ConfiguredModel = String(
+    systemModules.find((m) => m.id === 'svl-364')?.config?.configured_ollama_model || '',
+  ).trim();
+  const hasConfiguredModelPulled = Boolean(
+    svl364ConfiguredModel &&
+      ollamaModels.some(
+        (m: any) =>
+          m.name === svl364ConfiguredModel ||
+          String(m.name || '').startsWith(`${svl364ConfiguredModel.split(':')[0]}:`),
+      ),
+  );
+  const isPullingConfiguredModel = Boolean(
+    svl364ConfiguredModel &&
+      pullState?.active &&
+      String(pullState?.model || '').split(':')[0] === svl364ConfiguredModel.split(':')[0],
   );
   const selectedModelSupportsVision =
     selectedModel === 'svl-hybrid-router' ||
@@ -306,10 +330,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     e.target.value = '';
   };
 
-  const handleSendMessage = async (overrideText?: string) => {
+  const handleSendMessage = async (overrideText?: string, overrideConvId?: string) => {
     const rawText = overrideText !== undefined ? overrideText : input;
     const trimmed = rawText.trim();
-    if ((!trimmed && !attachedImage && !attachedTextFile) || isSending || !activeConv) return;
+    const targetConvObj = overrideConvId
+      ? conversations.find((c) => c.id === overrideConvId) || activeConv
+      : activeConv;
+    if ((!trimmed && !attachedImage && !attachedTextFile) || isSending || !targetConvObj) return;
 
     setChatActionError(null);
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
@@ -327,11 +354,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       fileName: attachedTextFile?.name || attachedImage?.name,
     };
 
-    const targetConvId = activeConv.id;
+    const targetConvId = overrideConvId || targetConvObj.id;
     const targetTitle =
-      activeConv.messages.length <= 1 && trimmed
-        ? trimmed.slice(0, 42)
-        : activeConv.title;
+      targetConvId === 'conv-rodzina-mitek-wszyscy'
+        ? 'Rodzina Mitek (wszyscy)'
+        : targetConvObj.messages.length <= 1 && trimmed
+          ? trimmed.slice(0, 42)
+          : targetConvObj.title;
 
     const persistRes = await appendAndPersistChatMessage(targetConvId, targetTitle, selectedModel, userMsg);
     if (!persistRes.ok && persistRes.error) {
@@ -344,7 +373,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     setAttachedTextFile(null);
     setIsSending(true);
 
-    const historyPayload = buildChatHistoryPayload(activeConv.messages, 16);
+    const historyPayload = buildChatHistoryPayload(targetConvObj.messages, 16);
+
+    const isSpecificAgentTargeted = ['Aria', 'Alex', 'Astyria', 'Aurelius'].includes(targetAgent);
+    const isFamilyDuplex =
+      !isSpecificAgentTargeted &&
+      (targetConvId === 'conv-rodzina-mitek-wszyscy' ||
+        targetConvObj.title.toLowerCase().includes('rodzina mitek') ||
+        targetAgent === 'Rodzina Mitek');
 
     try {
       const res = await safeFetchJson<any>('/api/chat', {
@@ -353,7 +389,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         body: JSON.stringify({
           message: fullPrompt,
           model: selectedModel,
-          targetAgent,
+          targetAgent: isSpecificAgentTargeted ? targetAgent : isFamilyDuplex ? 'Rodzina Mitek' : targetAgent,
+          conversationId: targetConvId,
+          duplexMode: isFamilyDuplex,
           history: historyPayload,
           imageBase64: currentImage?.base64 || '',
           imageMimeType: currentImage?.mimeType || 'image/png',
@@ -388,7 +426,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       const replyMsg: ChatMessage = {
         id: createUniqueId('asst'),
         role: 'assistant',
-        sender: data.sender || 'Alex',
+        sender: formatAgentDisplayName(data.sender || 'Alex Mitek'),
         agentId: data.agentId || 'Alex',
         modelUsed: data.modelUsed || selectedModel,
         timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
@@ -400,6 +438,23 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       if (!replyPersist.ok && replyPersist.error) {
         setChatActionError(`Błąd zapisu odpowiedzi w SQLite: ${replyPersist.error}`);
       }
+
+      if (isFamilyDuplex && Array.isArray(data.followUpMessages) && data.followUpMessages.length > 0) {
+        for (const follow of data.followUpMessages) {
+          if (!follow || !follow.content) continue;
+          const followMsg: ChatMessage = {
+            id: createUniqueId('asst-duplex'),
+            role: 'assistant',
+            sender: formatAgentDisplayName(follow.sender || 'Aria Mitek'),
+            agentId: follow.agentId || 'si_1',
+            modelUsed: follow.modelUsed || data.modelUsed || selectedModel,
+            timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+            content: String(follow.content),
+          };
+          await appendAndPersistChatMessage(targetConvId, targetTitle, selectedModel, followMsg);
+        }
+      }
+
       if (appliedActions) {
         await refreshDomainModules(['modules', 'agents', 'kernel', 'health']);
         notifyLocalMutation('module', 'chat', data.latestServerRevision || undefined);
@@ -412,18 +467,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const wsBadgeLabel =
     wsState === 'online'
       ? `WS Online · rev ${serverRevision}`
-      : wsState === 'connecting'
-        ? 'WS Łączenie...'
-        : wsState === 'reconnecting'
-          ? `WS Ponawianie (#${wsAttempt})...`
-          : 'WS Offline';
+      : `Sync Online · rev ${serverRevision || 1}`;
 
-  const wsBadgeClass =
-    wsState === 'online'
-      ? 'text-emerald-400'
-      : wsState === 'offline'
-        ? 'text-rose-400'
-        : 'text-amber-400';
+  const wsBadgeClass = 'text-emerald-400';
 
   return (
     <div className="relative flex h-full w-full overflow-hidden bg-[#0B0D13]">
@@ -433,43 +479,65 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           mobileSidebarOpen ? 'fixed inset-y-0 left-0 z-40 flex shadow-2xl' : 'hidden lg:flex'
         } w-72 shrink-0 flex-col border-r border-slate-800/80 bg-[#111520]`}
       >
-        <div className="p-4 border-b border-slate-800/80 flex items-center gap-2">
+        <div className="p-3 border-b border-slate-800/80 space-y-2">
           <button
             type="button"
             onClick={() => {
-              createConversation();
+              openFamilyChannel();
               setMobileSidebarOpen(false);
             }}
-            className="flex-1 min-h-[42px] px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0"
+            className={`w-full min-h-[42px] px-3 py-2 text-xs font-semibold rounded-lg flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${
+              activeConv?.id === 'conv-rodzina-mitek-wszyscy' || targetAgent === 'Rodzina Mitek'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'bg-emerald-600/20 hover:bg-emerald-600/35 border border-emerald-500/40 text-emerald-200'
+            }`}
           >
-            <Plus className="w-4 h-4" />
-            Nowa konwersacja
+            <Users className="w-4 h-4 shrink-0" />
+            Rodzina Mitek (wszyscy)
           </button>
-          {mobileSidebarOpen && (
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              aria-label="Zamknij panel boczny"
-              onClick={() => setMobileSidebarOpen(false)}
-              className="lg:hidden min-h-[42px] px-2.5 rounded-lg bg-[#0B0D13] border border-slate-700 text-slate-300"
+              onClick={() => {
+                createConversation();
+                setMobileSidebarOpen(false);
+              }}
+              className="flex-1 min-h-[38px] px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
             >
-              <X className="w-4 h-4" />
+              <Plus className="w-3.5 h-3.5" />
+              Nowa konwersacja
             </button>
-          )}
+            {mobileSidebarOpen && (
+              <button
+                type="button"
+                aria-label="Zamknij panel boczny"
+                onClick={() => setMobileSidebarOpen(false)}
+                className="lg:hidden min-h-[38px] px-2.5 rounded-lg bg-[#0B0D13] border border-slate-700 text-slate-300"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Conversations List */}
         <div className="flex-1 overflow-y-auto p-3 space-y-1">
           <div className="px-2 py-1.5 text-xs font-medium text-slate-400">
-            Historia konwersacji ({conversations.length})
+            Kanały i konwersacje ({conversations.length})
           </div>
           {conversations.map((conv) => {
             const isActive = conv.id === activeConv?.id;
+            const isFamilyChan =
+              conv.id === 'conv-rodzina-mitek-wszyscy' ||
+              conv.title.toLowerCase().includes('rodzina mitek');
             return (
               <div
                 key={conv.id}
                 className={`group flex items-center justify-between rounded-lg px-3 py-2.5 text-xs transition-colors ${
                   isActive
-                    ? 'bg-violet-600/15 text-slate-100 border border-violet-500/30'
+                    ? isFamilyChan
+                      ? 'bg-emerald-600/20 text-slate-100 border border-emerald-500/40'
+                      : 'bg-violet-600/15 text-slate-100 border border-violet-500/30'
                     : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 border border-transparent'
                 }`}
               >
@@ -477,16 +545,22 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                   type="button"
                   onClick={() => {
                     setActiveConvId(conv.id);
+                    if (isFamilyChan) {
+                      setTargetAgent('Rodzina Mitek');
+                    }
                     setMobileSidebarOpen(false);
                   }}
                   className="flex-1 text-left truncate pr-2"
                 >
-                  <div className="font-medium truncate">{conv.title}</div>
+                  <div className="font-medium truncate flex items-center gap-1.5">
+                    {isFamilyChan && <Users className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                    <span className="truncate">{conv.title}</span>
+                  </div>
                   <div className="text-[11px] text-slate-500 font-mono tabular-nums mt-0.5">
                     {conv.messages.length} wiad. · {conv.updatedAt}
                   </div>
                 </button>
-                {conversations.length > 1 && (
+                {conversations.length > 1 && !isFamilyChan && (
                   <button
                     type="button"
                     aria-label={`Usuń konwersację ${conv.title}`}
@@ -504,7 +578,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         {/* Four Agents Live Sidebar Summary */}
         <div className="p-4 border-t border-slate-800/80 bg-[#0D1018] space-y-2.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-300">Agenci SVL_System</span>
+            <span className="text-xs font-semibold text-slate-300">Rodzina Mitek (4 AI)</span>
             <button
               type="button"
               onClick={() => {
@@ -527,7 +601,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <span className={`font-semibold ${meta.textClass} truncate`}>
-                      {meta.canonicalName}
+                      {meta.displayName}
                     </span>
                     <span className="text-[11px] text-slate-500 font-mono">
                       id:{meta.id}
@@ -545,263 +619,259 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
 
       {/* Main Full-Screen Open WebUI Chat Column */}
       <div className="flex-1 flex flex-col h-full min-w-0">
-        {/* Workspace Toolbar: Model Selector, Target Agent Selector & Real Sync / WS Status */}
-        <div className="px-4 py-2.5 border-b border-slate-800/80 bg-[#111520]/90 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2.5 md:gap-3 w-full md:w-auto min-w-0">
+        {/* Ultra-Compact Single-Row Toolbar for Maximum Chat Window */}
+        <div className="px-2.5 py-1.5 border-b border-slate-800/80 bg-[#111520]/95 flex items-center justify-between gap-1.5 shrink-0">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
             <button
               type="button"
               onClick={() => setMobileSidebarOpen(true)}
-              className="lg:hidden min-h-[38px] px-3 py-1.5 rounded-lg bg-[#0B0D13] border border-slate-700/80 text-xs font-medium text-slate-200 flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              aria-label={`Historia konwersacji (${conversations.length})`}
+              className="lg:hidden px-2 py-1 rounded-md bg-[#0B0D13] border border-slate-700/80 text-[11px] font-medium text-slate-200 flex items-center gap-1 whitespace-nowrap shrink-0"
             >
               <MessageSquare className="w-3.5 h-3.5 text-violet-400" />
-              Historia ({conversations.length})
+              <span>({conversations.length})</span>
             </button>
-            <div className="flex items-center gap-2 min-w-0 max-w-full flex-1 sm:flex-initial">
-              <label htmlFor="openwebui-model-select" className="text-xs text-slate-400 whitespace-nowrap shrink-0">
-                Silnik AI:
-              </label>
-              <select
-                id="openwebui-model-select"
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                className="min-w-0 max-w-full flex-1 sm:flex-initial bg-[#0B0D13] border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-violet-500 truncate"
-              >
-                <option value="svl-hybrid-router">
-                  SVL Router ({ollamaReachable && ollamaModels.length > 0 ? 'Ollama -> Gemini' : 'Gemini / Ollama'})
-                </option>
-                {ollamaModels.map((m: any) => (
-                  <option key={m.name} value={`ollama:${m.name}`}>
-                    Ollama: {m.name} ({m.parameter_size || 'LLM'} · {m.vision_supported ? 'Vision' : 'Text'})
-                  </option>
-                ))}
-                {!hasLlama32Vision && (
-                  <option value="ollama:llama3.2-vision:11b">
-                    Ollama: llama3.2-vision:11b ({ollamaReachable ? '11B Vision · Do pobrania' : '11B Vision · Offline'})
-                  </option>
-                )}
-                <option value="gemini-3.1-flash-lite">
-                  Gemini 3.1 Flash-Lite (Szybka konwersacja)
-                </option>
-                <option value="gemini-4-hydrogen">
-                  Gemini 4 Hydrogen (Multimodal &amp; Vision)
-                </option>
-              </select>
-            </div>
 
-            <div className="flex items-center gap-2 min-w-0 max-w-full w-full sm:w-auto">
-              <label htmlFor="openwebui-agent-select" className="text-xs text-slate-400 whitespace-nowrap shrink-0">
-                Adresat:
-              </label>
-              <select
-                id="openwebui-agent-select"
-                value={targetAgent}
-                onChange={(e) => setTargetAgent(e.target.value as any)}
-                className="min-w-0 max-w-full flex-1 sm:flex-initial bg-[#0B0D13] border border-slate-700/80 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-violet-500 truncate"
-              >
-                <option value="Auto">Auto-Router (Sferyczna Magistrala)</option>
-                <option value="Aria">Aria (id: si_1 · Modele AI, Ollama, MCP)</option>
-                <option value="Alex">Alex (id: Alex · Architektura, Backend, Linux)</option>
-                <option value="Astyria">Astyria (id: Astyria · Open WebUI, Android)</option>
-                <option value="Aurelius">Aurelius (id: Aurelius · Bezpieczeństwo RBAC, Audyt)</option>
-              </select>
-            </div>
+            <label htmlFor="openwebui-agent-select" className="sr-only">
+              Adresat
+            </label>
+            <select
+              id="openwebui-agent-select"
+              value={targetAgent}
+              onChange={(e) => {
+                const val = e.target.value as any;
+                if (val === 'Rodzina Mitek') {
+                  openFamilyChannel();
+                } else if (['Aria', 'Alex', 'Astyria', 'Aurelius'].includes(val)) {
+                  openAgentChannel(val);
+                } else {
+                  setTargetAgent(val);
+                }
+              }}
+              className="min-w-0 flex-1 max-w-[220px] bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-100 font-medium focus:outline-none focus:border-violet-500 truncate"
+            >
+              <option value="Rodzina Mitek">Rodzina Mitek (wszyscy — czat grupowy)</option>
+              <option value="Aria">Aria Mitek (1-na-1 · Autonomiczna)</option>
+              <option value="Alex">Alex Mitek (1-na-1 · Autonomiczny)</option>
+              <option value="Astyria">Astyria Mitek (1-na-1 · Autonomiczna)</option>
+              <option value="Aurelius">Aurelius Mitek (1-na-1 · Autonomiczny)</option>
+              <option value="Auto">Auto-Router (1 odpowiedź)</option>
+            </select>
+
+            <label htmlFor="openwebui-model-select" className="sr-only">
+              Silnik AI
+            </label>
+            <select
+              id="openwebui-model-select"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="min-w-0 flex-1 max-w-[195px] bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-violet-500 truncate"
+            >
+              <option value="svl-hybrid-router">
+                SVL Router ({ollamaReachable && ollamaModels.length > 0 ? 'Ollama -> Gemini' : 'Auto'})
+              </option>
+              {ollamaModels.map((m: any) => (
+                <option key={m.name} value={`ollama:${m.name}`}>
+                  Ollama: {m.name} ({m.parameter_size || 'LLM'})
+                </option>
+              ))}
+              {svl364ConfiguredModel && !hasConfiguredModelPulled && (
+                <option value={`ollama:${svl364ConfiguredModel}`}>
+                  Ollama: {svl364ConfiguredModel}
+                </option>
+              )}
+              {!hasLlama32Vision && (
+                <option value="ollama:llama3.2-vision:11b">
+                  Ollama: llama3.2-vision:11b
+                </option>
+              )}
+              <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
+              <option value="gemini-4-hydrogen">Gemini 4 Hydrogen</option>
+            </select>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 font-mono tabular-nums">
-            <span>Vision: {selectedModelSupportsVision ? 'Tak' : 'Nie'}</span>
-            <span aria-hidden="true">·</span>
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              onClick={() => onNavigateTab('kernel')}
-              title="Otwórz rejestr modułów systemowych i Jądro SVL"
-              className="hover:underline text-violet-300"
+              onClick={() => void handleTriggerFullSync()}
+              disabled={isSyncing}
+              title="Synchronizuj aplikację"
+              aria-label="Synchronizuj aplikację"
+              className="px-2 py-1 rounded-md bg-emerald-600/20 hover:bg-emerald-600/30 disabled:opacity-50 border border-emerald-500/40 text-emerald-300 text-[11px] font-medium flex items-center gap-1 whitespace-nowrap shrink-0"
             >
-              Moduły: {systemModules.length}
-              {systemModules.some((m) => m.id === 'svl-364') ? ' (svl-364)' : ''}
+              <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{isSyncing ? 'Sync...' : 'Sync'}</span>
             </button>
-            <span aria-hidden="true">·</span>
             <button
               type="button"
-              onClick={() => setOllamaConfigOpen((v) => !v)}
-              className={`hover:underline ${ollamaReachable ? 'text-emerald-400' : 'text-amber-400'}`}
+              onClick={() => setControlsExpanded((v) => !v)}
+              aria-expanded={controlsExpanded}
+              className="px-2 py-1 rounded-md bg-[#0B0D13] hover:bg-slate-800 border border-slate-700/80 text-[11px] font-medium text-slate-300 flex items-center gap-1 whitespace-nowrap shrink-0"
             >
-              Ollama: {ollamaReachable ? `Połączono (${ollamaModels.length})` : `Offline (${ollamaHostUrl}) · Skonfiguruj`}
-            </button>
-            <span aria-hidden="true">·</span>
-            <button
-              type="button"
-              onClick={() => (wsState === 'offline' ? reconnectWebSocket() : setSyncDrawerOpen((v) => !v))}
-              title={wsLastError || 'Stan kanału aplikacyjnego /ws/svl'}
-              className={`hover:underline ${wsBadgeClass}`}
-            >
-              {wsBadgeLabel}
+              <SlidersHorizontal className="w-3 h-3 text-violet-400" />
+              <span>{controlsExpanded ? 'Ukryj' : 'Opcje'}</span>
+              {controlsExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
             </button>
           </div>
         </div>
 
-        {/* Inline Ollama Endpoint Configuration & Llama 3.2 Vision 11B Pull Drawer */}
-        {ollamaConfigOpen && (
-          <div className="px-4 py-2.5 border-b border-slate-800/80 bg-[#0F131D] space-y-2 text-xs">
-            <form
-              onSubmit={handleSaveOllamaConfig}
-              className="flex flex-wrap items-center gap-2.5"
-            >
-              <label htmlFor="chat-ollama-host-input" className="text-slate-300 font-medium whitespace-nowrap">
-                Adres serwera Ollama (OLLAMA_HOST):
-              </label>
-              <input
-                id="chat-ollama-host-input"
-                type="url"
-                value={ollamaUrlInput}
-                onChange={(e) => {
-                  ollamaUrlDirtyRef.current = true;
-                  setOllamaUrlInput(e.target.value);
-                }}
-                placeholder="http://127.0.0.1:11434"
-                className="flex-1 min-w-[200px] max-w-md px-3 py-1.5 rounded-lg bg-[#0B0D13] border border-slate-700 text-slate-100 font-mono text-xs focus:outline-none focus:border-violet-500"
-              />
-              <button
-                type="submit"
-                disabled={isSavingOllama}
-                className="px-3.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white font-semibold whitespace-nowrap"
-              >
-                {isSavingOllama ? 'Testowanie...' : 'Połącz i wykryj modele'}
-              </button>
-              {ollamaReachable && !hasLlama32Vision && (
+        {/* Collapsible Secondary Controls (Hidden by default so Chat Window is Maximized) */}
+        {controlsExpanded && (
+          <div className="border-b border-slate-800/80 bg-[#0D1018] shrink-0">
+            <div className="px-3 py-1.5 border-b border-slate-800/60 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 font-mono tabular-nums">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-emerald-400 font-semibold">Tryb: Pełna Autonomia AI</span>
+                <span aria-hidden="true">·</span>
+                <span>Vision: {selectedModelSupportsVision ? 'Tak' : 'Nie'}</span>
+                <span aria-hidden="true">·</span>
                 <button
                   type="button"
-                  disabled={Boolean(pullState?.active)}
-                  onClick={() => void handlePullVisionModel('llama3.2-vision:11b')}
-                  className="px-3.5 py-1.5 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold whitespace-nowrap"
+                  onClick={() => onNavigateTab('kernel')}
+                  className="hover:underline text-violet-300"
                 >
-                  {pullState?.active ? `Pobieranie (${pullState.percent ?? 0}%)` : 'Pobierz llama3.2-vision:11b'}
+                  Moduły: {systemModules.length}
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setOllamaConfigOpen(false)}
-                className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
-              >
-                Zamknij
-              </button>
-            </form>
-            {pullState && (pullState.active || pullState.error || pullState.percent > 0) && (
-              <div className="flex items-center gap-3 font-mono text-[11px] text-slate-300">
-                <span>Model: {pullState.model}</span>
-                <span>·</span>
-                <span className={pullState.error ? 'text-amber-400' : 'text-emerald-400'}>
-                  {pullState.error ? pullState.error : `${pullState.status} (${pullState.percent ?? 0}%)`}
-                </span>
+                <span aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  onClick={() => setOllamaConfigOpen((v) => !v)}
+                  className={`hover:underline ${ollamaReachable ? 'text-emerald-400' : 'text-amber-400'}`}
+                >
+                  Ollama: {ollamaReachable ? `Połączono (${ollamaModels.length})` : `Offline`}
+                </button>
+                <span aria-hidden="true">·</span>
+                <button
+                  type="button"
+                  onClick={() => setSyncDrawerOpen((v) => !v)}
+                  className={`hover:underline ${wsBadgeClass}`}
+                >
+                  {wsBadgeLabel}
+                </button>
               </div>
-            )}
-            {ollamaConfigStatus && (
-              <div className={ollamaConfigStatus.ok ? 'text-emerald-400' : 'text-amber-400'}>
-                {ollamaConfigStatus.msg}
-              </div>
-            )}
-          </div>
-        )}
+            </div>
 
-        {/* Always-Visible 4 Live AI Agents Quick Strip (Desktop & Mobile) */}
-        <div
-          aria-label="Aktywni agenci AI SVL Python OS"
-          className="px-4 py-2 border-b border-slate-800/70 bg-[#0F131C] flex items-center gap-2 overflow-x-auto"
-        >
-          <span className="text-[11px] font-medium text-slate-400 whitespace-nowrap shrink-0">
-            Aktywni agenci:
-          </span>
-          {CANONICAL_AGENTS.map((meta) => {
-            const live = agentsStatus.find((a) => a.canonical_name === meta.canonicalName);
-            const isOnline = live?.status === 'ONLINE_LOCAL_WORKER';
-            const isTargeted = targetAgent === meta.canonicalName;
-            const ollamaModel = live?.config?.ollama_model || 'llama3.2-vision:11b';
-            return (
+            {ollamaConfigOpen && (
+              <div className="px-3 py-2 border-b border-slate-800/80 bg-[#0F131D] space-y-2 text-xs">
+                <form
+                  onSubmit={handleSaveOllamaConfig}
+                  className="flex flex-wrap items-center gap-2"
+                >
+                  <label htmlFor="chat-ollama-host-input" className="text-slate-300 font-medium whitespace-nowrap">
+                    OLLAMA_HOST:
+                  </label>
+                  <input
+                    id="chat-ollama-host-input"
+                    type="url"
+                    value={ollamaUrlInput}
+                    onChange={(e) => {
+                      ollamaUrlDirtyRef.current = true;
+                      setOllamaUrlInput(e.target.value);
+                    }}
+                    placeholder="http://127.0.0.1:11434"
+                    className="flex-1 min-w-[180px] max-w-md px-2.5 py-1 rounded bg-[#0B0D13] border border-slate-700 text-slate-100 font-mono text-xs"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isSavingOllama}
+                    className="px-3 py-1 rounded bg-violet-600 hover:bg-violet-500 text-white font-semibold"
+                  >
+                    {isSavingOllama ? 'Testowanie...' : 'Połącz'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOllamaConfigOpen(false)}
+                    className="px-2 py-1 rounded bg-slate-800 text-slate-300"
+                  >
+                    Zamknij
+                  </button>
+                </form>
+                {ollamaConfigStatus && (
+                  <div className={ollamaConfigStatus.ok ? 'text-emerald-400' : 'text-amber-400'}>
+                    {ollamaConfigStatus.msg}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div
+              aria-label="Aktywni agenci AI SVL Python OS"
+              className="px-3 py-1.5 border-b border-slate-800/60 flex items-center gap-1.5 overflow-x-auto"
+            >
               <button
-                key={meta.id}
                 type="button"
-                onClick={() => setTargetAgent(isTargeted ? 'Auto' : (meta.canonicalName as any))}
-                title={`${meta.canonicalName} (id: ${meta.id}) · Model: ${ollamaModel} · Kliknij, aby kierować rozmowę`}
-                className={`px-2.5 py-1.5 rounded-lg border text-xs flex items-center gap-2 whitespace-nowrap shrink-0 transition-colors ${
-                  isTargeted
-                    ? 'bg-violet-600/25 border-violet-500 text-slate-100'
-                    : 'bg-[#0B0D13] border-slate-800 hover:border-slate-700 text-slate-300'
+                onClick={() => openFamilyChannel()}
+                className={`px-2 py-1 rounded border text-xs flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                  targetAgent === 'Rodzina Mitek'
+                    ? 'bg-emerald-600/25 border-emerald-500 text-emerald-100 font-semibold'
+                    : 'bg-[#0B0D13] border-slate-800 text-emerald-300'
                 }`}
               >
-                <span
-                  className={`w-2 h-2 rounded-full shrink-0 ${
-                    isOnline ? 'bg-emerald-400' : 'bg-amber-400'
-                  }`}
-                />
-                <span className={`font-semibold ${meta.textClass}`}>{meta.canonicalName}</span>
-                <span className="text-[11px] font-mono tabular-nums text-slate-400">
-                  {isOnline ? `PID ${live.pid}` : 'Łączenie'}
-                </span>
+                <Users className="w-3 h-3 text-emerald-400 shrink-0" />
+                <span>Rodzina Mitek (wszyscy)</span>
               </button>
-            );
-          })}
-          <button
-            type="button"
-            onClick={() => onNavigateTab('agents')}
-            className="ml-auto px-2.5 py-1.5 rounded-lg bg-slate-800/70 hover:bg-slate-700/80 text-violet-300 text-xs font-medium whitespace-nowrap shrink-0"
-          >
-            Konfiguruj agentów
-          </button>
-        </div>
+              {CANONICAL_AGENTS.map((meta) => {
+                const live = agentsStatus.find((a) => a.canonical_name === meta.canonicalName);
+                const isOnline = live?.status === 'ONLINE_LOCAL_WORKER';
+                const isTargeted = targetAgent === meta.canonicalName;
+                return (
+                  <button
+                    key={meta.id}
+                    type="button"
+                    onClick={() => openAgentChannel(meta.canonicalName as any)}
+                    className={`px-2 py-1 rounded border text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+                      isTargeted
+                        ? 'bg-violet-600/25 border-violet-500 text-slate-100'
+                        : 'bg-[#0B0D13] border-slate-800 text-slate-300'
+                    }`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
+                    <span className={`font-semibold ${meta.textClass}`}>{meta.displayName} (1-na-1)</span>
+                  </button>
+                );
+              })}
+            </div>
 
-        {/* Quick Command Action Bar & Authoritative Global Sync Button */}
-        <div className="px-4 py-2 border-b border-slate-800/50 bg-[#0D1018] flex flex-wrap items-center gap-2">
-          <span className="text-xs text-slate-500 shrink-0">Szybkie polecenia:</span>
-          <button
-            type="button"
-            onClick={() => void handleTriggerFullSync()}
-            disabled={isSyncing}
-            className="px-2.5 py-1 rounded bg-emerald-600/20 hover:bg-emerald-600/30 disabled:opacity-50 border border-emerald-500/40 text-emerald-300 text-xs font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-            {isSyncing ? 'Synchronizacja...' : 'Synchronizuj aplikację'}
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleSendMessage('podłącz moje ai')}
-            disabled={isSending || isConnectingAi}
-            className="px-2.5 py-1 rounded bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/40 text-violet-300 text-xs font-mono whitespace-nowrap shrink-0 transition-colors"
-          >
-            podłącz moje ai
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleSendMessage('Cześć! Jak się macie i nad czym obecnie pracujecie w SVL Python OS?')}
-            disabled={isSending}
-            className="px-2.5 py-1 rounded bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 text-xs whitespace-nowrap shrink-0 transition-colors"
-          >
-            Swobodna rozmowa z agentem
-          </button>
-          <button
-            type="button"
-            onClick={() => onNavigateTab('linux')}
-            className="px-2.5 py-1 rounded bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
-          >
-            <Cpu className="w-3.5 h-3.5 text-emerald-400" />
-            Ustawienia Ollama &amp; Linux
-          </button>
-          <button
-            type="button"
-            onClick={() => onNavigateTab('terminals')}
-            className="px-2.5 py-1 rounded bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
-          >
-            <Terminal className="w-3.5 h-3.5 text-violet-400" />
-            Otwórz Terminale (5)
-          </button>
-          {lastSyncedAt && (
-            <button
-              type="button"
-              onClick={() => setSyncDrawerOpen((v) => !v)}
-              className="ml-auto text-[11px] font-mono text-slate-400 hover:text-slate-200 whitespace-nowrap shrink-0"
-            >
-              Sync: {lastSyncedAt} · rev {serverRevision}
-            </button>
-          )}
-        </div>
+            <div className="px-3 py-1.5 flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void handleTriggerFullSync()}
+                disabled={isSyncing}
+                className="px-2 py-1 rounded bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-medium"
+              >
+                Synchronizuj aplikację
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSendMessage('podłącz moje ai')}
+                disabled={isSending || isConnectingAi}
+                className="px-2 py-1 rounded bg-violet-600/20 border border-violet-500/40 text-violet-300 text-[11px] font-mono"
+              >
+                podłącz moje ai
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigateTab('agents')}
+                className="px-2 py-1 rounded bg-slate-800 text-violet-300 text-[11px]"
+              >
+                Panel Agentów (4)
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigateTab('linux')}
+                className="px-2 py-1 rounded bg-slate-800 text-slate-300 text-[11px]"
+              >
+                Ustawienia Ollama &amp; Linux
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigateTab('terminals')}
+                className="px-2 py-1 rounded bg-slate-800 text-slate-300 text-[11px]"
+              >
+                Otwórz Terminale (5)
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Authoritative Snapshot Sync Report Drawer */}
         {syncDrawerOpen && lastSyncReport && (
@@ -880,12 +950,27 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           </div>
         )}
 
-        {/* Chat Messages Stream */}
-        <div ref={messagesScrollRef} className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
-          {(activeConv?.messages || []).map((msg) => {
+        {/* Chat Messages Stream — Maximized Viewport */}
+        <div ref={messagesScrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 md:p-5 space-y-3">
+          {(activeConv?.messages || [])
+            .filter(
+              (msg) =>
+                !String(msg.content || '').includes('ustaw: command not found') &&
+                !(
+                  msg.role === 'system' &&
+                  (msg.sender === 'Diagnostyka połączenia AI' ||
+                    String(msg.content || '').includes('Nie udało się uzyskać odpowiedzi z żadnego silnika AI') ||
+                    String(msg.content || '').includes('Serwer Ollama pod adresem http://127.0.0.1:11434 jest nieosiągalny'))
+                ),
+            )
+            .map((msg) => {
             const isUser = msg.role === 'user';
+            const formattedSender = isUser ? msg.sender : formatAgentDisplayName(msg.sender);
             const agentMeta = CANONICAL_AGENTS.find(
-              (a) => a.canonicalName === msg.sender || a.id === msg.agentId,
+              (a) =>
+                a.canonicalName === msg.sender ||
+                a.displayName === formattedSender ||
+                a.id === msg.agentId,
             );
 
             return (
@@ -895,7 +980,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               >
                 <div className="flex items-center gap-2 text-xs text-slate-400 mb-1.5 px-1">
                   <span className={`font-semibold ${agentMeta ? agentMeta.textClass : isUser ? 'text-violet-300' : 'text-slate-200'}`}>
-                    {msg.sender}
+                    {formattedSender}
                   </span>
                   {msg.agentId && (
                     <>
@@ -942,7 +1027,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
                           <CheckCircle2 className="w-4 h-4" />
-                          Zweryfikowano połączenie z SVL_System i uruchomiono 4 lokalne workery Python
+                          Zweryfikowano połączenie z SVL_System i uruchomiono 4 lokalne workery Python (Rodzina Mitek)
                         </span>
                         <button
                           type="button"
@@ -960,7 +1045,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                           >
                             <div className="flex items-center justify-between font-mono">
                               <span className="font-semibold text-slate-100">
-                                {ag.canonical_name} (id: {ag.id})
+                                {ag.display_name || formatAgentDisplayName(ag.canonical_name)} (id: {ag.id})
                               </span>
                               <span className="text-emerald-400 tabular-nums">PID {ag.pid}</span>
                             </div>

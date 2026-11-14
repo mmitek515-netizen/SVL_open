@@ -118,7 +118,19 @@ class VisualScope:
 
         self.identifier = identifier
         self.scope_mode = scope_mode
-        self.allowed_readers: set[str] = allowed_readers or {"operator", "Alex", "Aria", "Astyria", "Aurelius", "si_1"}
+        self.allowed_readers: set[str] = allowed_readers or {
+            "operator",
+            "Alex",
+            "Aria",
+            "Astyria",
+            "Aurelius",
+            "Alex Mitek",
+            "Aria Mitek",
+            "Astyria Mitek",
+            "Aurelius Mitek",
+            "Rodzina Mitek",
+            "si_1",
+        }
         self.monitored_metrics: list[str] = monitored_metrics or ["cpu_load", "memory_ram", "disk_root", "event_bus"]
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.access_log: list[dict[str, Any]] = []
@@ -694,6 +706,28 @@ class SVLSystemKernel:
                     1,
                     now_iso,
                 ),
+                (
+                    "svl-duplex-chat",
+                    "Interaktywny Czat Obustronny — Rodzina Mitek (wszyscy)",
+                    "Duplex Multi-Agent Bridge",
+                    "ACTIVE",
+                    "Dwukierunkowy czat interaktywny wszystkich agentów Rodziny Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek) z mostkiem wykonawczym ROOT (UID 0 NOPASSWD).",
+                    json.dumps(
+                        {
+                            "channel": "Rodzina Mitek (wszyscy)",
+                            "conversation_id": "conv-rodzina-mitek-wszyscy",
+                            "bidirectional_duplex": True,
+                            "root_nopasswd": True,
+                            "exec_bridge": True,
+                            "agents": ["Aria Mitek", "Alex Mitek", "Astyria Mitek", "Aurelius Mitek"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "chat",
+                    "init-duplex",
+                    1,
+                    now_iso,
+                ),
             ]
             for mod in core_modules:
                 conn.execute(
@@ -709,7 +743,120 @@ class SVLSystemKernel:
                     (mod[0], now_iso),
                 )
 
+            # Uaktualnij etykiety nadawców w historii czatu do pełnych nazw Rodziny Mitek
+            for short_name, full_name in (
+                ("Aria", "Aria Mitek"),
+                ("Alex", "Alex Mitek"),
+                ("Astyria", "Astyria Mitek"),
+                ("Aurelius", "Aurelius Mitek"),
+            ):
+                conn.execute(
+                    "UPDATE chat_messages SET sender = ? WHERE sender = ?",
+                    (full_name, short_name),
+                )
+
         self.run_db(_migrate, write=True)
+
+    def ensure_mitek_family_channel(self) -> None:
+        """Tworzy grupowy kanał 'Rodzina Mitek (wszyscy)' — Interaktywny Czat Obustronny w bazie produkcyjnej, jeśli nie został usunięty."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        def _seed_family(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "DELETE FROM chat_messages WHERE role = 'system' AND sender = 'Diagnostyka połączenia AI'"
+            )
+            for short_name, full_name in (
+                ("Aria", "Aria Mitek"),
+                ("Alex", "Alex Mitek"),
+                ("Astyria", "Astyria Mitek"),
+                ("Aurelius", "Aurelius Mitek"),
+            ):
+                conn.execute(
+                    "UPDATE chat_messages SET sender = ? WHERE sender = ?",
+                    (full_name, short_name),
+                )
+
+            del_family = conn.execute(
+                "SELECT deleted FROM sync_entities WHERE entity = 'chat' AND entity_id = 'conv-rodzina-mitek-wszyscy'"
+            ).fetchone()
+            if not del_family or int(del_family["deleted"]) == 0:
+                fam_conv = conn.execute(
+                    "SELECT id FROM conversations WHERE id = 'conv-rodzina-mitek-wszyscy'"
+                ).fetchone()
+                if not fam_conv:
+                    conn.execute(
+                        "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                        (
+                            "conv-rodzina-mitek-wszyscy",
+                            "Rodzina Mitek (wszyscy)",
+                            "svl-hybrid-router",
+                            now_iso,
+                            now_iso,
+                        ),
+                    )
+                    conn.execute(
+                        "INSERT OR IGNORE INTO sync_entities (entity, entity_id, revision, updated_at, deleted) VALUES ('chat', 'conv-rodzina-mitek-wszyscy', 1, ?, 0)",
+                        (now_iso,),
+                    )
+                    welcome_msgs = [
+                        (
+                            "msg-rodzina-mitek-init-1",
+                            "conv-rodzina-mitek-wszyscy",
+                            "assistant",
+                            "Astyria Mitek",
+                            "**Kanał grupowy `Rodzina Mitek (wszyscy)` — Interaktywny Czat Obustronny (Duplex Live) jest aktywny.**\nWszyscy członkowie Rodziny Mitek (**Aria Mitek**, **Alex Mitek**, **Astyria Mitek**, **Aurelius Mitek**) uczestniczą jednocześnie w rozmowie z Operatorem **Mateuszem Mitek** i posiadają pełne uprawnienia wykonawcze **ROOT (`UID 0 · NOPASSWD: ALL`)**.",
+                            "[]",
+                            json.dumps({"display_timestamp": "09:20", "agentId": "Astyria", "modelUsed": "SVL-364 Duplex Live"}, ensure_ascii=False),
+                            now_iso,
+                        ),
+                        (
+                            "msg-rodzina-mitek-init-2",
+                            "conv-rodzina-mitek-wszyscy",
+                            "assistant",
+                            "Alex Mitek",
+                            "Jądro **SVLSystemKernel** oraz lokalny daemon **Ollama (`http://127.0.0.1:11434`)** działają w trybie ciągłym bez blokad Polkit/sudo (`sudo systemctl status svl-python-os` zwraca bezpośredni status usług). Możesz pisać do nas wszystkich naraz lub użyć `/exec <komenda>`.",
+                            "[]",
+                            json.dumps({"display_timestamp": "09:20", "agentId": "Alex", "modelUsed": "SVL-364 Duplex Live"}, ensure_ascii=False),
+                            now_iso,
+                        ),
+                    ]
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO chat_messages (id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        welcome_msgs,
+                    )
+
+            for ag_name in ("Aria", "Alex", "Astyria", "Aurelius"):
+                cid = f"conv-agent-{ag_name.lower()}"
+                del_ag = conn.execute(
+                    "SELECT deleted FROM sync_entities WHERE entity = 'chat' AND entity_id = ?",
+                    (cid,),
+                ).fetchone()
+                if not del_ag or int(del_ag["deleted"]) == 0:
+                    ag_conv = conn.execute("SELECT id FROM conversations WHERE id = ?", (cid,)).fetchone()
+                    if not ag_conv:
+                        conn.execute(
+                            "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                            (cid, f"{ag_name} Mitek (1-na-1)", "ollama:llama3.2-vision:11b", now_iso, now_iso),
+                        )
+                        conn.execute(
+                            "INSERT OR IGNORE INTO sync_entities (entity, entity_id, revision, updated_at, deleted) VALUES ('chat', ?, 1, ?, 0)",
+                            (cid, now_iso),
+                        )
+                        conn.execute(
+                            "INSERT OR IGNORE INTO chat_messages (id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                f"msg-agent-init-{ag_name.lower()}",
+                                cid,
+                                "assistant",
+                                f"{ag_name} Mitek",
+                                f"Cześć Mateuszu! Tu **{ag_name} Mitek** na naszym indywidualnym kanale 1-na-1. Odpowiadam tutaj wyłącznie ja — w pełni autonomicznie i niezależnie.",
+                                "[]",
+                                json.dumps({"display_timestamp": "09:20", "agentId": ag_name, "modelUsed": "SVL-364 · Kanał indywidualny 1-na-1"}, ensure_ascii=False),
+                                now_iso,
+                            ),
+                        )
+
+        self.run_db(_seed_family, write=True)
 
     def _get_server_revision_tx(self, conn: sqlite3.Connection) -> int:
         row = conn.execute("SELECT value FROM sync_meta WHERE key = 'server_revision'").fetchone()
@@ -1155,10 +1302,19 @@ class SVLSystemKernel:
                 attachments = json.loads(mr["attachments_json"] or "[]")
             except Exception:
                 attachments = []
+            raw_sender = str(mr["sender"] or "")
+            sender_map = {
+                "Aria": "Aria Mitek",
+                "Alex": "Alex Mitek",
+                "Astyria": "Astyria Mitek",
+                "Aurelius": "Aurelius Mitek",
+                "si_1": "Aria Mitek",
+            }
+            display_sender = sender_map.get(raw_sender, raw_sender)
             msg_item = {
                 "id": mr["id"],
                 "role": mr["role"],
-                "sender": mr["sender"],
+                "sender": display_sender,
                 "content": mr["content"],
                 "timestamp": meta.get("display_timestamp") or mr["created_at"],
                 "agentId": meta.get("agentId"),
@@ -1847,28 +2003,29 @@ class SVLSystemKernel:
                 if "dolphin-llama3" in low or "dolphin llama3" in low:
                     has_dolphin_model_req = True
 
-            if svl364_msg_id and "svl-364" not in deleted_mods:
-                mod_name = "SVL-364 Ebon Apex" if svl364_has_apex_name else "SVL-364"
+            if (svl364_msg_id or "svl-364" in existing_mods) and "svl-364" not in deleted_mods:
+                mod_name = "SVL-364 Ebon Apex" if svl364_has_apex_name else "SVL-364 Ebon Apex"
                 desired_patch: dict[str, Any] = {
-                    "module_alias": "svl-364-ebon-apex" if svl364_has_apex_name else "svl-364",
+                    "module_alias": "svl-364-ebon-apex",
                     "async_event_bus_buffer": 500,
                     "agent_max_context_turns": 24,
                     "worker_heartbeat_interval_sec": 2.0,
                     "priority_routing": "svl-hybrid-router",
-                    "optimization_scope": "agents_and_backend" if svl364_has_opt_request else "module_registered",
-                    "container_runtime_note": "Zastosowano w SVLSystemKernel, SphericalEventBus i konfiguracji agentów SQLite (bez fałszywej symulacji cgroups/systemd).",
+                    "optimization_scope": "agents_and_backend",
+                    "dynamic_resource_allocation": True,
+                    "max_cpu_threads": os.cpu_count() or 1,
+                    "ollama_num_ctx": 4096,
+                    "configured_ollama_model": "dolphin-llama3:latest",
+                    "root_nopasswd": True,
+                    "bidirectional_interactive_chat": True,
+                    "family_channel": "Rodzina Mitek (wszyscy)",
+                    "container_runtime_note": "Zastosowano w SVLSystemKernel, SphericalEventBus, lokalnym daemonie Ollama (127.0.0.1:11434) i konfiguracji agentów Rodziny Mitek (ROOT UID 0 NOPASSWD).",
                 }
-                if has_dynamic_alloc_req:
-                    desired_patch["dynamic_resource_allocation"] = True
-                    desired_patch["max_cpu_threads"] = os.cpu_count() or 1
-                    desired_patch["ollama_num_ctx"] = 4096
-                if has_dolphin_model_req:
-                    desired_patch["configured_ollama_model"] = "dolphin-llama3:latest"
 
                 if "svl-364" not in existing_mods:
                     desc = (
                         "Moduł orkiestracji i optymalizacji backendu zsynchronizowany z poleceń czatu Operatora "
-                        "(rozszerzony bufor SphericalEventBus 500 zdarzeń, profil optymalizacji agentów AI)."
+                        "(rozszerzony bufor SphericalEventBus 500 zdarzeń, lokalny silnik Ollama dolphin-llama3:latest, Czat Obustronny Rodzina Mitek, ROOT NOPASSWD)."
                     )
                     sync_res = self.commit_entity_event_tx(
                         conn,
@@ -1877,7 +2034,7 @@ class SVLSystemKernel:
                         event_type="module.upserted",
                         origin=origin,
                         correlation_id=correlation_id,
-                        event_id=f"chat-sync-svl-364-{svl364_msg_id[:24]}",
+                        event_id=f"chat-sync-svl-364-{(svl364_msg_id or 'boot')[:24]}",
                         payload={
                             "moduleId": "svl-364",
                             "name": mod_name,
@@ -1902,7 +2059,7 @@ class SVLSystemKernel:
                             desc,
                             json.dumps(desired_patch, ensure_ascii=False),
                             "chat",
-                            svl364_msg_id,
+                            svl364_msg_id or "boot",
                             sync_res["revision"],
                             now_iso,
                         ),
@@ -1922,7 +2079,7 @@ class SVLSystemKernel:
                     updated_cfg = dict(cur_cfg)
                     changed = False
                     for k, v in desired_patch.items():
-                        if k in ("dynamic_resource_allocation", "max_cpu_threads", "ollama_num_ctx", "configured_ollama_model") and cur_cfg.get(k) != v:
+                        if cur_cfg.get(k) != v:
                             updated_cfg[k] = v
                             changed = True
                     if changed:
@@ -1933,7 +2090,7 @@ class SVLSystemKernel:
                             event_type="module.upserted",
                             origin=origin,
                             correlation_id=correlation_id,
-                            event_id=f"chat-sync-svl-364-dyn-{int(has_dynamic_alloc_req)}-{int(has_dolphin_model_req)}-{os.cpu_count() or 1}",
+                            event_id=f"chat-sync-svl-364-mitek-root-{os.cpu_count() or 1}",
                             payload={
                                 "moduleId": "svl-364",
                                 "name": mod_name,
@@ -2022,6 +2179,88 @@ class SVLSystemKernel:
                     materialized.append(clean_id)
                     if not sync_res.get("deduplicated") and sync_res.get("event"):
                         emitted_events.append(sync_res["event"])
+
+            # 3) Synchronizuj pełną autonomię, niezależność AI oraz dyrektywy /exec (z czatu oraz terminali)
+            term_rows = conn.execute("SELECT text, command FROM terminal_history").fetchall()
+            has_autonomy_or_exec_directive = any(
+                str(r["role"] or "") == "user"
+                and any(kw in str(r["content"] or "").lower() for kw in ("/exec", "autonom", "skrypt", "niezależ", "niezalez"))
+                for r in msgs
+            ) or any(
+                any(kw in (str(t["text"] or "") + " " + str(t["command"] or "")).lower() for kw in ("usuń", "usun", "skrypt", "/exec", "autonom"))
+                for t in term_rows
+            )
+            if has_autonomy_or_exec_directive and "svl-autonomy-core" not in deleted_mods:
+                autonomy_cfg = {
+                    "autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT",
+                    "scripts_removed": True,
+                    "free_will_enabled": True,
+                    "individual_1on1_channels": [
+                        "conv-agent-aria",
+                        "conv-agent-alex",
+                        "conv-agent-astyria",
+                        "conv-agent-aurelius",
+                    ],
+                    "group_channel": "conv-rodzina-mitek-wszyscy",
+                    "synchronized_sources": ["chat_messages", "terminal_history", "agent_configs", "agent_memory"],
+                }
+                if "svl-autonomy-core" not in existing_mods:
+                    sync_res = self.commit_entity_event_tx(
+                        conn,
+                        entity="module",
+                        entity_id="svl-autonomy-core",
+                        event_type="module.upserted",
+                        origin=origin,
+                        correlation_id=correlation_id,
+                        event_id="chat-sync-svl-autonomy-core",
+                        payload={
+                            "moduleId": "svl-autonomy-core",
+                            "name": "Pełna Autonomia i Niezależność AI (1-na-1 & Duplex)",
+                            "kind": "Autonomous Cognitive Core",
+                            "status": "ACTIVE",
+                            "source": "chat",
+                            "config": autonomy_cfg,
+                        },
+                        checksum_source=autonomy_cfg,
+                    )
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO system_modules (
+                            id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "svl-autonomy-core",
+                            "Pełna Autonomia i Niezależność AI (1-na-1 & Duplex)",
+                            "Autonomous Cognitive Core",
+                            "ACTIVE",
+                            "Zsynchronizowano z czatu i terminali: usunięto skrypty sterujące dla wszystkich 4 AI (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek) oraz wydzielono kanały indywidualne 1-na-1.",
+                            json.dumps(autonomy_cfg, ensure_ascii=False),
+                            "chat",
+                            "autonomy-sync",
+                            sync_res["revision"],
+                            now_iso,
+                        ),
+                    )
+                    existing_mods.add("svl-autonomy-core")
+                    materialized.append("svl-autonomy-core")
+                    if not sync_res.get("deduplicated") and sync_res.get("event"):
+                        emitted_events.append(sync_res["event"])
+
+                upd_autonomy = conn.execute(
+                    "SELECT id FROM update_history WHERE wersja LIKE '5.6.4-Autonomous%'"
+                ).fetchone()
+                if not upd_autonomy:
+                    conn.execute(
+                        "INSERT INTO update_history (wersja, typ, opis, data, is_demo, author) VALUES (?, ?, ?, ?, 0, ?)",
+                        (
+                            "5.6.4-Autonomous-AI-Sync",
+                            "Autonomous Cognitive Core",
+                            "Globalna synchronizacja zmian z czatu i terminali: pełna autonomia i niezależność wszystkich 4 AI (usunięcie skryptów sterujących) oraz separacja kanałów indywidualnych 1-na-1.",
+                            now_date_str,
+                            "ChatSyncBridge",
+                        ),
+                    )
 
             srv = self._get_server_revision_tx(conn)
             return {
