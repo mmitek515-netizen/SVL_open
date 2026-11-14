@@ -92,6 +92,7 @@ class SphericalEventBus:
         self.shared_state_registry: dict[str, dict[str, Any]] = {}
         self.circuit_breakers: dict[str, CircuitBreakerState] = {}
         self.event_history: list[dict[str, Any]] = []
+        self.max_history_size: int = 250
         self.telemetry_counters: dict[str, int] = {
             "published_events": 0,
             "delivered_events": 0,
@@ -99,6 +100,13 @@ class SphericalEventBus:
             "timed_out_tasks": 0,
             "circuit_breaker_trips": 0,
         }
+
+    def configure_runtime_limits(self, max_history_size: int = 250) -> int:
+        clamped = max(100, min(2000, int(max_history_size)))
+        self.max_history_size = clamped
+        if len(self.event_history) > self.max_history_size:
+            self.event_history = self.event_history[-self.max_history_size:]
+        return self.max_history_size
 
     def register_worker(self, worker_id: str, scope: VisualScope, initial_state: dict[str, Any]) -> asyncio.Queue[SphericalEvent]:
         queue: asyncio.Queue[SphericalEvent] = asyncio.Queue(maxsize=250)
@@ -139,8 +147,8 @@ class SphericalEventBus:
         self.telemetry_counters["published_events"] += 1
         event_dict = event.to_dict()
         self.event_history.append(event_dict)
-        if len(self.event_history) > 250:
-            self.event_history = self.event_history[-250:]
+        if len(self.event_history) > self.max_history_size:
+            self.event_history = self.event_history[-self.max_history_size:]
 
         # Spherical distribution to all authorized workers without polling
         for worker_id, queue in list(self.subscribers.items()):
@@ -213,6 +221,7 @@ class SphericalEventBus:
     def get_spherical_observability_snapshot(self) -> dict[str, Any]:
         return {
             "architecture": "Spherical-Polymorphic-Async-Bus",
+            "max_history_size": self.max_history_size,
             "telemetry": self.telemetry_counters,
             "workers_state": self.shared_state_registry,
             "circuit_breakers": {k: v.to_dict() for k, v in self.circuit_breakers.items()},

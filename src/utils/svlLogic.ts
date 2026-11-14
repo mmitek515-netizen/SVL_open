@@ -207,6 +207,42 @@ export function selectOllamaModelName(
   return preferredFallback;
 }
 
+export type TerminalTabId = 'linux' | 'python' | 'codex' | 'hyperspace' | 'agents';
+
+export interface TerminalLogLine {
+  id: string;
+  tab?: TerminalTabId;
+  timestamp: string;
+  kind: 'input' | 'stdout' | 'stderr' | 'system';
+  text: string;
+  command?: string;
+  revision?: number;
+  createdAt?: string;
+}
+
+export interface ChatAppliedAction {
+  tool: string;
+  entity: string;
+  entityId: string;
+  revision?: number;
+  serverRevision?: number;
+  summary: string;
+  ok: boolean;
+}
+
+export interface SystemModule {
+  id: string;
+  name: string;
+  kind: string;
+  status: 'ACTIVE' | 'CONFIGURED' | 'STANDBY' | 'ARCHIVED';
+  description: string;
+  config: Record<string, any>;
+  source: string;
+  sourceMessageId?: string;
+  revision: number;
+  updatedAt: string;
+}
+
 export interface SyncableMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -218,14 +254,68 @@ export interface SyncableMessage {
   imagePreview?: string;
   fileName?: string;
   connectionReport?: any;
+  appliedActions?: ChatAppliedAction[];
 }
 
 export interface SyncableConversation {
   id: string;
   title: string;
   updatedAt: string;
+  revision?: number;
   messages: SyncableMessage[];
 }
+
+export interface SvlSyncEvent<TPayload = Record<string, any>> {
+  type: string;
+  eventId: string;
+  entity: string;
+  entityId: string;
+  revision: number;
+  serverRevision: number;
+  timestamp: string;
+  origin: string;
+  correlationId?: string;
+  payload: TPayload;
+}
+
+export interface SvlSyncModuleStatus {
+  status: 'ok' | 'degraded' | 'error';
+  required: boolean;
+  durationMs: number;
+  error: string | null;
+}
+
+export interface WorkspaceUiState {
+  active_conversation_id?: string | null;
+  selected_target_agent?: 'Auto' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
+  selected_agent_panel_id?: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius';
+  revisions?: Record<string, number>;
+}
+
+export interface SvlSystemSnapshot {
+  ok: boolean;
+  syncId: string;
+  schemaVersion: string;
+  serverRevision: number;
+  timestamp: string;
+  synchronized_at?: string;
+  correlationId?: string;
+  warnings: string[];
+  modules: Record<string, SvlSyncModuleStatus>;
+  systemModules?: SystemModule[];
+  entityRevisions?: Record<string, number>;
+  deletedEntities?: string[];
+  health?: any;
+  kernel?: any;
+  agentsData?: any;
+  conversations?: SyncableConversation[];
+  terminalLogs?: Record<TerminalTabId, TerminalLogLine[]>;
+  workspaceState?: WorkspaceUiState;
+  recentEvents?: SvlSyncEvent[];
+  error?: string;
+}
+
+export type WsConnectionState = 'connecting' | 'online' | 'reconnecting' | 'offline';
 
 export function mergeConversationThreads(
   remoteThreads: SyncableConversation[],
@@ -240,6 +330,17 @@ export function mergeConversationThreads(
     }
   }
 
+  const dedupeMessages = (msgs: SyncableMessage[]): SyncableMessage[] => {
+    const seen = new Set<string>();
+    const out: SyncableMessage[] = [];
+    for (const m of msgs) {
+      if (!m || !m.id || seen.has(m.id)) continue;
+      seen.add(m.id);
+      out.push(m);
+    }
+    return out;
+  };
+
   const merged: SyncableConversation[] = [];
   const seenIds = new Set<string>();
 
@@ -247,29 +348,307 @@ export function mergeConversationThreads(
     if (deletedConversationIds.has(rt.id)) continue;
     seenIds.add(rt.id);
     const lt = localById.get(rt.id);
+    const cleanRemoteMsgs = dedupeMessages(rt.messages || []);
     if (!lt) {
-      merged.push(rt);
+      merged.push({ ...rt, messages: cleanRemoteMsgs });
       continue;
     }
 
-    const remoteMsgIds = new Set(rt.messages.map((m) => m.id));
-    const pendingExtras = lt.messages.filter(
-      (m) => !remoteMsgIds.has(m.id) && pendingMessageIds.has(m.id),
+    const remoteMsgIds = new Set(cleanRemoteMsgs.map((m) => m.id));
+    const pendingExtras = (lt.messages || []).filter(
+      (m) => m && m.id && !remoteMsgIds.has(m.id) && pendingMessageIds.has(m.id),
     );
+    const highestRev = Math.max(Number(rt.revision || 0), Number(lt.revision || 0));
     merged.push({
       ...rt,
+      revision: highestRev > 0 ? highestRev : rt.revision,
       title: lt.title && lt.title !== 'Nowa sesja' && pendingExtras.length > 0 ? lt.title : rt.title,
-      messages: [...rt.messages, ...pendingExtras],
+      messages: dedupeMessages([...cleanRemoteMsgs, ...pendingExtras]),
     });
   }
 
   for (const lt of localThreads) {
     if (seenIds.has(lt.id) || deletedConversationIds.has(lt.id)) continue;
-    const hasPending = lt.messages.some((m) => pendingMessageIds.has(m.id));
+    const hasPending = (lt.messages || []).some((m) => pendingMessageIds.has(m.id));
     if (hasPending) {
-      merged.unshift(lt);
+      merged.unshift({ ...lt, messages: dedupeMessages(lt.messages || []) });
     }
   }
 
   return merged;
 }
+
+export interface SafeJsonResult<T = any> {
+  ok: boolean;
+  status: number;
+  data: T | null;
+  error: string | null;
+  correlationId?: string;
+  offline?: boolean;
+  conflict?: boolean;
+  aborted?: boolean;
+  proxyHtml?: boolean;
+}
+
+export async function safeParseJsonResponse<T = any>(
+  resp: Pick<Response, 'ok' | 'status' | 'text' | 'headers'>,
+): Promise<SafeJsonResult<T>> {
+  const correlationId = resp.headers?.get?.('x-request-id') || undefined;
+  let raw = '';
+  try {
+    raw = await resp.text();
+  } catch (err: any) {
+    return {
+      ok: false,
+      status: resp.status,
+      data: null,
+      correlationId,
+      error: `Błąd odczytu odpowiedzi serwera (HTTP ${resp.status}): ${err?.message || String(err)}`,
+    };
+  }
+
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      data: null,
+      correlationId,
+      error: resp.ok ? null : `Serwer zwrócił pustą odpowiedź (HTTP ${resp.status}).`,
+    };
+  }
+
+  if (
+    trimmed.startsWith('<!doctype') ||
+    trimmed.startsWith('<!DOCTYPE') ||
+    trimmed.startsWith('<html') ||
+    trimmed.startsWith('<')
+  ) {
+    return {
+      ok: false,
+      status: resp.status,
+      data: null,
+      correlationId,
+      proxyHtml: true,
+      offline: resp.status === 200 || resp.status === 502 || resp.status === 503 || resp.status === 504,
+      error:
+        `Backend API zwrócił stronę HTML zamiast danych JSON (HTTP ${resp.status}). ` +
+        `Sprawdź, czy serwer Express/Python działa pod tym adresem lub odczekaj kilka sekund po restarcie i spróbuj ponownie.`,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as T;
+    const parsedErr =
+      typeof (parsed as any)?.error === 'string' && (parsed as any).error
+        ? (parsed as any).error
+        : null;
+    const upstreamStatus = Number((parsed as any)?.upstreamStatus || 0);
+    const isOffline =
+      Boolean((parsed as any)?.offline) ||
+      resp.status === 503 ||
+      resp.status === 502 ||
+      resp.status === 504 ||
+      resp.status === 424 ||
+      upstreamStatus === 503 ||
+      upstreamStatus === 502 ||
+      upstreamStatus === 504;
+    const isConflict = resp.status === 409 || Boolean((parsed as any)?.conflict);
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      data: parsed,
+      correlationId,
+      offline: isOffline && !resp.ok,
+      conflict: isConflict,
+      error: resp.ok ? null : parsedErr || `Błąd serwera HTTP ${resp.status}`,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      status: resp.status,
+      data: null,
+      correlationId,
+      error: `Niepoprawny format odpowiedzi JSON (HTTP ${resp.status}): ${err?.message || String(err)}`,
+    };
+  }
+}
+
+export interface SafeFetchJsonOptions extends Omit<RequestInit, 'signal'> {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  correlationId?: string;
+  maxRetries?: number;
+}
+
+export async function safeFetchJson<T = any>(
+  url: string,
+  options: SafeFetchJsonOptions = {},
+): Promise<SafeJsonResult<T>> {
+  const {
+    timeoutMs = 20000,
+    signal: externalSignal,
+    correlationId: providedCorrId,
+    maxRetries,
+    headers: initHeaders,
+    ...restInit
+  } = options;
+
+  const method = String(restInit.method || 'GET').toUpperCase();
+  const correlationId = providedCorrId || createUniqueId('req');
+  // Only safe idempotent GETs automatically retry on transient transport/503 errors
+  const allowedAttempts = 1 + (maxRetries !== undefined ? maxRetries : method === 'GET' ? 1 : 0);
+
+  for (let attempt = 0; attempt < allowedAttempts; attempt++) {
+    if (externalSignal?.aborted) {
+      return {
+        ok: false,
+        status: 0,
+        data: null,
+        correlationId,
+        aborted: true,
+        error: 'Żądanie anulowane.',
+      };
+    }
+
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+
+    const onExternalAbort = () => controller.abort();
+    externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+
+    try {
+      const mergedHeaders = new Headers(initHeaders || {});
+      if (!mergedHeaders.has('Accept')) mergedHeaders.set('Accept', 'application/json');
+      if (!mergedHeaders.has('X-Request-Id')) mergedHeaders.set('X-Request-Id', correlationId);
+      if (restInit.body && !mergedHeaders.has('Content-Type')) {
+        mergedHeaders.set('Content-Type', 'application/json');
+      }
+
+      const resp = await fetch(url, {
+        ...restInit,
+        method,
+        headers: mergedHeaders,
+        signal: controller.signal,
+      });
+
+      const parsed = await safeParseJsonResponse<T>(resp);
+      parsed.correlationId = parsed.correlationId || correlationId;
+
+      const isTransientStatus =
+        resp.status === 502 || resp.status === 503 || resp.status === 504 || parsed.proxyHtml;
+      const canRetryHtmlWarmup = Boolean(parsed.proxyHtml && attempt === 0 && maxRetries === undefined);
+      if (!parsed.ok && isTransientStatus && ((method === 'GET' && attempt < allowedAttempts - 1) || canRetryHtmlWarmup)) {
+        const delay = Math.round(450 * Math.pow(2, attempt) + Math.random() * 150);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+
+      return parsed;
+    } catch (err: any) {
+      if (externalSignal?.aborted && !timedOut) {
+        return {
+          ok: false,
+          status: 0,
+          data: null,
+          correlationId,
+          aborted: true,
+          error: 'Żądanie zostało anulowane.',
+        };
+      }
+
+      const isLast = attempt >= allowedAttempts - 1;
+      if (!isLast && method === 'GET') {
+        const delay = Math.round(250 * Math.pow(2, attempt) + Math.random() * 150);
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+
+      return {
+        ok: false,
+        status: 0,
+        data: null,
+        correlationId,
+        offline: !timedOut,
+        error: timedOut
+          ? `Przekroczono limit czasu (${Math.round(timeoutMs / 1000)}s) połączenia z ${url}.`
+          : `Brak połączenia z backendem (${err?.message || 'offline'}).`,
+      };
+    } finally {
+      clearTimeout(timer);
+      externalSignal?.removeEventListener('abort', onExternalAbort);
+    }
+  }
+
+  return {
+    ok: false,
+    status: 0,
+    data: null,
+    correlationId,
+    offline: true,
+    error: 'Błąd transportu sieciowego.',
+  };
+}
+
+export function createUniqueId(prefix = 'id'): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export function extractExplicitChatModuleDirective(text: string): {
+  id: string;
+  name: string;
+  kind: string;
+  description: string;
+  config: Record<string, any>;
+} | null {
+  const clean = (text || '').trim();
+  if (!clean) return null;
+  const low = clean.toLowerCase();
+
+  if (/\bsvl[-_\s]?364\b/i.test(clean)) {
+    const hasApex = low.includes('ebon') || low.includes('apex');
+    return {
+      id: 'svl-364',
+      name: hasApex ? 'SVL-364 Ebon Apex' : 'SVL-364',
+      kind: 'Orchestration & Kernel Module',
+      description: 'Moduł orkiestracji i optymalizacji backendu zadeklarowany z poziomu czatu Operatora.',
+      config: {
+        module_alias: hasApex ? 'svl-364-ebon-apex' : 'svl-364',
+        async_event_bus_buffer: 500,
+        agent_max_context_turns: 24,
+        worker_heartbeat_interval_sec: 2.0,
+      },
+    };
+  }
+
+  const m = clean.match(
+    /(?:dodaj|dodano|utwórz|utworz|zarejestruj|aktywuj|zainstaluj)\s+modu[łl]\s+([a-zA-Z0-9][a-zA-Z0-9._-]{1,40})/i,
+  );
+  if (m && m[1]) {
+    const modId = m[1]
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48);
+    if (modId.length >= 2) {
+      return {
+        id: modId,
+        name: modId.toUpperCase(),
+        kind: 'Chat Module',
+        description: `Moduł zarejestrowany bezpośrednio z czatu Operatora: ${clean.slice(0, 140)}`,
+        config: {
+          registered_from: 'chat_directive',
+        },
+      };
+    }
+  }
+
+  return null;
+}
+
+

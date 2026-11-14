@@ -10,19 +10,78 @@ Refactored from user-supplied SVLSystemKernel code:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
 import math
 import os
 import platform
+import re
 import secrets
 import shutil
 import sqlite3
+import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
+
+_T = TypeVar("_T")
+
+SYNC_SCHEMA_VERSION = "2026.11.sync.v1"
+
+SENSITIVE_KEY_MARKERS = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "api_key",
+    "apikey",
+    "authorization",
+    "private_key",
+)
+
+
+def sanitize_sync_value(value: Any, extra_secrets: Optional[list[str]] = None) -> Any:
+    """Usuwa potencjalne sekrety i zbyt duże dane binarne z payloadów zdarzeń i logów."""
+    if isinstance(value, dict):
+        sanitized: dict[str, Any] = {}
+        for k, v in value.items():
+            key_lower = str(k).lower()
+            if any(marker in key_lower for marker in SENSITIVE_KEY_MARKERS):
+                sanitized[k] = "[REDACTED]"
+            elif key_lower in ("imagepreview", "image_base64", "imagebase64") and isinstance(v, str) and len(v) > 128:
+                sanitized[k] = "[IMAGE_ATTACHMENT_OMITTED]"
+            else:
+                sanitized[k] = sanitize_sync_value(v, extra_secrets)
+        return sanitized
+    if isinstance(value, list):
+        return [sanitize_sync_value(item, extra_secrets) for item in value]
+    if isinstance(value, str):
+        out = value
+        if extra_secrets:
+            for sec in extra_secrets:
+                if sec and len(sec) >= 8 and sec in out:
+                    out = out.replace(sec, "[REDACTED]")
+        if len(out) > 4000:
+            return out[:4000] + "…"
+        return out
+    return value
+
+
+class RevisionConflictError(Exception):
+    """Rzucany przy wykryciu przestarzałego expected_revision podczas zapisu warunkowego."""
+
+    def __init__(self, entity: str, entity_id: str, current_revision: int, expected_revision: int) -> None:
+        self.entity = entity
+        self.entity_id = entity_id
+        self.current_revision = current_revision
+        self.expected_revision = expected_revision
+        super().__init__(
+            f"Konflikt rewizji dla {entity}:{entity_id} (oczekiwano {expected_revision}, aktualna na serwerze {current_revision})."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +442,7 @@ class SVLSystemKernel:
             "calibration_reference_code": 364,
         }
 
+        self._db_lock = threading.RLock()
         self.service_registry: dict[str, dict[str, Any]] = {}
         self.agent_registry: dict[str, dict[str, Any]] = {}
         self._init_database()
@@ -398,12 +458,43 @@ class SVLSystemKernel:
         return hmac.compare_digest(candidate.strip().encode("utf-8"), self._operator_token.encode("utf-8"))
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
+        conn = sqlite3.connect(str(self.db_path), timeout=15.0, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=15000;")
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA foreign_keys=ON;")
         return conn
 
+    def run_db(self, fn: Callable[[sqlite3.Connection], _T], write: bool = True) -> _T:
+        """
+        Wykonuje operację SQLite w bezpiecznej transakcji z blokadą wątku
+        oraz ograniczonym retry wyłącznie przy przejściowym SQLITE_BUSY / database is locked.
+        """
+        max_attempts = 6
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_attempts):
+            with self._db_lock:
+                try:
+                    with contextlib.closing(self._connect()) as conn:
+                        if write:
+                            conn.execute("BEGIN IMMEDIATE")
+                        result = fn(conn)
+                        if write:
+                            conn.commit()
+                        return result
+                except sqlite3.OperationalError as exc:
+                    msg = str(exc).lower()
+                    if ("locked" in msg or "busy" in msg) and attempt < max_attempts - 1:
+                        last_exc = exc
+                    else:
+                        raise
+            time.sleep(min(0.4, 0.04 * (2 ** attempt)))
+        assert last_exc is not None
+        raise last_exc
+
     def _init_database(self) -> None:
-        with self._connect() as conn:
+        def _migrate(conn: sqlite3.Connection) -> None:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS update_history (
@@ -463,12 +554,396 @@ class SVLSystemKernel:
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS runtime_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_entities (
+                    entity TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    checksum TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (entity, entity_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_outbox (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
+                    type TEXT NOT NULL,
+                    entity TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    server_revision INTEGER NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    correlation_id TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL,
+                    ws_dispatched INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_inbox (
+                    event_id TEXT PRIMARY KEY,
+                    entity TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    result_revision INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS terminal_history (
+                    id TEXT PRIMARY KEY,
+                    tab TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    command TEXT NOT NULL DEFAULT '',
+                    timestamp TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS workspace_ui_state (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS system_modules (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'ACTIVE',
+                    description TEXT NOT NULL DEFAULT '',
+                    config_json TEXT NOT NULL DEFAULT '{}',
+                    source TEXT NOT NULL DEFAULT 'kernel',
+                    source_message_id TEXT NOT NULL DEFAULT '',
+                    revision INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_chat_messages_conv ON chat_messages (conversation_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_agent_memory_scope ON agent_memory (scope, created_at);
+                CREATE INDEX IF NOT EXISTS idx_sync_outbox_srvrev ON sync_outbox (server_revision);
+                CREATE INDEX IF NOT EXISTS idx_sync_outbox_ws ON sync_outbox (ws_dispatched, seq);
+                CREATE INDEX IF NOT EXISTS idx_terminal_history_tab ON terminal_history (tab, created_at);
+                CREATE INDEX IF NOT EXISTS idx_audit_log_ts ON audit_log (id DESC);
+                CREATE INDEX IF NOT EXISTS idx_system_modules_status ON system_modules (status, updated_at DESC);
                 """
             )
-            conn.commit()
+            conn.execute(
+                "INSERT OR IGNORE INTO sync_meta (key, value) VALUES ('server_revision', '1')"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('schema_version', ?)",
+                (SYNC_SCHEMA_VERSION,),
+            )
+
+            # Bezpieczne zainicjowanie rewizji dla istniejących rekordów bez utraty danych
+            now_iso = datetime.now(timezone.utc).isoformat()
+            existing_convs = conn.execute("SELECT id, updated_at FROM conversations").fetchall()
+            for row in existing_convs:
+                conn.execute(
+                    "INSERT OR IGNORE INTO sync_entities (entity, entity_id, revision, updated_at, deleted) VALUES ('chat', ?, 1, ?, 0)",
+                    (row["id"], row["updated_at"] or now_iso),
+                )
+
+            # Rdzeniowe moduły systemowe (idempotentnie, bez nadpisywania zmian operatora/czatu)
+            core_modules = [
+                (
+                    "svl-kernel-core",
+                    "SVLSystemKernel v5.6",
+                    "Core Runtime",
+                    "ACTIVE",
+                    "Jądro systemowe Python 3 z trwałą bazą SQLite WAL, szyfrowaną weryfikacją HMAC i topologią [-1, 1].",
+                    json.dumps({"sqlite_wal": True, "auth": "HMAC-SHA256"}, ensure_ascii=False),
+                    "kernel",
+                    "",
+                    1,
+                    now_iso,
+                ),
+                (
+                    "spherical-event-bus",
+                    "SphericalEventBus Async Pub/Sub",
+                    "IPC & Telemetry",
+                    "ACTIVE",
+                    "Asynchroniczna magistrala zdarzeń agentów z obsługą VisualScope, retry i Circuit Breaker.",
+                    json.dumps({"async_event_bus_buffer": 250, "circuit_breaker": True}, ensure_ascii=False),
+                    "kernel",
+                    "",
+                    1,
+                    now_iso,
+                ),
+                (
+                    "binary-hyperspace-engine",
+                    "BinaryHyperspaceKernel (128D)",
+                    "Mathematics & Routing",
+                    "ACTIVE",
+                    "Silnik bez-NLP: ortogonalna projekcja 128D i analiza harmoniczna WithoutNlpHarmonicEngine.",
+                    json.dumps({"dimensions": 128, "without_nlp": True}, ensure_ascii=False),
+                    "kernel",
+                    "",
+                    1,
+                    now_iso,
+                ),
+            ]
+            for mod in core_modules:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO system_modules (
+                        id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    mod,
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO sync_entities (entity, entity_id, revision, updated_at, deleted) VALUES ('module', ?, 1, ?, 0)",
+                    (mod[0], now_iso),
+                )
+
+        self.run_db(_migrate, write=True)
+
+    def _get_server_revision_tx(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute("SELECT value FROM sync_meta WHERE key = 'server_revision'").fetchone()
+        if not row:
+            conn.execute("INSERT OR IGNORE INTO sync_meta (key, value) VALUES ('server_revision', '1')")
+            return 1
+        try:
+            return int(row["value"])
+        except (TypeError, ValueError):
+            return 1
+
+    def commit_entity_event_tx(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        entity: str,
+        entity_id: str,
+        event_type: str,
+        origin: str = "python-kernel",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+        deleted: bool = False,
+        payload: Optional[dict[str, Any]] = None,
+        checksum_source: Optional[Any] = None,
+    ) -> dict[str, Any]:
+        """
+        Wykonuje atomową aktualizację rewizji encji i zapisuje zdarzenie do sync_outbox
+        wewnątrz tej samej transakcji SQLite (z deduplikacją sync_inbox po event_id).
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        clean_origin = (origin or "python-kernel")[:120]
+        clean_corr = (correlation_id or "")[:120]
+        clean_eid = (event_id or "").strip()[:128] or f"evt-{uuid.uuid4().hex}"
+
+        # Idempotencja po eventId
+        inbox_row = conn.execute(
+            "SELECT result_revision FROM sync_inbox WHERE event_id = ?",
+            (clean_eid,),
+        ).fetchone()
+        ent_row = conn.execute(
+            "SELECT revision, deleted FROM sync_entities WHERE entity = ? AND entity_id = ?",
+            (entity, entity_id),
+        ).fetchone()
+        current_rev = int(ent_row["revision"]) if ent_row else 0
+        current_srv = self._get_server_revision_tx(conn)
+
+        if inbox_row:
+            return {
+                "deduplicated": True,
+                "event": {
+                    "type": event_type,
+                    "eventId": clean_eid,
+                    "entity": entity,
+                    "entityId": entity_id,
+                    "revision": int(inbox_row["result_revision"]),
+                    "serverRevision": current_srv,
+                    "timestamp": now_iso,
+                    "origin": clean_origin,
+                    "correlationId": clean_corr,
+                    "payload": sanitize_sync_value(payload or {}, [self._operator_token]),
+                },
+                "revision": int(inbox_row["result_revision"]),
+                "serverRevision": current_srv,
+            }
+
+        if expected_revision is not None and current_rev != expected_revision:
+            raise RevisionConflictError(entity, entity_id, current_rev, expected_revision)
+
+        new_rev = current_rev + 1
+        new_srv = current_srv + 1
+        checksum = ""
+        if checksum_source is not None:
+            raw_cs = json.dumps(checksum_source, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+            checksum = hashlib.sha256(raw_cs).hexdigest()[:20]
+
+        conn.execute(
+            """
+            INSERT INTO sync_entities (entity, entity_id, revision, updated_at, deleted, checksum)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(entity, entity_id) DO UPDATE SET
+                revision = excluded.revision,
+                updated_at = excluded.updated_at,
+                deleted = excluded.deleted,
+                checksum = excluded.checksum
+            """,
+            (entity, entity_id, new_rev, now_iso, 1 if deleted else 0, checksum),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('server_revision', ?)",
+            (str(new_srv),),
+        )
+
+        safe_payload = sanitize_sync_value(payload or {}, [self._operator_token])
+        payload_json = json.dumps(safe_payload, ensure_ascii=False)
+        conn.execute(
+            """
+            INSERT INTO sync_outbox (
+                event_id, type, entity, entity_id, revision, server_revision,
+                timestamp, origin, correlation_id, payload_json, ws_dispatched
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            """,
+            (clean_eid, event_type, entity, entity_id, new_rev, new_srv, now_iso, clean_origin, clean_corr, payload_json),
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO sync_inbox (event_id, entity, entity_id, origin, received_at, result_revision)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (clean_eid, entity, entity_id, clean_origin, now_iso, new_rev),
+        )
+
+        return {
+            "deduplicated": False,
+            "revision": new_rev,
+            "serverRevision": new_srv,
+            "event": {
+                "type": event_type,
+                "eventId": clean_eid,
+                "entity": entity,
+                "entityId": entity_id,
+                "revision": new_rev,
+                "serverRevision": new_srv,
+                "timestamp": now_iso,
+                "origin": clean_origin,
+                "correlationId": clean_corr,
+                "payload": safe_payload,
+            },
+        }
+
+    def emit_sync_event(
+        self,
+        *,
+        entity: str,
+        entity_id: str,
+        event_type: str,
+        origin: str = "python-kernel",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+        deleted: bool = False,
+        payload: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        return self.run_db(
+            lambda conn: self.commit_entity_event_tx(
+                conn,
+                entity=entity,
+                entity_id=entity_id,
+                event_type=event_type,
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                expected_revision=expected_revision,
+                deleted=deleted,
+                payload=payload,
+            ),
+            write=True,
+        )
+
+    def get_sync_snapshot_meta(self) -> dict[str, Any]:
+        def _read(conn: sqlite3.Connection) -> dict[str, Any]:
+            srv = self._get_server_revision_tx(conn)
+            schema_row = conn.execute("SELECT value FROM sync_meta WHERE key = 'schema_version'").fetchone()
+            ent_rows = conn.execute(
+                "SELECT entity, entity_id, revision, updated_at, deleted FROM sync_entities"
+            ).fetchall()
+            entity_revisions: dict[str, int] = {}
+            deleted_entities: dict[str, list[str]] = {}
+            for r in ent_rows:
+                key = f"{r['entity']}:{r['entity_id']}"
+                entity_revisions[key] = int(r["revision"])
+                if int(r["deleted"]):
+                    deleted_entities.setdefault(r["entity"], []).append(r["entity_id"])
+            return {
+                "serverRevision": srv,
+                "schemaVersion": schema_row["value"] if schema_row else SYNC_SCHEMA_VERSION,
+                "entityRevisions": entity_revisions,
+                "deletedEntities": deleted_entities,
+            }
+
+        return self.run_db(_read, write=False)
+
+    def get_outbox_events_since(self, since_revision: int = 0, limit: int = 100) -> dict[str, Any]:
+        safe_limit = max(1, min(500, int(limit)))
+
+        def _read(conn: sqlite3.Connection) -> dict[str, Any]:
+            srv = self._get_server_revision_tx(conn)
+            schema_row = conn.execute("SELECT value FROM sync_meta WHERE key = 'schema_version'").fetchone()
+            min_row = conn.execute("SELECT MIN(server_revision) AS min_rev FROM sync_outbox").fetchone()
+            min_available = int(min_row["min_rev"]) if min_row and min_row["min_rev"] is not None else srv
+            rows = conn.execute(
+                """
+                SELECT event_id, type, entity, entity_id, revision, server_revision,
+                       timestamp, origin, correlation_id, payload_json
+                FROM sync_outbox
+                WHERE server_revision > ?
+                ORDER BY server_revision ASC
+                LIMIT ?
+                """,
+                (max(0, int(since_revision)), safe_limit),
+            ).fetchall()
+            events: list[dict[str, Any]] = []
+            for r in rows:
+                try:
+                    payload_obj = json.loads(r["payload_json"] or "{}")
+                except Exception:
+                    payload_obj = {}
+                events.append({
+                    "type": r["type"],
+                    "eventId": r["event_id"],
+                    "entity": r["entity"],
+                    "entityId": r["entity_id"],
+                    "revision": int(r["revision"]),
+                    "serverRevision": int(r["server_revision"]),
+                    "timestamp": r["timestamp"],
+                    "origin": r["origin"],
+                    "correlationId": r["correlation_id"],
+                    "payload": payload_obj,
+                })
+            gap_detected = since_revision > 0 and since_revision < (min_available - 1)
+            return {
+                "ok": True,
+                "schemaVersion": schema_row["value"] if schema_row else SYNC_SCHEMA_VERSION,
+                "serverRevision": srv,
+                "oldestAvailableRevision": min_available,
+                "gapDetected": gap_detected,
+                "hasMore": len(events) == safe_limit and (events[-1]["serverRevision"] < srv if events else False),
+                "events": events,
+            }
+
+        return self.run_db(_read, write=False)
 
     def _ensure_initial_real_history(self) -> None:
-        with self._connect() as conn:
+        def _seed(conn: sqlite3.Connection) -> None:
             row = conn.execute("SELECT COUNT(*) AS cnt FROM update_history WHERE is_demo = 0").fetchone()
             if row and row["cnt"] == 0:
                 now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -502,17 +977,40 @@ class SVLSystemKernel:
                     "INSERT INTO update_history (wersja, typ, opis, data, is_demo, author) VALUES (?, ?, ?, ?, ?, ?)",
                     real_entries,
                 )
-                conn.commit()
 
-    def record_update(self, wersja: str, typ: str, opis: str, author: str = "operator") -> dict[str, Any]:
+        self.run_db(_seed, write=True)
+
+    def record_update(
+        self,
+        wersja: str,
+        typ: str,
+        opis: str,
+        author: str = "operator",
+        origin: str = "python-kernel",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        with self._connect() as conn:
+
+        def _write(conn: sqlite3.Connection) -> tuple[int, dict[str, Any]]:
             cur = conn.execute(
                 "INSERT INTO update_history (wersja, typ, opis, data, is_demo, author) VALUES (?, ?, ?, ?, 0, ?)",
                 (wersja, typ, opis, now_iso, author),
             )
-            conn.commit()
-            entry_id = cur.lastrowid
+            entry_id = int(cur.lastrowid or 0)
+            sync_res = self.commit_entity_event_tx(
+                conn,
+                entity="kernel",
+                entity_id="update_history",
+                event_type="kernel.update_recorded",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                payload={"id": entry_id, "wersja": wersja, "typ": typ, "author": author},
+            )
+            return entry_id, sync_res
+
+        entry_id, sync_res = self.run_db(_write, write=True)
         self.sys_version._value = wersja
         self.record_audit(author, "RECORD_UPDATE", wersja, "SUCCESS", opis)
         return {
@@ -523,13 +1021,18 @@ class SVLSystemKernel:
             "data": now_iso,
             "is_demo": False,
             "author": author,
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
         }
 
     def get_update_history(self, include_demo: bool = False) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
+        def _read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
                 "SELECT id, wersja, typ, opis, data, is_demo, author FROM update_history WHERE is_demo = 0 ORDER BY id DESC"
             ).fetchall()
+
+        rows = self.run_db(_read, write=False)
         real_list = [
             {
                 "id": r["id"],
@@ -548,20 +1051,24 @@ class SVLSystemKernel:
 
     def record_audit(self, actor: str, action: str, target: str, status: str, details: str) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
+        safe_details = str(sanitize_sync_value(details, [self._operator_token]))
+
+        def _write(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT INTO audit_log (timestamp, actor, action, target, status, details) VALUES (?, ?, ?, ?, ?, ?)",
-                (now_iso, actor, action, target, status, details),
+                (now_iso, actor, action, target, status, safe_details),
             )
-            conn.commit()
+
+        self.run_db(_write, write=True)
 
     def get_audit_logs(self, limit: int = 50) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
+        def _read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
                 "SELECT id, timestamp, actor, action, target, status, details FROM audit_log ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-        return [dict(r) for r in rows]
+
+        return [dict(r) for r in self.run_db(_read, write=False)]
 
     def register_service(self, name: str, status: str, endpoint: str, details: dict[str, Any]) -> None:
         self.service_registry[name] = {
@@ -584,6 +1091,9 @@ class SVLSystemKernel:
         new_value: Any,
         provided_token: str,
         actor: str = "operator",
+        origin: str = "python-kernel",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
     ) -> dict[str, Any]:
         if var_name not in self.protected_variables:
             self.protected_variables[var_name] = SVLProtectedVariable(var_name, None)
@@ -602,21 +1112,39 @@ class SVLSystemKernel:
             status="AUTHORIZED" if ok else "DENIED",
             details=f"Attempted update on {var_name}",
         )
+        sync_res = self.emit_sync_event(
+            entity="kernel",
+            entity_id=f"var:{var_name}",
+            event_type="kernel.variable_updated" if ok else "kernel.variable_denied",
+            origin=origin,
+            correlation_id=correlation_id,
+            event_id=event_id,
+            payload={"name": var_name, "authorized": ok, "actor": actor},
+        )
         return {
             "success": ok,
             "variable": target_var.to_metadata(),
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
         }
 
     def list_conversations_with_messages(self) -> list[dict[str, Any]]:
-        """Zwraca wszystkie wątki czatu wraz z wiadomościami z SQLite."""
-        with self._connect() as conn:
+        """Zwraca wszystkie wątki czatu wraz z wiadomościami i ich rewizjami z SQLite."""
+        def _read(conn: sqlite3.Connection) -> tuple[list[sqlite3.Row], list[sqlite3.Row], dict[str, int]]:
             conv_rows = conn.execute(
                 "SELECT id, title, model, created_at, updated_at FROM conversations ORDER BY updated_at DESC"
             ).fetchall()
             msg_rows = conn.execute(
                 "SELECT id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at FROM chat_messages ORDER BY rowid ASC"
             ).fetchall()
+            rev_rows = conn.execute(
+                "SELECT entity_id, revision FROM sync_entities WHERE entity = 'chat' AND deleted = 0"
+            ).fetchall()
+            revs = {str(r["entity_id"]): int(r["revision"]) for r in rev_rows}
+            return conv_rows, msg_rows, revs
 
+        conv_rows, msg_rows, rev_map = self.run_db(_read, write=False)
         msgs_by_conv: dict[str, list[dict[str, Any]]] = {}
         for mr in msg_rows:
             try:
@@ -638,6 +1166,7 @@ class SVLSystemKernel:
                 "fileName": meta.get("fileName"),
                 "imagePreview": attachments[0] if attachments else None,
                 "connectionReport": meta.get("connectionReport"),
+                "appliedActions": meta.get("appliedActions"),
             }
             msgs_by_conv.setdefault(mr["conversation_id"], []).append(msg_item)
 
@@ -647,6 +1176,7 @@ class SVLSystemKernel:
                 "id": cr["id"],
                 "title": cr["title"],
                 "model": cr["model"],
+                "revision": rev_map.get(cr["id"], 1),
                 "createdAt": cr["created_at"],
                 "updatedAt": cr["updated_at"],
                 "messages": msgs_by_conv.get(cr["id"], []),
@@ -659,6 +1189,10 @@ class SVLSystemKernel:
         title: str,
         model: str,
         msg: dict[str, Any],
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+        expected_revision: Optional[int] = None,
     ) -> dict[str, Any]:
         now_iso = datetime.now(timezone.utc).isoformat()
         display_ts = str(msg.get("timestamp") or datetime.now(timezone.utc).strftime("%H:%M"))
@@ -669,58 +1203,125 @@ class SVLSystemKernel:
             "modelUsed": msg.get("modelUsed"),
             "fileName": msg.get("fileName"),
             "connectionReport": msg.get("connectionReport"),
+            "appliedActions": msg.get("appliedActions"),
         }, ensure_ascii=False)
         attachments_json = json.dumps(
             [msg["imagePreview"]] if msg.get("imagePreview") else [],
             ensure_ascii=False,
         )
-        with self._connect() as conn:
+
+        def _write(conn: sqlite3.Connection) -> dict[str, Any]:
+            if event_id:
+                inbox = conn.execute("SELECT result_revision FROM sync_inbox WHERE event_id = ?", (event_id,)).fetchone()
+                if inbox:
+                    srv = self._get_server_revision_tx(conn)
+                    return {
+                        "ok": True,
+                        "deduplicated": True,
+                        "conversation_id": conversation_id,
+                        "message_id": msg_id,
+                        "revision": int(inbox["result_revision"]),
+                        "serverRevision": srv,
+                        "event": None,
+                    }
+
             existing_conv = conn.execute(
-                "SELECT id, created_at FROM conversations WHERE id = ?",
+                "SELECT id, created_at, title FROM conversations WHERE id = ?",
                 (conversation_id,),
             ).fetchone()
             created_at = existing_conv["created_at"] if existing_conv else now_iso
+            resolved_title = title or (existing_conv["title"] if existing_conv else "Sesja SVL Python OS")
             conn.execute(
                 "INSERT OR REPLACE INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (conversation_id, title or "Sesja SVL Python OS", model or "svl-hybrid-router", created_at, now_iso),
+                (conversation_id, resolved_title, model or "svl-hybrid-router", created_at, now_iso),
             )
-            conn.execute(
-                "INSERT OR REPLACE INTO chat_messages (id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    msg_id,
-                    conversation_id,
-                    str(msg.get("role") or "user"),
-                    str(msg.get("sender") or "Operator"),
-                    str(msg.get("content") or ""),
-                    attachments_json,
-                    meta_json,
-                    now_iso,
-                ),
+            exists_msg = conn.execute("SELECT id FROM chat_messages WHERE id = ?", (msg_id,)).fetchone()
+            if not exists_msg:
+                conn.execute(
+                    "INSERT INTO chat_messages (id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        msg_id,
+                        conversation_id,
+                        str(msg.get("role") or "user"),
+                        str(msg.get("sender") or "Operator"),
+                        str(msg.get("content") or ""),
+                        attachments_json,
+                        meta_json,
+                        now_iso,
+                    ),
+                )
+            sync_res = self.commit_entity_event_tx(
+                conn,
+                entity="chat",
+                entity_id=conversation_id,
+                event_type="chat.message_appended",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                expected_revision=expected_revision,
+                deleted=False,
+                payload={
+                    "conversationId": conversation_id,
+                    "title": resolved_title,
+                    "messageId": msg_id,
+                    "role": str(msg.get("role") or "user"),
+                    "sender": str(msg.get("sender") or "Operator"),
+                },
             )
-            conn.commit()
-        return {"ok": True, "conversation_id": conversation_id, "message_id": msg_id}
+            return {
+                "ok": True,
+                "deduplicated": sync_res["deduplicated"],
+                "conversation_id": conversation_id,
+                "message_id": msg_id,
+                "revision": sync_res["revision"],
+                "serverRevision": sync_res["serverRevision"],
+                "event": sync_res["event"],
+            }
 
-    def sync_conversations(self, threads: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Scala wątki przesłane przez klienta z trwałą bazą SQLite bez nadpisywania nowszych wpisów."""
+        return self.run_db(_write, write=True)
+
+    def sync_conversations_detailed(
+        self,
+        threads: list[dict[str, Any]],
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        Deterministycznie scala wątki klienta z bazą SQLite wewnątrz jednej transakcji:
+        - Nigdy nie odtwarza wątków oznaczonych jako deleted=1 w sync_entities
+        - Wiadomości zachowuje i deduplikuje wyłącznie po ID
+        - Emisja zdarzenia do sync_outbox wyłącznie przy rzeczywistej zmianie w bazie
+        """
         now_iso = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
+
+        def _merge(conn: sqlite3.Connection) -> dict[str, Any]:
+            touched_convs: list[str] = []
+            added_messages = 0
+            deleted_rows = conn.execute(
+                "SELECT entity_id FROM sync_entities WHERE entity = 'chat' AND deleted = 1"
+            ).fetchall()
+            deleted_ids = {str(r["entity_id"]) for r in deleted_rows}
+
             for th in threads:
                 cid = str(th.get("id") or "").strip()
-                if not cid:
+                if not cid or cid in deleted_ids:
                     continue
-                title = str(th.get("title") or "Sesja SVL Python OS")
-                model = str(th.get("model") or "svl-hybrid-router")
-                existing_conv = conn.execute("SELECT id, created_at FROM conversations WHERE id = ?", (cid,)).fetchone()
+                title = str(th.get("title") or "Sesja SVL Python OS").strip()
+                model = str(th.get("model") or "svl-hybrid-router").strip()
+                existing_conv = conn.execute("SELECT id, title FROM conversations WHERE id = ?", (cid,)).fetchone()
+                conv_changed = False
+
                 if not existing_conv:
                     conn.execute(
                         "INSERT INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                         (cid, title, model, now_iso, now_iso),
                     )
-                else:
-                    conn.execute(
-                        "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-                        (title, now_iso, cid),
-                    )
+                    conv_changed = True
+                elif title and title != existing_conv["title"] and str(existing_conv["title"]).startswith("Nowa sesja"):
+                    conn.execute("UPDATE conversations SET title = ? WHERE id = ?", (title, cid))
+                    conv_changed = True
+
                 for m in th.get("messages") or []:
                     mid = str(m.get("id") or "").strip()
                     if not mid:
@@ -733,6 +1334,7 @@ class SVLSystemKernel:
                             "modelUsed": m.get("modelUsed"),
                             "fileName": m.get("fileName"),
                             "connectionReport": m.get("connectionReport"),
+                            "appliedActions": m.get("appliedActions"),
                         }, ensure_ascii=False)
                         att_json = json.dumps([m["imagePreview"]] if m.get("imagePreview") else [], ensure_ascii=False)
                         conn.execute(
@@ -748,15 +1350,701 @@ class SVLSystemKernel:
                                 now_iso,
                             ),
                         )
-            conn.commit()
-        return self.list_conversations_with_messages()
+                        added_messages += 1
+                        conv_changed = True
 
-    def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
-        with self._connect() as conn:
+                if conv_changed:
+                    conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now_iso, cid))
+                    self.commit_entity_event_tx(
+                        conn,
+                        entity="chat",
+                        entity_id=cid,
+                        event_type="chat.thread_merged",
+                        origin=origin,
+                        correlation_id=correlation_id,
+                        payload={"conversationId": cid, "addedMessages": added_messages},
+                    )
+                    touched_convs.append(cid)
+
+            srv = self._get_server_revision_tx(conn)
+            return {"touched": touched_convs, "added_messages": added_messages, "serverRevision": srv}
+
+        merge_info = self.run_db(_merge, write=True)
+        return {
+            "conversations": self.list_conversations_with_messages(),
+            **merge_info,
+        }
+
+    def sync_conversations(
+        self,
+        threads: list[dict[str, Any]],
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return self.sync_conversations_detailed(
+            threads,
+            origin=origin,
+            correlation_id=correlation_id,
+            event_id=event_id,
+        )["conversations"]
+
+    def delete_conversation(
+        self,
+        conversation_id: str,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+    ) -> dict[str, Any]:
+        def _delete(conn: sqlite3.Connection) -> dict[str, Any]:
             conn.execute("DELETE FROM chat_messages WHERE conversation_id = ?", (conversation_id,))
             conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
-            conn.commit()
-        return {"ok": True, "deleted_id": conversation_id}
+            sync_res = self.commit_entity_event_tx(
+                conn,
+                entity="chat",
+                entity_id=conversation_id,
+                event_type="chat.thread_deleted",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                expected_revision=expected_revision,
+                deleted=True,
+                payload={"conversationId": conversation_id},
+            )
+            return sync_res
+
+        sync_res = self.run_db(_delete, write=True)
+        return {
+            "ok": True,
+            "deleted_id": conversation_id,
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
+        }
+
+    def record_terminal_entry(
+        self,
+        tab: str,
+        kind: str,
+        text: str,
+        command: str = "",
+        entry_id: Optional[str] = None,
+        display_timestamp: Optional[str] = None,
+        origin: str = "node-gateway",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        ts_label = display_timestamp or datetime.now(timezone.utc).strftime("%H:%M:%S")
+        rec_id = entry_id or f"{tab}-{int(time.time() * 1000)}-{uuid.uuid4().hex[:6]}"
+        safe_text = str(sanitize_sync_value(text, [self._operator_token]))
+        safe_cmd = str(sanitize_sync_value(command, [self._operator_token]))
+
+        def _write(conn: sqlite3.Connection) -> dict[str, Any]:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO terminal_history (id, tab, kind, text, command, timestamp, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (rec_id, tab, kind, safe_text, safe_cmd, ts_label, now_iso),
+            )
+            # Utrzymuj rozsądny limit 250 wpisów na kartę terminala
+            conn.execute(
+                """
+                DELETE FROM terminal_history
+                WHERE tab = ? AND id NOT IN (
+                    SELECT id FROM terminal_history WHERE tab = ? ORDER BY created_at DESC LIMIT 250
+                )
+                """,
+                (tab, tab),
+            )
+            sync_res = self.commit_entity_event_tx(
+                conn,
+                entity="terminal",
+                entity_id=tab,
+                event_type="terminal.entry_logged",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                payload={
+                    "tab": tab,
+                    "entry": {
+                        "id": rec_id,
+                        "timestamp": ts_label,
+                        "kind": kind,
+                        "text": safe_text,
+                        "created_at": now_iso,
+                    },
+                },
+            )
+            return sync_res
+
+        sync_res = self.run_db(_write, write=True)
+        return {
+            "ok": True,
+            "entry": {
+                "id": rec_id,
+                "tab": tab,
+                "kind": kind,
+                "text": safe_text,
+                "timestamp": ts_label,
+                "created_at": now_iso,
+            },
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
+        }
+
+    def list_terminal_history(self) -> dict[str, list[dict[str, Any]]]:
+        tabs: dict[str, list[dict[str, Any]]] = {
+            "linux": [],
+            "python": [],
+            "codex": [],
+            "hyperspace": [],
+            "agents": [],
+        }
+
+        def _read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                "SELECT id, tab, kind, text, timestamp, created_at FROM terminal_history ORDER BY created_at ASC, rowid ASC"
+            ).fetchall()
+
+        for r in self.run_db(_read, write=False):
+            tab = str(r["tab"])
+            if tab in tabs:
+                tabs[tab].append({
+                    "id": r["id"],
+                    "timestamp": r["timestamp"],
+                    "kind": r["kind"],
+                    "text": r["text"],
+                    "created_at": r["created_at"],
+                })
+        return tabs
+
+    def clear_terminal_history(
+        self,
+        tab: str,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        def _clear(conn: sqlite3.Connection) -> dict[str, Any]:
+            conn.execute("DELETE FROM terminal_history WHERE tab = ?", (tab,))
+            return self.commit_entity_event_tx(
+                conn,
+                entity="terminal",
+                entity_id=tab,
+                event_type="terminal.tab_cleared",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                payload={"tab": tab},
+            )
+
+        sync_res = self.run_db(_clear, write=True)
+        return {
+            "ok": True,
+            "tab": tab,
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
+        }
+
+    def get_workspace_ui_state(self) -> dict[str, Any]:
+        def _read(conn: sqlite3.Connection) -> dict[str, Any]:
+            rows = conn.execute("SELECT key, value_json, revision, updated_at FROM workspace_ui_state").fetchall()
+            out: dict[str, Any] = {}
+            for r in rows:
+                try:
+                    val = json.loads(r["value_json"])
+                except Exception:
+                    val = None
+                out[str(r["key"])] = {
+                    "value": val,
+                    "revision": int(r["revision"]),
+                    "updatedAt": r["updated_at"],
+                }
+            return out
+
+        return self.run_db(_read, write=False)
+
+    def update_workspace_ui_state(
+        self,
+        key: str,
+        value: Any,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+    ) -> dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        safe_val = sanitize_sync_value(value, [self._operator_token])
+
+        def _write(conn: sqlite3.Connection) -> dict[str, Any]:
+            sync_res = self.commit_entity_event_tx(
+                conn,
+                entity="workspace_state",
+                entity_id=key,
+                event_type="workspace_state.updated",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                expected_revision=expected_revision,
+                payload={"key": key, "value": safe_val},
+            )
+            conn.execute(
+                """
+                INSERT INTO workspace_ui_state (key, value_json, revision, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value_json = excluded.value_json,
+                    revision = excluded.revision,
+                    updated_at = excluded.updated_at
+                """,
+                (key, json.dumps(safe_val, ensure_ascii=False), sync_res["revision"], now_iso),
+            )
+            return sync_res
+
+        sync_res = self.run_db(_write, write=True)
+        return {
+            "ok": True,
+            "key": key,
+            "value": safe_val,
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
+        }
+
+    def list_system_modules(self) -> list[dict[str, Any]]:
+        def _read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+            return conn.execute(
+                """
+                SELECT m.id, m.name, m.kind, m.status, m.description, m.config_json,
+                       m.source, m.source_message_id, m.revision, m.updated_at,
+                       COALESCE(se.revision, m.revision) AS sync_revision
+                FROM system_modules m
+                LEFT JOIN sync_entities se ON se.entity = 'module' AND se.entity_id = m.id
+                WHERE COALESCE(se.deleted, 0) = 0
+                ORDER BY CASE WHEN m.source = 'chat' THEN 0 ELSE 1 END, m.updated_at DESC, m.id ASC
+                """
+            ).fetchall()
+
+        out: list[dict[str, Any]] = []
+        for r in self.run_db(_read, write=False):
+            try:
+                cfg = json.loads(r["config_json"] or "{}")
+            except Exception:
+                cfg = {}
+            out.append({
+                "id": r["id"],
+                "name": r["name"],
+                "kind": r["kind"],
+                "status": r["status"],
+                "description": r["description"],
+                "config": cfg if isinstance(cfg, dict) else {},
+                "source": r["source"],
+                "sourceMessageId": r["source_message_id"],
+                "revision": int(r["sync_revision"] or r["revision"] or 1),
+                "updatedAt": r["updated_at"],
+            })
+        return out
+
+    def upsert_system_module(
+        self,
+        module_id: str,
+        *,
+        name: str = "",
+        kind: str = "Chat Module",
+        status: str = "ACTIVE",
+        description: str = "",
+        config: Optional[dict[str, Any]] = None,
+        source: str = "chat",
+        source_message_id: str = "",
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+    ) -> dict[str, Any]:
+        clean_id = re.sub(r"[^a-zA-Z0-9._-]", "-", (module_id or "").strip().lower()).strip("-")[:64]
+        if not clean_id:
+            raise ValueError("Identyfikator modułu jest wymagany.")
+        clean_name = (name or clean_id).strip()[:120]
+        clean_kind = (kind or "Extension Module").strip()[:80]
+        clean_status = str(status or "ACTIVE").strip().upper()
+        if clean_status not in ("ACTIVE", "CONFIGURED", "STANDBY", "ARCHIVED"):
+            clean_status = "ACTIVE"
+        clean_desc = (description or "").strip()[:1000]
+        safe_cfg = sanitize_sync_value(config if isinstance(config, dict) else {}, [self._operator_token])
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        def _write(conn: sqlite3.Connection) -> dict[str, Any]:
+            existing = conn.execute("SELECT config_json FROM system_modules WHERE id = ?", (clean_id,)).fetchone()
+            merged_cfg: dict[str, Any] = {}
+            if existing and existing["config_json"]:
+                try:
+                    loaded = json.loads(existing["config_json"])
+                    if isinstance(loaded, dict):
+                        merged_cfg.update(loaded)
+                except Exception:
+                    pass
+            if isinstance(safe_cfg, dict):
+                merged_cfg.update(safe_cfg)
+
+            sync_res = self.commit_entity_event_tx(
+                conn,
+                entity="module",
+                entity_id=clean_id,
+                event_type="module.upserted",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                expected_revision=expected_revision,
+                deleted=False,
+                payload={
+                    "moduleId": clean_id,
+                    "name": clean_name,
+                    "kind": clean_kind,
+                    "status": clean_status,
+                    "source": source,
+                    "config": merged_cfg,
+                },
+                checksum_source={"id": clean_id, "name": clean_name, "status": clean_status, "config": merged_cfg},
+            )
+            conn.execute(
+                """
+                INSERT INTO system_modules (
+                    id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    kind = excluded.kind,
+                    status = excluded.status,
+                    description = CASE WHEN excluded.description != '' THEN excluded.description ELSE system_modules.description END,
+                    config_json = excluded.config_json,
+                    source = excluded.source,
+                    source_message_id = CASE WHEN excluded.source_message_id != '' THEN excluded.source_message_id ELSE system_modules.source_message_id END,
+                    revision = excluded.revision,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    clean_id,
+                    clean_name,
+                    clean_kind,
+                    clean_status,
+                    clean_desc,
+                    json.dumps(merged_cfg, ensure_ascii=False),
+                    source,
+                    source_message_id,
+                    sync_res["revision"],
+                    now_iso,
+                ),
+            )
+            return {
+                "module": {
+                    "id": clean_id,
+                    "name": clean_name,
+                    "kind": clean_kind,
+                    "status": clean_status,
+                    "description": clean_desc,
+                    "config": merged_cfg,
+                    "source": source,
+                    "sourceMessageId": source_message_id,
+                    "revision": sync_res["revision"],
+                    "updatedAt": now_iso,
+                },
+                "revision": sync_res["revision"],
+                "serverRevision": sync_res["serverRevision"],
+                "event": sync_res["event"],
+            }
+
+        res = self.run_db(_write, write=True)
+        self.record_audit("operator", "MODULE_UPSERT", clean_id, "OK", f"Moduł {clean_name} ({clean_status}, rev {res['revision']})")
+        return res
+
+    def delete_system_module(
+        self,
+        module_id: str,
+        *,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        clean_id = (module_id or "").strip().lower()
+        if clean_id in ("svl-kernel-core", "spherical-event-bus", "binary-hyperspace-engine"):
+            raise ValueError(f"Moduł rdzeniowy '{clean_id}' nie może zostać usunięty.")
+
+        def _delete(conn: sqlite3.Connection) -> dict[str, Any]:
+            conn.execute("DELETE FROM system_modules WHERE id = ?", (clean_id,))
+            sync_res = self.commit_entity_event_tx(
+                conn,
+                entity="module",
+                entity_id=clean_id,
+                event_type="module.deleted",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                deleted=True,
+                payload={"moduleId": clean_id},
+            )
+            return sync_res
+
+        sync_res = self.run_db(_delete, write=True)
+        self.record_audit("operator", "MODULE_DELETE", clean_id, "OK", f"Usunięto moduł {clean_id}")
+        return {
+            "ok": True,
+            "deleted_id": clean_id,
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
+        }
+
+    def sync_chat_state_mutations(
+        self,
+        *,
+        origin: str = "python-kernel",
+        correlation_id: str = "",
+    ) -> dict[str, Any]:
+        """
+        Deterministycznie i idempotentnie synchronizuje zmiany / moduły zadeklarowane
+        w historii czatu SQLite (np. moduł svl-364 / svl-364-ebon-apex oraz jawne dyrektywy
+        dodania modułu), przenosząc je do tabeli system_modules, update_history i outboxu zdarzeń.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        now_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        def _sync(conn: sqlite3.Connection) -> dict[str, Any]:
+            msgs = conn.execute(
+                "SELECT id, conversation_id, role, sender, content, metadata_json, created_at FROM chat_messages ORDER BY rowid ASC"
+            ).fetchall()
+            deleted_mods = {
+                str(r["entity_id"])
+                for r in conn.execute("SELECT entity_id FROM sync_entities WHERE entity = 'module' AND deleted = 1").fetchall()
+            }
+            existing_mods = {
+                str(r["id"]) for r in conn.execute("SELECT id FROM system_modules").fetchall()
+            }
+            emitted_events: list[dict[str, Any]] = []
+            materialized: list[str] = []
+
+            # 1) Wykryj dyspozycje dla modułu svl-364 / svl-364-ebon-apex, dynamicznego przydziału zasobów i modelu Ollama z czatu
+            svl364_msg_id: Optional[str] = None
+            svl364_has_apex_name = False
+            svl364_has_opt_request = False
+            has_dynamic_alloc_req = False
+            has_dolphin_model_req = False
+            for r in msgs:
+                txt = str(r["content"] or "")
+                low = txt.lower()
+                if "svl-364" in low or "svl 364" in low or "svl_364" in low:
+                    svl364_msg_id = str(r["id"])
+                    if "ebon" in low or "apex" in low:
+                        svl364_has_apex_name = True
+                    if any(kw in low for kw in ("skonfiguruj", "napraw", "ulepsz", "optymal", "agent")):
+                        svl364_has_opt_request = True
+                if "dynamiczny przydział" in low or "dynamiczny przydzial" in low or ("zasob" in low and "ile trzeba" in low):
+                    has_dynamic_alloc_req = True
+                if "dolphin-llama3" in low or "dolphin llama3" in low:
+                    has_dolphin_model_req = True
+
+            if svl364_msg_id and "svl-364" not in deleted_mods:
+                mod_name = "SVL-364 Ebon Apex" if svl364_has_apex_name else "SVL-364"
+                desired_patch: dict[str, Any] = {
+                    "module_alias": "svl-364-ebon-apex" if svl364_has_apex_name else "svl-364",
+                    "async_event_bus_buffer": 500,
+                    "agent_max_context_turns": 24,
+                    "worker_heartbeat_interval_sec": 2.0,
+                    "priority_routing": "svl-hybrid-router",
+                    "optimization_scope": "agents_and_backend" if svl364_has_opt_request else "module_registered",
+                    "container_runtime_note": "Zastosowano w SVLSystemKernel, SphericalEventBus i konfiguracji agentów SQLite (bez fałszywej symulacji cgroups/systemd).",
+                }
+                if has_dynamic_alloc_req:
+                    desired_patch["dynamic_resource_allocation"] = True
+                    desired_patch["max_cpu_threads"] = os.cpu_count() or 1
+                    desired_patch["ollama_num_ctx"] = 4096
+                if has_dolphin_model_req:
+                    desired_patch["configured_ollama_model"] = "dolphin-llama3:latest"
+
+                if "svl-364" not in existing_mods:
+                    desc = (
+                        "Moduł orkiestracji i optymalizacji backendu zsynchronizowany z poleceń czatu Operatora "
+                        "(rozszerzony bufor SphericalEventBus 500 zdarzeń, profil optymalizacji agentów AI)."
+                    )
+                    sync_res = self.commit_entity_event_tx(
+                        conn,
+                        entity="module",
+                        entity_id="svl-364",
+                        event_type="module.upserted",
+                        origin=origin,
+                        correlation_id=correlation_id,
+                        event_id=f"chat-sync-svl-364-{svl364_msg_id[:24]}",
+                        payload={
+                            "moduleId": "svl-364",
+                            "name": mod_name,
+                            "kind": "Orchestration & Kernel Module",
+                            "status": "ACTIVE",
+                            "source": "chat",
+                            "config": desired_patch,
+                        },
+                        checksum_source=desired_patch,
+                    )
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO system_modules (
+                            id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "svl-364",
+                            mod_name,
+                            "Orchestration & Kernel Module",
+                            "ACTIVE",
+                            desc,
+                            json.dumps(desired_patch, ensure_ascii=False),
+                            "chat",
+                            svl364_msg_id,
+                            sync_res["revision"],
+                            now_iso,
+                        ),
+                    )
+                    existing_mods.add("svl-364")
+                    materialized.append("svl-364")
+                    if not sync_res.get("deduplicated") and sync_res.get("event"):
+                        emitted_events.append(sync_res["event"])
+                else:
+                    row_cur = conn.execute("SELECT config_json FROM system_modules WHERE id = 'svl-364'").fetchone()
+                    try:
+                        cur_cfg = json.loads((row_cur["config_json"] if row_cur else "") or "{}")
+                        if not isinstance(cur_cfg, dict):
+                            cur_cfg = {}
+                    except Exception:
+                        cur_cfg = {}
+                    updated_cfg = dict(cur_cfg)
+                    changed = False
+                    for k, v in desired_patch.items():
+                        if k in ("dynamic_resource_allocation", "max_cpu_threads", "ollama_num_ctx", "configured_ollama_model") and cur_cfg.get(k) != v:
+                            updated_cfg[k] = v
+                            changed = True
+                    if changed:
+                        sync_res = self.commit_entity_event_tx(
+                            conn,
+                            entity="module",
+                            entity_id="svl-364",
+                            event_type="module.upserted",
+                            origin=origin,
+                            correlation_id=correlation_id,
+                            event_id=f"chat-sync-svl-364-dyn-{int(has_dynamic_alloc_req)}-{int(has_dolphin_model_req)}-{os.cpu_count() or 1}",
+                            payload={
+                                "moduleId": "svl-364",
+                                "name": mod_name,
+                                "kind": "Orchestration & Kernel Module",
+                                "status": "ACTIVE",
+                                "source": "chat",
+                                "config": updated_cfg,
+                            },
+                            checksum_source=updated_cfg,
+                        )
+                        conn.execute(
+                            "UPDATE system_modules SET config_json = ?, revision = ?, updated_at = ? WHERE id = 'svl-364'",
+                            (json.dumps(updated_cfg, ensure_ascii=False), sync_res["revision"], now_iso),
+                        )
+                        materialized.append("svl-364")
+                        if not sync_res.get("deduplicated") and sync_res.get("event"):
+                            emitted_events.append(sync_res["event"])
+
+                # Zapisz wpis w update_history tylko jeśli jeszcze nie istnieje dla 5.6.3-SVL-364
+                upd_exists = conn.execute(
+                    "SELECT id FROM update_history WHERE wersja LIKE '5.6.3-SVL-364%'"
+                ).fetchone()
+                if not upd_exists:
+                    conn.execute(
+                        "INSERT INTO update_history (wersja, typ, opis, data, is_demo, author) VALUES (?, ?, ?, ?, 0, ?)",
+                        (
+                            "5.6.3-SVL-364-Apex",
+                            mod_name,
+                            "Zsynchronizowano z czatu moduł svl-364: zwiększono bufor SphericalEventBus (500 zdarzeń) i utrwalono profil orkiestracji w SQLite.",
+                            now_date_str,
+                            "ChatSyncBridge",
+                        ),
+                    )
+
+            # 2) Wykryj inne jawne moduły wspomniane w czacie np. "dodano moduł X" / "dodaj moduł X" / "zarejestruj moduł X"
+            mod_pattern = re.compile(
+                r"(?:dodano|dodaj|utwórz|utworz|zarejestruj|zainstaluj|aktywuj)\s+modu[łl]\s+([a-zA-Z0-9][a-zA-Z0-9._-]{1,40})",
+                re.IGNORECASE,
+            )
+            for r in msgs:
+                txt = str(r["content"] or "")
+                msg_id = str(r["id"])
+                for match in mod_pattern.finditer(txt):
+                    raw_mod = match.group(1).strip(".,;:!?\"'()[]{}").lower()
+                    clean_id = re.sub(r"[^a-z0-9._-]", "-", raw_mod).strip("-")[:48]
+                    if not clean_id or len(clean_id) < 2 or clean_id in existing_mods or clean_id in deleted_mods:
+                        continue
+                    mod_cfg = {"registered_from": "chat_history", "source_message_id": msg_id}
+                    sync_res = self.commit_entity_event_tx(
+                        conn,
+                        entity="module",
+                        entity_id=clean_id,
+                        event_type="module.upserted",
+                        origin=origin,
+                        correlation_id=correlation_id,
+                        event_id=f"chat-sync-mod-{clean_id}-{msg_id[:16]}",
+                        payload={
+                            "moduleId": clean_id,
+                            "name": clean_id.upper(),
+                            "kind": "Chat Module",
+                            "status": "ACTIVE",
+                            "source": "chat",
+                            "config": mod_cfg,
+                        },
+                    )
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO system_modules (
+                            id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            clean_id,
+                            clean_id.upper(),
+                            "Chat Module",
+                            "ACTIVE",
+                            f"Moduł zsynchronizowany z polecenia na czacie ({msg_id}).",
+                            json.dumps(mod_cfg, ensure_ascii=False),
+                            "chat",
+                            msg_id,
+                            sync_res["revision"],
+                            now_iso,
+                        ),
+                    )
+                    existing_mods.add(clean_id)
+                    materialized.append(clean_id)
+                    if not sync_res.get("deduplicated") and sync_res.get("event"):
+                        emitted_events.append(sync_res["event"])
+
+            srv = self._get_server_revision_tx(conn)
+            return {
+                "ok": True,
+                "appliedCount": len(materialized),
+                "materializedModules": materialized,
+                "serverRevision": srv,
+                "events": emitted_events,
+            }
+
+        res = self.run_db(_sync, write=True)
+        mods = self.list_system_modules()
+        self.config["active_modules"] = [m["id"] for m in mods if m.get("status") == "ACTIVE"]
+        if res["appliedCount"] > 0:
+            self.record_audit(
+                "ChatSyncBridge",
+                "CHAT_STATE_SYNC",
+                ",".join(res["materializedModules"]),
+                "OK",
+                f"Zsynchronizowano {res['appliedCount']} moduł(ów) z historii czatu",
+            )
+        res["modules"] = mods
+        return res
 
     def generate_system_status_report(self, include_demo_history: bool = False) -> str:
         """
@@ -767,6 +2055,8 @@ class SVLSystemKernel:
         topo_diag = engine.evaluate_diagnostics()
         real_updates = self.get_update_history(include_demo=include_demo_history)
         host_telemetry = self.operator.scope.collect_host_telemetry()
+        modules_list = self.list_system_modules()
+        self.config["active_modules"] = [m["id"] for m in modules_list if m.get("status") == "ACTIVE"]
 
         report: dict[str, Any] = {
             "Timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -782,6 +2072,7 @@ class SVLSystemKernel:
             "Compact_Metric_C": topo_diag["compact_metric_c"],
             "Host_Linux_Telemetry": host_telemetry,
             "Config_Snapshot": self.config,
+            "System_Modules": modules_list,
             "Actual_Verified_Updates_Count": len([u for u in real_updates if not u.get("is_demo")]),
             "Update_History": real_updates,
             "Registered_Services": list(self.service_registry.keys()),

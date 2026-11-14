@@ -1,37 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Terminal as TerminalIcon,
   Play,
   ShieldAlert,
   Trash2,
-  Code2,
-  Cpu,
-  Binary,
-  Radio,
-  Sparkles,
-  CheckCircle2,
 } from 'lucide-react';
-import { classifyCommandRisk } from '../utils/svlLogic';
-
-export type TerminalTabId = 'linux' | 'python' | 'codex' | 'hyperspace' | 'agents';
-
-interface TerminalLogLine {
-  id: string;
-  timestamp: string;
-  kind: 'input' | 'stdout' | 'stderr' | 'system';
-  text: string;
-}
-
-interface TerminalsWorkspaceProps {
-  operatorToken: string;
-  onRefreshSystem: () => Promise<void>;
-}
+import {
+  TerminalLogLine,
+  TerminalTabId,
+  classifyCommandRisk,
+  safeFetchJson,
+} from '../utils/svlLogic';
+import { useSvlSync } from '../utils/svlSyncStore';
 
 const TERMINAL_TABS: Array<{
   id: TerminalTabId;
   label: string;
   subtitle: string;
   defaultPrompt: string;
+  welcomeText: string;
   quickCommands: string[];
 }> = [
   {
@@ -39,6 +25,8 @@ const TERMINAL_TABS: Array<{
     label: 'Linux System / Root CLI',
     subtitle: 'Rzeczywista powłoka /bin/bash z bramką autoryzacji Polkit/sudo i audytem',
     defaultPrompt: 'root@svl-debian13:/app/applet#',
+    welcomeText:
+      'Połączono z rzeczywistą sesją wykonawczą Linux (/bin/bash). Operacje wysokiego ryzyka (sudo/systemctl/rm/apt/chmod) są chronione bramką audytu Polkit/RBAC.',
     quickCommands: [
       'uname -a && cat /etc/os-release',
       'df -h / && free -m',
@@ -52,6 +40,8 @@ const TERMINAL_TABS: Array<{
     label: 'Python 3 Console',
     subtitle: 'Interaktywna sesja REPL z załadowanym SVLSystemKernel i TopologicalInfinityEngine',
     defaultPrompt: 'svl-py3>>>',
+    welcomeText:
+      'Python 3 Interactive Kernel REPL. Dostępne obiekty w przestrzeni nazw: kernel, VisualScope, SVLProtectedVariable, TopologicalInfinityEngine, BinaryHyperspaceKernel, WithoutNlpHarmonicEngine.',
     quickCommands: [
       'print(kernel.generate_system_status_report())',
       'TopologicalInfinityEngine(float("-inf"), float("inf")).evaluate_diagnostics()',
@@ -64,18 +54,21 @@ const TERMINAL_TABS: Array<{
     label: 'OpenAI Codex CLI',
     subtitle: 'Integracja Codex CLI, status logowania device OAuth i gałęzi main GitHub',
     defaultPrompt: 'codex@main$',
+    welcomeText:
+      'Terminal OpenAI Codex CLI Bridge. Wpisz "status", aby sprawdzić binarkę codex, autoryzację ChatGPT OAuth (codex login --device) oraz stan gałęzi main.',
     quickCommands: [
       'status',
       'git status -s && git branch -v',
       'git log -n 5 --oneline',
     ],
   },
-
   {
     id: 'hyperspace',
     label: 'Binarna Hiperprzestrzeń',
     subtitle: 'Moduł obliczeniowy 128-bit BinaryHyperspaceKernel (Hamming) + Analiza Harmoniczna Eulera/Fouriera',
     defaultPrompt: 'hyper128>',
+    welcomeText:
+      'Terminal Binarnej Hiperprzestrzeni (zaimportowany z SVL_System/Nowy_system/kernel/binary_hyperspace_kernel.py). Oblicza 128-bitowe wektory Hamminga i szereg Fouriera.',
     quickCommands: [
       'SYSTEM_CALIBRATION_364_QUANTUM_WHEEL',
       'Analiza widmowa Fouriera i fazora Eulera (128-bit)',
@@ -87,6 +80,8 @@ const TERMINAL_TABS: Array<{
     label: 'Konsola Komunikacji Agentów',
     subtitle: 'Bezpośredni kanał Pub/Sub Sferycznej Magistrali Zdarzeń (@Aria, @Alex, @Astyria, @Aurelius)',
     defaultPrompt: 'bus@agents>',
+    welcomeText:
+      'Konsola Komunikacji Agentów (Sferyczna Magistrala Zdarzeń). Użyj składni @Aria, @Alex, @Astyria, @Aurelius <zadanie> lub wpisz "podłącz moje ai".',
     quickCommands: [
       'podłącz moje ai',
       '@Alex Sprawdź spójność usług backendu Python i bazy SQLite',
@@ -97,90 +92,74 @@ const TERMINAL_TABS: Array<{
   },
 ];
 
-export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
-  operatorToken,
-  onRefreshSystem,
-}) => {
+export const TerminalsWorkspace: React.FC = () => {
+  const {
+    tabOrigin,
+    wsState,
+    wsAttempt,
+    serverRevision,
+    terminalLogsByTab,
+    clearTerminalTab,
+    refreshTerminals,
+    reconnectWebSocket,
+  } = useSvlSync();
+
   const [activeTab, setActiveTab] = useState<TerminalTabId>('linux');
   const [commandInput, setCommandInput] = useState('');
   const [isExecuting, setIsExecuting] = useState(false);
-  const [wsConnected, setWsConnected] = useState(false);
-
-  // Polkit high-risk confirmation modal state
-  const [pendingPolkitCmd, setPendingPolkitCmd] = useState<{ cmd: string; reason: string } | null>(null);
-  const [polkitTokenInput, setPolkitTokenInput] = useState(operatorToken || '');
-
-  const [logsByTab, setLogsByTab] = useState<Record<TerminalTabId, TerminalLogLine[]>>(() => {
-    const now = new Date().toLocaleTimeString('pl-PL', { hour12: false });
-    return {
-      linux: [
-        {
-          id: 'init-linux',
-          timestamp: now,
-          kind: 'system',
-          text: 'Połączono z rzeczywistą sesją wykonawczą Linux (/bin/bash). Operacje wysokiego ryzyka (sudo/systemctl/rm/apt/chmod) są chronione bramką audytu Polkit/RBAC.',
-        },
-      ],
-      python: [
-        {
-          id: 'init-python',
-          timestamp: now,
-          kind: 'system',
-          text: 'Python 3 Interactive Kernel REPL. Dostępne obiekty w przestrzeni nazw: kernel, VisualScope, SVLProtectedVariable, TopologicalInfinityEngine, BinaryHyperspaceKernel, WithoutNlpHarmonicEngine.',
-        },
-      ],
-      codex: [
-        {
-          id: 'init-codex',
-          timestamp: now,
-          kind: 'system',
-          text: 'Terminal OpenAI Codex CLI Bridge. Wpisz "status", aby sprawdzić binarkę codex, autoryzację ChatGPT OAuth (codex login --device) oraz stan gałęzi main.',
-        },
-      ],
-
-      hyperspace: [
-        {
-          id: 'init-hyper',
-          timestamp: now,
-          kind: 'system',
-          text: 'Terminal Binarnej Hiperprzestrzeni (zaimportowany z SVL_System/Nowy_system/kernel/binary_hyperspace_kernel.py). Oblicza 128-bitowe wektory Hamminga i szereg Fouriera.',
-        },
-      ],
-      agents: [
-        {
-          id: 'init-agents',
-          timestamp: now,
-          kind: 'system',
-          text: 'Konsola Komunikacji Agentów (Sferyczna Magistrala Zdarzeń). Użyj składni @Aria, @Alex, @Astyria, @Aurelius <zadanie> lub wpisz "podłącz moje ai".',
-        },
-      ],
-    };
+  const [terminalActionError, setTerminalActionError] = useState<string | null>(null);
+  const [localFallbackLogs, setLocalFallbackLogs] = useState<Record<TerminalTabId, TerminalLogLine[]>>({
+    linux: [],
+    python: [],
+    codex: [],
+    hyperspace: [],
+    agents: [],
   });
 
+  // Polkit high-risk confirmation modal state (token supplied strictly by operator input)
+  const [pendingPolkitCmd, setPendingPolkitCmd] = useState<{ cmd: string; reason: string } | null>(null);
+  const [polkitTokenInput, setPolkitTokenInput] = useState('');
+
+  const viewportRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const prevLogLenRef = useRef<number>(0);
+
+  const currentTabMeta = TERMINAL_TABS.find((t) => t.id === activeTab)!;
+  const persistedLogs = terminalLogsByTab[activeTab] || [];
+  const mergedTabLogs: TerminalLogLine[] =
+    persistedLogs.length > 0 || (localFallbackLogs[activeTab] || []).length > 0
+      ? [
+          ...persistedLogs,
+          ...(localFallbackLogs[activeTab] || []).filter(
+            (loc) => !persistedLogs.some((srv) => srv.id === loc.id),
+          ),
+        ]
+      : [
+          {
+            id: `banner-${activeTab}`,
+            timestamp: new Date().toLocaleTimeString('pl-PL', { hour12: false }),
+            kind: 'system',
+            text: currentTabMeta.welcomeText,
+          },
+        ];
 
   useEffect(() => {
-    if (operatorToken && !polkitTokenInput) {
-      setPolkitTokenInput(operatorToken);
+    const curLen = mergedTabLogs.length;
+    const prevLen = prevLogLenRef.current;
+    prevLogLenRef.current = curLen;
+    if (curLen === prevLen && !isExecuting) return;
+
+    const el = viewportRef.current;
+    if (!el) return;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (dist < 180 || isExecuting) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [operatorToken]);
+  }, [activeTab, mergedTabLogs.length, isExecuting]);
 
-  useEffect(() => {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws/svl`);
-    ws.onopen = () => setWsConnected(true);
-    ws.onclose = () => setWsConnected(false);
-    ws.onerror = () => setWsConnected(false);
-    return () => ws.close();
-  }, []);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logsByTab, activeTab, isExecuting]);
-
-  const appendLog = (tab: TerminalTabId, kind: TerminalLogLine['kind'], text: string) => {
+  const appendLocalOnlyLog = (tab: TerminalTabId, kind: TerminalLogLine['kind'], text: string) => {
     const now = new Date().toLocaleTimeString('pl-PL', { hour12: false });
-    setLogsByTab((prev) => ({
+    setLocalFallbackLogs((prev) => ({
       ...prev,
       [tab]: [
         ...prev[tab],
@@ -201,8 +180,8 @@ export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
   ) => {
     const trimmed = rawCmd.trim();
     if (!trimmed || isExecuting) return;
+    setTerminalActionError(null);
 
-    // Check client-side Polkit gate first for Linux/Codex tabs unless already confirmed
     if ((activeTab === 'linux' || activeTab === 'codex') && !polkitConfirmed) {
       const risk = classifyCommandRisk(trimmed);
       if (risk.highRisk) {
@@ -211,27 +190,24 @@ export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
       }
     }
 
-    const tabMeta = TERMINAL_TABS.find((t) => t.id === activeTab)!;
-    appendLog(activeTab, 'input', `${tabMeta.defaultPrompt} ${trimmed}`);
     setCommandInput('');
     setIsExecuting(true);
 
     try {
-
-
-      const resp = await fetch('/api/terminal/exec', {
+      const res = await safeFetchJson<any>('/api/terminal/exec', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        timeoutMs: 22000,
         body: JSON.stringify({
           terminalType: activeTab,
           command: trimmed,
           polkitConfirmed,
           operatorToken: tokenOverride ?? polkitTokenInput,
+          origin: tabOrigin,
         }),
       });
-      const data = await resp.json();
+      const data = res.data;
 
-      if (data.requiresPolkit) {
+      if (data?.requiresPolkit) {
         setPendingPolkitCmd({
           cmd: trimmed,
           reason: data.reason || 'Wymagana autoryzacja Polkit / SVL_OPERATOR_TOKEN.',
@@ -239,29 +215,43 @@ export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
         return;
       }
 
-      if (data.stdout) {
-        appendLog(activeTab, 'stdout', data.stdout.trimEnd());
+      if (!res.ok || !data) {
+        appendLocalOnlyLog(activeTab, 'stderr', res.error || data?.error || `Błąd HTTP ${res.status}`);
+        return;
       }
-      if (data.stderr) {
-        appendLog(activeTab, 'stderr', data.stderr.trimEnd());
-      }
-      if (!data.stdout && !data.stderr) {
-        appendLog(
-          activeTab,
-          data.ok ? 'system' : 'stderr',
-          data.ok ? '(Polecenie zakończone kodem 0 — brak wyjścia stdout)' : data.error || 'Błąd wykonania.',
-        );
-      }
-      await onRefreshSystem();
-    } catch (err: any) {
-      appendLog(activeTab, 'stderr', `Błąd sesji terminalowej: ${err?.message || String(err)}`);
+
+      // Sync persisted terminal logs & agents state immediately from SQLite
+      setLocalFallbackLogs((prev) => ({ ...prev, [activeTab]: [] }));
+      await refreshTerminals();
     } finally {
       setIsExecuting(false);
     }
   };
 
-  const currentTabMeta = TERMINAL_TABS.find((t) => t.id === activeTab)!;
-  const currentLogs = logsByTab[activeTab] || [];
+  const handleClearActiveTab = async () => {
+    setTerminalActionError(null);
+    setLocalFallbackLogs((prev) => ({ ...prev, [activeTab]: [] }));
+    const res = await clearTerminalTab(activeTab);
+    if (!res.ok && res.error) {
+      setTerminalActionError(res.error);
+    }
+  };
+
+  const wsLabel =
+    wsState === 'online'
+      ? `WS Online · rev ${serverRevision}`
+      : wsState === 'connecting'
+        ? 'WS Łączenie...'
+        : wsState === 'reconnecting'
+          ? `WS Ponawianie (#${wsAttempt})...`
+          : 'WS Offline';
+
+  const wsClass =
+    wsState === 'online'
+      ? 'text-emerald-400'
+      : wsState === 'offline'
+        ? 'text-rose-400'
+        : 'text-amber-400';
 
   return (
     <div className="flex flex-col h-full bg-[#0B0D13] overflow-hidden">
@@ -288,20 +278,23 @@ export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
         </div>
 
         <div className="flex items-center gap-3 text-xs font-mono tabular-nums text-slate-400">
-          <span>WebSocket (/ws/svl): {wsConnected ? 'POŁĄCZONY' : 'REST Fallback'}</span>
+          <button
+            type="button"
+            onClick={() => {
+              if (wsState === 'offline') reconnectWebSocket();
+            }}
+            className={`${wsClass} ${wsState === 'offline' ? 'hover:underline cursor-pointer' : 'cursor-default'}`}
+          >
+            /ws/svl: {wsLabel}
+          </button>
           <span aria-hidden="true">·</span>
           <button
             type="button"
-            onClick={() =>
-              setLogsByTab((prev) => ({
-                ...prev,
-                [activeTab]: [],
-              }))
-            }
+            onClick={() => void handleClearActiveTab()}
             className="text-slate-400 hover:text-rose-400 flex items-center gap-1"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            Wyczyść bufor
+            Wyczyść historię SQLite
           </button>
         </div>
       </div>
@@ -314,7 +307,7 @@ export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
             <button
               key={qCmd}
               type="button"
-              onClick={() => executeTerminalCommand(qCmd)}
+              onClick={() => void executeTerminalCommand(qCmd)}
               disabled={isExecuting}
               className="px-2.5 py-1 rounded bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-[11px] font-mono whitespace-nowrap shrink-0 transition-colors"
             >
@@ -324,9 +317,15 @@ export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
         </div>
       </div>
 
+      {terminalActionError && (
+        <div className="px-4 py-2 bg-rose-950/40 border-b border-rose-500/40 text-xs font-mono text-rose-300">
+          {terminalActionError}
+        </div>
+      )}
+
       {/* Terminal Output Viewport */}
-      <div className="flex-1 overflow-y-auto p-4 font-mono text-xs space-y-2 bg-[#07090E]">
-        {currentLogs.map((line) => {
+      <div ref={viewportRef} className="flex-1 overflow-y-auto p-4 font-mono text-xs space-y-2 bg-[#07090E]">
+        {mergedTabLogs.map((line) => {
           let textStyle = 'text-slate-200';
           if (line.kind === 'input') textStyle = 'text-violet-300 font-semibold';
           else if (line.kind === 'stderr') textStyle = 'text-rose-400';
@@ -368,9 +367,10 @@ export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
               onClick={() => {
                 const cmdToRun = pendingPolkitCmd.cmd;
                 setPendingPolkitCmd(null);
-                executeTerminalCommand(cmdToRun, true, polkitTokenInput);
+                void executeTerminalCommand(cmdToRun, true, polkitTokenInput);
               }}
-              className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold whitespace-nowrap"
+              disabled={!polkitTokenInput.trim()}
+              className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold whitespace-nowrap"
             >
               Autoryzuj i wykonaj
             </button>
@@ -389,7 +389,7 @@ export const TerminalsWorkspace: React.FC<TerminalsWorkspaceProps> = ({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          executeTerminalCommand(commandInput);
+          void executeTerminalCommand(commandInput);
         }}
         className="p-3 bg-[#111520] border-t border-slate-800 flex items-center gap-2"
       >

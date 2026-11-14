@@ -167,6 +167,53 @@ class TestSVLKernelSuite(unittest.TestCase):
             remaining = kernel.list_conversations_with_messages()
             self.assertEqual([c["id"] for c in remaining], ["conv-sync-1"])
 
+    def test_system_modules_and_chat_state_sync_idempotency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = str(Path(tmpdir) / "test_modules_sync.sqlite3")
+            token = "test_operator_token_with_more_than_32_chars_abcdef"
+            kernel = SVLSystemKernel(db_path=db_file, operator_token=token)
+
+            kernel.save_chat_message(
+                "conv-mod-1",
+                "Moduł SVL-364",
+                "svl-hybrid-router",
+                {
+                    "id": "m-svl364-1",
+                    "role": "user",
+                    "sender": "Mateusz",
+                    "content": "Skonfiguruj cały system i daj polecenie statkowi svl-364 ebon apex",
+                    "timestamp": "16:28",
+                },
+            )
+            first_sync = kernel.sync_chat_state_mutations(origin="test-suite")
+            self.assertEqual(first_sync["appliedCount"], 1)
+            self.assertIn("svl-364", first_sync["materializedModules"])
+
+            mods = kernel.list_system_modules()
+            svl364 = next((m for m in mods if m["id"] == "svl-364"), None)
+            self.assertIsNotNone(svl364)
+            self.assertEqual(svl364["name"], "SVL-364 Ebon Apex")
+            self.assertEqual(svl364["source"], "chat")
+            self.assertEqual(svl364["config"].get("async_event_bus_buffer"), 500)
+
+            # Second sync MUST be strictly idempotent (appliedCount == 0)
+            second_sync = kernel.sync_chat_state_mutations(origin="test-suite")
+            self.assertEqual(second_sync["appliedCount"], 0)
+
+            # Direct upsert + delete of custom module
+            up = kernel.upsert_system_module(
+                "custom-mod-99",
+                name="Custom Module 99",
+                kind="Plugin",
+                description="Test plugin",
+                config={"enabled": True},
+            )
+            self.assertEqual(up["module"]["id"], "custom-mod-99")
+            self.assertTrue(any(m["id"] == "custom-mod-99" for m in kernel.list_system_modules()))
+
+            kernel.delete_system_module("custom-mod-99")
+            self.assertFalse(any(m["id"] == "custom-mod-99" for m in kernel.list_system_modules()))
+
 
 if __name__ == "__main__":
     unittest.main()

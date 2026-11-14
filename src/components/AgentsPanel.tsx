@@ -1,38 +1,35 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  Cpu,
-  Activity,
-  Database,
   Send,
   RefreshCw,
   CheckCircle2,
-  AlertCircle,
-  Terminal,
   GitBranch,
-  Layers,
   MessageSquare,
   Sliders,
+  AlertTriangle,
 } from 'lucide-react';
-import { CANONICAL_AGENTS } from '../utils/svlLogic';
+import { CANONICAL_AGENTS, createUniqueId, safeFetchJson } from '../utils/svlLogic';
+import { useSvlSync } from '../utils/svlSyncStore';
 
 interface AgentsPanelProps {
-  agentsData: any;
-  healthData?: any;
-  onConnectMyAi: () => Promise<any>;
-  isConnecting: boolean;
-  onRefresh: () => Promise<void>;
-  onChatWithAgent?: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius') => void;
+  onNavigateToChat?: () => void;
 }
 
-export const AgentsPanel: React.FC<AgentsPanelProps> = ({
-  agentsData,
-  healthData,
-  onConnectMyAi,
-  isConnecting,
-  onRefresh,
-  onChatWithAgent,
-}) => {
-  const [selectedAgent, setSelectedAgent] = useState<'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('Alex');
+export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) => {
+  const {
+    tabOrigin,
+    agentsData,
+    healthData,
+    isConnectingAi,
+    connectMyAi,
+    refreshDomainModules,
+    selectedAgentPanel: selectedAgent,
+    setSelectedAgentPanel: setSelectedAgent,
+    setTargetAgent,
+    notifyLocalMutation,
+    serverRevision,
+  } = useSvlSync();
+
   const [senderActor, setSenderActor] = useState<'operator' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('operator');
   const [taskTitle, setTaskTitle] = useState('');
   const [taskPayload, setTaskPayload] = useState('');
@@ -40,7 +37,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
   const [memoryKind, setMemoryKind] = useState<'fact' | 'decision' | 'task' | 'episode'>('fact');
   const [dispatchStatus, setDispatchStatus] = useState<string | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<string | null>(null);
-  const [configStatus, setConfigStatus] = useState<string | null>(null);
+  const [configStatus, setConfigStatus] = useState<{ ok: boolean; msg: string; conflict?: boolean } | null>(null);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
   const agentsList: any[] = agentsData?.agents || [];
@@ -52,6 +49,12 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
 
   const activeAgentObj = agentsList.find((a) => a.canonical_name === selectedAgent) || {};
   const activeAgentCfg = activeAgentObj.config || {};
+  const currentConfigRevision: number | undefined =
+    typeof activeAgentObj.config_revision === 'number'
+      ? activeAgentObj.config_revision
+      : typeof activeAgentCfg.revision === 'number'
+        ? activeAgentCfg.revision
+        : undefined;
 
   const [cfgPreferredModel, setCfgPreferredModel] = useState('svl-hybrid-router');
   const [cfgOllamaModel, setCfgOllamaModel] = useState('llama3.2-vision:11b');
@@ -61,7 +64,11 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
   const [cfgVisionEnabled, setCfgVisionEnabled] = useState(true);
   const [cfgSystemPrompt, setCfgSystemPrompt] = useState('');
 
-  useEffect(() => {
+  const [isConfigDirty, setIsConfigDirty] = useState(false);
+  const [remoteConfigChangedWhileDirty, setRemoteConfigChangedWhileDirty] = useState(false);
+  const loadedRevisionRef = useRef<{ agent: string; rev?: number }>({ agent: selectedAgent, rev: undefined });
+
+  const hydrateConfigFormFromServer = () => {
     setCfgPreferredModel(activeAgentCfg.preferred_model || 'svl-hybrid-router');
     setCfgOllamaModel(activeAgentCfg.ollama_model || 'llama3.2-vision:11b');
     setCfgFallbackModel(activeAgentCfg.fallback_model || 'gemini-3.1-flash-lite');
@@ -69,7 +76,43 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
     setCfgRbacRole(activeAgentCfg.rbac_role || '');
     setCfgVisionEnabled(activeAgentCfg.vision_enabled !== false);
     setCfgSystemPrompt(activeAgentCfg.system_prompt || '');
-  }, [selectedAgent, activeAgentObj.canonical_name, activeAgentCfg.preferred_model, activeAgentCfg.ollama_model, activeAgentCfg.fallback_model, activeAgentCfg.temperature, activeAgentCfg.rbac_role, activeAgentCfg.vision_enabled, activeAgentCfg.system_prompt]);
+    setIsConfigDirty(false);
+    setRemoteConfigChangedWhileDirty(false);
+    loadedRevisionRef.current = { agent: selectedAgent, rev: currentConfigRevision };
+  };
+
+  useEffect(() => {
+    const agentChanged = loadedRevisionRef.current.agent !== selectedAgent;
+    if (agentChanged) {
+      hydrateConfigFormFromServer();
+      setConfigStatus(null);
+      return;
+    }
+
+    const revChanged =
+      currentConfigRevision !== undefined && currentConfigRevision !== loadedRevisionRef.current.rev;
+
+    if (!isConfigDirty) {
+      hydrateConfigFormFromServer();
+    } else if (revChanged) {
+      setRemoteConfigChangedWhileDirty(true);
+    }
+  }, [
+    selectedAgent,
+    currentConfigRevision,
+    activeAgentCfg.preferred_model,
+    activeAgentCfg.ollama_model,
+    activeAgentCfg.fallback_model,
+    activeAgentCfg.temperature,
+    activeAgentCfg.rbac_role,
+    activeAgentCfg.vision_enabled,
+    activeAgentCfg.system_prompt,
+    isConfigDirty,
+  ]);
+
+  const markDirty = () => {
+    if (!isConfigDirty) setIsConfigDirty(true);
+  };
 
   const handleDispatchTask = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,28 +121,27 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
       return;
     }
     setDispatchStatus('Wysyłanie zadania przez Sferyczną Magistralę Zdarzeń...');
-    try {
-      const resp = await fetch('/api/py/agents/task', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sender: senderActor,
-          target_agent: selectedAgent,
-          title: taskTitle.trim(),
-          payload: taskPayload.trim() || taskTitle.trim(),
-        }),
-      });
-      const data = await resp.json();
-      if (data.ok) {
-        setDispatchStatus(`Zadanie wykonane przez ${selectedAgent}: ${data.task?.result}`);
-        setTaskTitle('');
-        setTaskPayload('');
-        await onRefresh();
-      } else {
-        setDispatchStatus(`Błąd: ${data.error || 'Nie udało się wykonać zadania'}`);
-      }
-    } catch (err: any) {
-      setDispatchStatus(`Błąd sieci: ${err?.message || String(err)}`);
+    const res = await safeFetchJson<any>('/api/py/agents/task', {
+      method: 'POST',
+      timeoutMs: 15000,
+      body: JSON.stringify({
+        sender: senderActor,
+        target_agent: selectedAgent,
+        title: taskTitle.trim(),
+        payload: taskPayload.trim() || taskTitle.trim(),
+        origin: tabOrigin,
+        eventId: createUniqueId('evt-task'),
+      }),
+    });
+    const data = res.data;
+    if (res.ok && data?.ok) {
+      setDispatchStatus(`Zadanie wykonane przez ${selectedAgent}: ${data.task?.result}`);
+      setTaskTitle('');
+      setTaskPayload('');
+      notifyLocalMutation('agent_task', selectedAgent, data.serverRevision, data.event);
+      await refreshDomainModules(['agents']);
+    } else {
+      setDispatchStatus(`Błąd: ${res.error || data?.error || 'Nie udało się wykonać zadania'}`);
     }
   };
 
@@ -109,39 +151,42 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
       setMemoryStatus('Błąd: Wpis pamięci nie może być pusty.');
       return;
     }
-    try {
-      const resp = await fetch('/api/py/agents/memory', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agent: selectedAgent,
-          kind: memoryKind,
-          content: memoryContent.trim(),
-        }),
-      });
-      const data = await resp.json();
-      if (data.ok) {
-        setMemoryStatus(`Zapisano w trwałej pamięci SQLite (zakres: agent:${selectedAgent}).`);
-        setMemoryContent('');
-        await onRefresh();
-      } else {
-        setMemoryStatus(`Błąd: ${data.error}`);
-      }
-    } catch (err: any) {
-      setMemoryStatus(`Błąd: ${err?.message}`);
+    const res = await safeFetchJson<any>('/api/py/agents/memory', {
+      method: 'POST',
+      timeoutMs: 12000,
+      body: JSON.stringify({
+        agent: selectedAgent,
+        kind: memoryKind,
+        content: memoryContent.trim(),
+        origin: tabOrigin,
+        eventId: createUniqueId('evt-mem'),
+      }),
+    });
+    const data = res.data;
+    if (res.ok && data?.ok) {
+      setMemoryStatus(`Zapisano w trwałej pamięci SQLite (zakres: agent:${selectedAgent}).`);
+      setMemoryContent('');
+      notifyLocalMutation('agent_memory', selectedAgent, data.serverRevision, data.event);
+      await refreshDomainModules(['agents']);
+    } else {
+      setMemoryStatus(`Błąd: ${res.error || data?.error || 'Nie udało się zapisać pamięci.'}`);
     }
   };
 
-  const handleSaveAgentConfig = async (e: React.FormEvent) => {
+  const handleSaveAgentConfig = async (e: React.FormEvent, forceLatestRevision = false) => {
     e.preventDefault();
     setIsSavingConfig(true);
     setConfigStatus(null);
     try {
-      const resp = await fetch('/api/py/agents/config', {
+      const expectedRev = forceLatestRevision ? currentConfigRevision : loadedRevisionRef.current.rev;
+      const res = await safeFetchJson<any>('/api/py/agents/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        timeoutMs: 12000,
         body: JSON.stringify({
           agent: selectedAgent,
+          expectedRevision: expectedRev,
+          origin: tabOrigin,
+          eventId: createUniqueId('evt-cfg'),
           config: {
             preferred_model: cfgPreferredModel,
             ollama_model: cfgOllamaModel,
@@ -153,15 +198,33 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
           },
         }),
       });
-      const data = await resp.json();
-      if (data.ok) {
-        setConfigStatus(`Zapisano pełną konfigurację dla ${selectedAgent} w SQLite.`);
-        await onRefresh();
+      const data = res.data;
+      if (res.ok && data?.ok) {
+        loadedRevisionRef.current = { agent: selectedAgent, rev: data.revision };
+        setIsConfigDirty(false);
+        setRemoteConfigChangedWhileDirty(false);
+        setConfigStatus({
+          ok: true,
+          msg: `Zapisano pełną konfigurację dla ${selectedAgent} w SQLite (rewizja ${data.revision ?? '?'}).`,
+        });
+        notifyLocalMutation('agent_config', selectedAgent, data.serverRevision, data.event);
+        await refreshDomainModules(['agents']);
+      } else if (res.conflict || res.status === 409) {
+        setRemoteConfigChangedWhileDirty(true);
+        setConfigStatus({
+          ok: false,
+          conflict: true,
+          msg:
+            `Konflikt rewizji (HTTP 409): konfiguracja ${selectedAgent} została zmieniona w innej sesji (serwer rev ${data?.currentRevision ?? '?'}). ` +
+            `Twoje niezapisane pola zachowano.`,
+        });
+        await refreshDomainModules(['agents']);
       } else {
-        setConfigStatus(`Błąd zapisu: ${data.error}`);
+        setConfigStatus({
+          ok: false,
+          msg: `Błąd zapisu: ${res.error || data?.error || 'Nieznany błąd zapisu'}`,
+        });
       }
-    } catch (err: any) {
-      setConfigStatus(`Błąd sieci: ${err?.message || String(err)}`);
     } finally {
       setIsSavingConfig(false);
     }
@@ -171,10 +234,11 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
     setIsSavingConfig(true);
     setConfigStatus(null);
     try {
-      const resp = await fetch('/api/py/agents/configure-all', {
+      const res = await safeFetchJson<any>('/api/py/agents/configure-all', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        timeoutMs: 25000,
         body: JSON.stringify({
+          origin: tabOrigin,
           config: {
             preferred_model: 'svl-hybrid-router',
             ollama_model: 'llama3.2-vision:11b',
@@ -184,15 +248,21 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
           },
         }),
       });
-      const data = await resp.json();
-      await onRefresh();
-      if (data.ok) {
-        setConfigStatus('Skonfigurowano i podłączono wszystkich 4 agentów (Ollama llama3.2-vision:11b + Gemini 3.1 + Magistrala Sferyczna).');
+      const data = res.data;
+      setIsConfigDirty(false);
+      await refreshDomainModules(['agents', 'health']);
+      if (res.ok && data?.ok) {
+        notifyLocalMutation('agent_config', 'all', data.serverRevision);
+        setConfigStatus({
+          ok: true,
+          msg: 'Skonfigurowano i podłączono wszystkich 4 agentów (Ollama llama3.2-vision:11b + Gemini 3.1 + Magistrala Sferyczna).',
+        });
       } else {
-        setConfigStatus(`Błąd: ${data.error}`);
+        setConfigStatus({
+          ok: false,
+          msg: `Błąd: ${res.error || data?.error || 'Nie udało się skonfigurować agentów.'}`,
+        });
       }
-    } catch (err: any) {
-      setConfigStatus(`Błąd sieci: ${err?.message || String(err)}`);
     } finally {
       setIsSavingConfig(false);
     }
@@ -207,13 +277,13 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
             01. Panel Czterech Agentów AI (Aria, Alex, Astyria, Aurelius)
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Zachowane oryginalne identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, osobne procesy Python (PID/UID), izolowana pamięć SQLite, konfiguracja Ollama 11B Vision i komunikacja na Sferycznej Magistrali Zdarzeń.
+            Zachowane oryginalne identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, osobne procesy Python (PID/UID), izolowana pamięć SQLite, konfiguracja Ollama 11B Vision i magistrala zdarzeń (rev {serverRevision}).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <button
             type="button"
-            onClick={onRefresh}
+            onClick={() => void refreshDomainModules(['agents', 'health'])}
             className="min-h-[40px] px-3.5 py-2 rounded-lg bg-[#111520] hover:bg-slate-800 border border-slate-700 text-xs font-medium text-slate-200 flex items-center gap-2 transition-colors whitespace-nowrap"
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -221,7 +291,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
           </button>
           <button
             type="button"
-            onClick={handleConfigureAllAgents}
+            onClick={() => void handleConfigureAllAgents()}
             disabled={isSavingConfig}
             className="min-h-[40px] px-3.5 py-2 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 disabled:opacity-50 text-xs font-semibold text-white flex items-center gap-2 transition-colors whitespace-nowrap"
           >
@@ -230,12 +300,12 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
           </button>
           <button
             type="button"
-            onClick={onConnectMyAi}
-            disabled={isConnecting}
+            onClick={() => void connectMyAi('agents_panel_button')}
+            disabled={isConnectingAi}
             className="min-h-[40px] px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-xs font-semibold text-white flex items-center gap-2 transition-colors whitespace-nowrap"
           >
             <GitBranch className="w-4 h-4" />
-            {isConnecting ? 'Łączenie z SVL_System...' : 'Wykonaj: podłącz moje ai'}
+            {isConnectingAi ? 'Łączenie z SVL_System...' : 'Wykonaj: podłącz moje ai'}
           </button>
         </div>
       </div>
@@ -289,7 +359,6 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
                   </span>
                 </div>
 
-                {/* Unboxed clean metadata */}
                 <div className="text-[11px] font-mono tabular-nums text-slate-400">
                   <span>{isOnline ? `ONLINE (PID ${live.pid} · UID ${live.uid})` : 'STAN: DEFINICJA KODU'}</span>
                   <span aria-hidden="true"> · </span>
@@ -324,12 +393,13 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
                     {live.heartbeat_at ? new Date(live.heartbeat_at).toLocaleTimeString('pl-PL') : 'Brak (nieuruchomiony)'}
                   </span>
                 </div>
-                {onChatWithAgent && (
+                {onNavigateToChat && (
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      onChatWithAgent(meta.canonicalName as any);
+                      setTargetAgent(meta.canonicalName);
+                      onNavigateToChat();
                     }}
                     className="mt-2 w-full py-1.5 px-2.5 rounded-lg bg-violet-600/20 hover:bg-violet-600/35 border border-violet-500/40 text-violet-200 text-xs font-sans font-medium flex items-center justify-center gap-1.5 transition-colors"
                   >
@@ -345,12 +415,11 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
 
       {/* Interactive Agent-to-Agent Task Queue & Memory Workspace */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Async Task Dispatcher (Operator -> Agent or Agent -> Agent) */}
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-4">
           <h2 className="text-sm font-semibold text-slate-100">
             02. Asynchroniczna Kolejka Zadań i Komunikacja Agent-Agent (Sferyczny Event Bus)
           </h2>
-          <form onSubmit={handleDispatchTask} className="space-y-3">
+          <form onSubmit={(e) => void handleDispatchTask(e)} className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label htmlFor="task-sender-select" className="block text-xs text-slate-400 mb-1">
@@ -430,7 +499,6 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
             </button>
           </form>
 
-          {/* Selected Agent Live Logs */}
           <div className="pt-3 border-t border-slate-800 space-y-2">
             <div className="text-xs font-semibold text-slate-300">
               Dziennik zdarzeń workera: {selectedAgent} ({(agentLogs[selectedAgent] || []).length} wpisów)
@@ -460,7 +528,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
             03. Izolowana Pamięć Agenta w SQLite (Zakres: agent:{selectedAgent})
           </h2>
 
-          <form onSubmit={handleAddMemory} className="space-y-3">
+          <form onSubmit={(e) => void handleAddMemory(e)} className="space-y-3">
             <div className="flex gap-2">
               <select
                 aria-label="Typ rekordu pamięci"
@@ -489,7 +557,9 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
               </button>
             </div>
             {memoryStatus && (
-              <div className="text-xs font-mono text-emerald-400">{memoryStatus}</div>
+              <div className={`text-xs font-mono ${memoryStatus.startsWith('Błąd') ? 'text-rose-400' : 'text-emerald-400'}`}>
+                {memoryStatus}
+              </div>
             )}
           </form>
 
@@ -521,15 +591,47 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
       {/* 04. Full Per-Agent Model, RBAC & Prompt Configuration */}
       <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-slate-100">
-            04. Pełna Konfiguracja Agenta: {selectedAgent} (id: {activeAgentObj.id || selectedAgent})
-          </h2>
+          <div className="flex items-center gap-2.5">
+            <h2 className="text-sm font-semibold text-slate-100">
+              04. Pełna Konfiguracja Agenta: {selectedAgent} (id: {activeAgentObj.id || selectedAgent})
+            </h2>
+            {isConfigDirty && (
+              <span className="text-[11px] font-mono text-amber-400">
+                Niezapisane zmiany lokalne
+              </span>
+            )}
+          </div>
           <span className="text-xs font-mono text-slate-400">
-            Zakresy: {(activeAgentCfg.allowed_scopes || []).join(', ') || 'chat, agents.pubsub'}
+            rev: {currentConfigRevision ?? 1} · Zakresy: {(activeAgentCfg.allowed_scopes || []).join(', ') || 'chat, agents.pubsub'}
           </span>
         </div>
 
-        <form onSubmit={handleSaveAgentConfig} className="space-y-4">
+        {remoteConfigChangedWhileDirty && (
+          <div className="p-3 rounded-lg bg-amber-950/30 border border-amber-500/40 text-xs text-amber-200 flex flex-wrap items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              Konfiguracja tego agenta w bazie SQLite uległa zmianie w tle (rewizja {currentConfigRevision}). Twoje lokalne pola edycji zostały bezpiecznie zachowane.
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={hydrateConfigFormFromServer}
+                className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium"
+              >
+                Pobierz wersję z serwera
+              </button>
+              <button
+                type="button"
+                onClick={(e) => void handleSaveAgentConfig(e, true)}
+                className="px-2.5 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-semibold"
+              >
+                Nadpisz moimi zmianami
+              </button>
+            </div>
+          </div>
+        )}
+
+        <form onSubmit={(e) => void handleSaveAgentConfig(e, false)} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
             <div>
               <label htmlFor="cfg-preferred-model" className="block text-xs text-slate-400 mb-1">
@@ -538,11 +640,21 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
               <select
                 id="cfg-preferred-model"
                 value={cfgPreferredModel}
-                onChange={(e) => setCfgPreferredModel(e.target.value)}
+                onChange={(e) => {
+                  markDirty();
+                  setCfgPreferredModel(e.target.value);
+                }}
                 className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
               >
                 <option value="svl-hybrid-router">SVL Router (Ollama -&gt; Gemini)</option>
-                <option value="ollama:llama3.2-vision:11b">Tylko Ollama: llama3.2-vision:11b</option>
+                {ollamaModels.map((m: any) => (
+                  <option key={m.name} value={`ollama:${m.name}`}>
+                    Tylko Ollama: {m.name} ({m.parameter_size || 'LLM'})
+                  </option>
+                ))}
+                {!ollamaModels.some((m: any) => m.name === 'llama3.2-vision:11b') && (
+                  <option value="ollama:llama3.2-vision:11b">Tylko Ollama: llama3.2-vision:11b</option>
+                )}
                 <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
                 <option value="gemini-4-hydrogen">Gemini 4 Hydrogen</option>
               </select>
@@ -557,7 +669,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
                 type="text"
                 list="ollama-pulled-models"
                 value={cfgOllamaModel}
-                onChange={(e) => setCfgOllamaModel(e.target.value)}
+                onChange={(e) => {
+                  markDirty();
+                  setCfgOllamaModel(e.target.value);
+                }}
                 className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100"
               />
               <datalist id="ollama-pulled-models">
@@ -579,7 +694,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
                 min="0"
                 max="1.5"
                 value={cfgTemperature}
-                onChange={(e) => setCfgTemperature(e.target.value)}
+                onChange={(e) => {
+                  markDirty();
+                  setCfgTemperature(e.target.value);
+                }}
                 className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100"
               />
             </div>
@@ -592,7 +710,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
                 id="cfg-rbac-role"
                 type="text"
                 value={cfgRbacRole}
-                onChange={(e) => setCfgRbacRole(e.target.value)}
+                onChange={(e) => {
+                  markDirty();
+                  setCfgRbacRole(e.target.value);
+                }}
                 className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs font-mono text-slate-100"
               />
             </div>
@@ -606,7 +727,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
               id="cfg-system-prompt"
               rows={3}
               value={cfgSystemPrompt}
-              onChange={(e) => setCfgSystemPrompt(e.target.value)}
+              onChange={(e) => {
+                markDirty();
+                setCfgSystemPrompt(e.target.value);
+              }}
               className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 leading-relaxed"
             />
           </div>
@@ -616,7 +740,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
               <input
                 type="checkbox"
                 checked={cfgVisionEnabled}
-                onChange={(e) => setCfgVisionEnabled(e.target.checked)}
+                onChange={(e) => {
+                  markDirty();
+                  setCfgVisionEnabled(e.target.checked);
+                }}
                 className="rounded border-slate-700 bg-[#0B0D13] text-violet-500"
               />
               Obsługa analizy obrazów (Vision) włączona
@@ -632,8 +759,8 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({
           </div>
 
           {configStatus && (
-            <div className="p-2.5 rounded bg-[#0B0D13] border border-slate-800 text-xs font-mono text-emerald-400">
-              {configStatus}
+            <div className={`p-2.5 rounded bg-[#0B0D13] border border-slate-800 text-xs font-mono ${configStatus.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
+              {configStatus.msg}
             </div>
           )}
         </form>

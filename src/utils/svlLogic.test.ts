@@ -6,8 +6,10 @@ import {
   calculateCompactMetricC,
   classifyCommandRisk,
   compactifyValue,
+  extractExplicitChatModuleDirective,
   isConnectMyAiCommand,
   mergeConversationThreads,
+  safeParseJsonResponse,
   selectOllamaModelName,
   validateOllamaHostUrl,
   validateOperatorTokenFormat,
@@ -130,3 +132,50 @@ test('mergeConversationThreads preserves pending in-flight messages and respects
   assert.equal(merged[0].id, 'c-new');
   assert.deepEqual(merged[1].messages.map((m) => m.id), ['m1', 'm2']);
 });
+
+test('safeParseJsonResponse handles HTML <!doctype> and non-JSON payloads without SyntaxError', async () => {
+  const htmlResp = new Response('<!doctype html><html><body>502 Bad Gateway</body></html>', {
+    status: 200,
+    headers: { 'Content-Type': 'text/html' },
+  });
+  const htmlRes = await safeParseJsonResponse(htmlResp);
+  assert.equal(htmlRes.ok, false);
+  assert.equal(htmlRes.data, null);
+  assert.equal(htmlRes.proxyHtml, true);
+  assert.equal(htmlRes.offline, true);
+  assert.ok(htmlRes.error?.includes('HTML'));
+
+  const proxiedErrResp = new Response(
+    JSON.stringify({ ok: false, upstreamStatus: 503, error: 'Chwilowe przeciążenie modelu AI.' }),
+    { status: 424, headers: { 'Content-Type': 'application/json' } },
+  );
+  const proxiedErr = await safeParseJsonResponse(proxiedErrResp);
+  assert.equal(proxiedErr.ok, false);
+  assert.equal(proxiedErr.status, 424);
+  assert.equal(proxiedErr.offline, true);
+  assert.equal(proxiedErr.error, 'Chwilowe przeciążenie modelu AI.');
+
+  const jsonResp = new Response(JSON.stringify({ ok: true, reply: 'Działa' }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+  const jsonRes = await safeParseJsonResponse<{ ok: boolean; reply: string }>(jsonResp);
+  assert.equal(jsonRes.ok, true);
+  assert.equal(jsonRes.data?.reply, 'Działa');
+  assert.equal(jsonRes.error, null);
+});
+
+test('extractExplicitChatModuleDirective detects svl-364 and explicit module commands', () => {
+  const apex = extractExplicitChatModuleDirective('Skonfiguruj system dla statku svl-364 ebon apex');
+  assert.ok(apex);
+  assert.equal(apex.id, 'svl-364');
+  assert.equal(apex.name, 'SVL-364 Ebon Apex');
+  assert.equal(apex.config.async_event_bus_buffer, 500);
+
+  const custom = extractExplicitChatModuleDirective('Dodaj moduł telemetry-bridge-v2 do backendu');
+  assert.ok(custom);
+  assert.equal(custom.id, 'telemetry-bridge-v2');
+
+  assert.equal(extractExplicitChatModuleDirective('Cześć Alex, jak minął dzień?'), null);
+});
+

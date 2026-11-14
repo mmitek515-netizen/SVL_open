@@ -1,24 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  Server,
-  HardDrive,
-  Cpu,
-  FolderOpen,
-  FileCode,
   Copy,
   Check,
   RefreshCw,
-  GitBranch,
-  Terminal,
-  AlertTriangle,
-  CheckCircle2,
 } from 'lucide-react';
-
-interface LinuxDeployDashboardProps {
-  healthData: any;
-  agentsData: any;
-  onRefresh: () => Promise<void>;
-}
+import { createUniqueId, safeFetchJson } from '../utils/svlLogic';
+import { useSvlSync } from '../utils/svlSyncStore';
 
 const QUICK_INSPECT_FILES = [
   'backend/svl_core.py',
@@ -33,11 +20,16 @@ const QUICK_INSPECT_FILES = [
   '.env.example',
 ];
 
-export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
-  healthData,
-  agentsData,
-  onRefresh,
-}) => {
+export const LinuxDeployDashboard: React.FC = () => {
+  const {
+    tabOrigin,
+    healthData,
+    agentsData,
+    refreshDomainModules,
+    notifyLocalMutation,
+    serverRevision,
+  } = useSvlSync();
+
   const [selectedFilePath, setSelectedFilePath] = useState('deploy/docker-compose.yml');
   const [fileContent, setFileContent] = useState<string>('Ładowanie pliku...');
   const [copied, setCopied] = useState(false);
@@ -49,13 +41,14 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
   const syncRep = agentsData?.last_sync_report;
 
   const [ollamaHostInput, setOllamaHostInput] = useState<string>(ollama.ollama_host || 'http://127.0.0.1:11434');
+  const ollamaHostDirtyRef = useRef(false);
   const [pullModelInput, setPullModelInput] = useState<string>('llama3.2-vision:11b');
   const [ollamaActionMsg, setOllamaActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [isUpdatingOllama, setIsUpdatingOllama] = useState(false);
   const [pullState, setPullState] = useState<any>(ollama.pull_state || null);
 
   useEffect(() => {
-    if (ollama.ollama_host) {
+    if (ollama.ollama_host && !ollamaHostDirtyRef.current) {
       setOllamaHostInput(ollama.ollama_host);
     }
     if (ollama.pull_state) {
@@ -66,35 +59,39 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
   useEffect(() => {
     if (!pullState?.active) return;
     const timer = setInterval(async () => {
-      try {
-        const resp = await fetch('/api/ollama/pull-status');
-        const data = await resp.json();
-        if (data?.pull_state) {
-          setPullState(data.pull_state);
-          if (!data.pull_state.active) {
-            await onRefresh();
-          }
+      const res = await safeFetchJson<any>('/api/ollama/pull-status', { timeoutMs: 8000 });
+      const data = res.data;
+      if (data?.pull_state) {
+        setPullState(data.pull_state);
+        if (!data.pull_state.active) {
+          await refreshDomainModules(['health', 'agents']);
         }
-      } catch {
-        // ignore transient polling error
       }
     }, 2000);
     return () => clearInterval(timer);
-  }, [pullState?.active, onRefresh]);
+  }, [pullState?.active, refreshDomainModules]);
 
   const handleUpdateOllamaHost = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsUpdatingOllama(true);
     setOllamaActionMsg(null);
     try {
-      const resp = await fetch('/api/ollama/config', {
+      const res = await safeFetchJson<any>('/api/ollama/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ollamaHost: ollamaHostInput.trim() }),
+        timeoutMs: 15000,
+        body: JSON.stringify({
+          ollamaHost: ollamaHostInput.trim(),
+          origin: tabOrigin,
+          eventId: createUniqueId('evt-ol'),
+        }),
       });
-      const data = await resp.json();
-      await onRefresh();
-      if (data.ok && data.ollama?.daemon_reachable) {
+      const data = res.data;
+      ollamaHostDirtyRef.current = false;
+      await refreshDomainModules(['health', 'agents']);
+      if (res.ok && data?.ok) {
+        notifyLocalMutation('ollama', 'host', data.serverRevision, data.event);
+      }
+      if (res.ok && data?.ok && data?.ollama?.daemon_reachable) {
         setOllamaActionMsg({
           ok: true,
           text: `Połączono z Ollama (${data.ollama.ollama_host}). Wykryte modele: ${(data.ollama.models || []).length}.`,
@@ -102,11 +99,9 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
       } else {
         setOllamaActionMsg({
           ok: false,
-          text: `Adres zapisany, ale serwer nie odpowiada: ${data.ollama?.error || data.error || 'connection refused'}`,
+          text: res.error || `Adres zapisany, ale serwer nie odpowiada: ${data?.ollama?.error || data?.error || 'connection refused'}`,
         });
       }
-    } catch (err: any) {
-      setOllamaActionMsg({ ok: false, text: err?.message || String(err) });
     } finally {
       setIsUpdatingOllama(false);
     }
@@ -117,45 +112,45 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
     setIsUpdatingOllama(true);
     setOllamaActionMsg(null);
     try {
-      const resp = await fetch('/api/ollama/pull', {
+      const res = await safeFetchJson<any>('/api/ollama/pull', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: target }),
+        timeoutMs: 15000,
+        body: JSON.stringify({ model: target, origin: tabOrigin }),
       });
-      const data = await resp.json();
-      if (data.pull_state) {
+      const data = res.data;
+      if (data?.pull_state) {
         setPullState(data.pull_state);
       }
-      await onRefresh();
+      await refreshDomainModules(['health', 'agents']);
+      if (res.ok && data?.ok) {
+        notifyLocalMutation('ollama', 'pull', data.serverRevision);
+      }
       setOllamaActionMsg({
-        ok: Boolean(data.ok),
-        text: data.ok
-          ? `Uruchomiono pobieranie modelu ${target} w tle.`
-          : (data.error || 'Błąd pobierania modelu.'),
+        ok: Boolean(res.ok && data?.ok),
+        text:
+          res.ok && data?.ok
+            ? `Uruchomiono pobieranie modelu ${target} w tle.`
+            : (res.error || data?.error || 'Błąd pobierania modelu.'),
       });
-    } catch (err: any) {
-      setOllamaActionMsg({ ok: false, text: err?.message || String(err) });
     } finally {
       setIsUpdatingOllama(false);
     }
   };
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     async function loadFile() {
-      try {
-        const resp = await fetch(`/api/files?path=${encodeURIComponent(selectedFilePath)}`);
-        const data = await resp.json();
-        if (!cancelled) {
-          setFileContent(data.ok ? data.content : `Błąd odczytu: ${data.error}`);
-        }
-      } catch (err: any) {
-        if (!cancelled) setFileContent(`Błąd sieci: ${err?.message}`);
-      }
+      const res = await safeFetchJson<any>(`/api/files?path=${encodeURIComponent(selectedFilePath)}`, {
+        signal: controller.signal,
+        timeoutMs: 10000,
+      });
+      if (res.aborted) return;
+      const data = res.data;
+      setFileContent(res.ok && data?.ok ? data.content : `Błąd odczytu: ${res.error || data?.error || 'nieznany błąd'}`);
     }
-    loadFile();
+    void loadFile();
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [selectedFilePath]);
 
@@ -178,12 +173,12 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
             01. Dashboard Linux, Silnik Ollama, Codex CLI oraz Menedżer Plików i Wdrożenia Debian 13
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Prawdziwe parametry środowiska wykonawczego z <code className="text-violet-300">/proc/meminfo</code>, <code className="text-violet-300">/etc/os-release</code> i systemu plików — zero symulowanych statusów.
+            Prawdziwe parametry środowiska wykonawczego z <code className="text-violet-300">/proc/meminfo</code>, <code className="text-violet-300">/etc/os-release</code> i systemu plików — zero symulowanych statusów (rev {serverRevision}).
           </p>
         </div>
         <button
           type="button"
-          onClick={onRefresh}
+          onClick={() => void refreshDomainModules(['health', 'agents'])}
           className="min-h-[40px] px-4 py-2 rounded-lg bg-[#111520] hover:bg-slate-800 border border-slate-700 text-xs font-medium text-slate-200 flex items-center gap-2 self-start whitespace-nowrap"
         >
           <RefreshCw className="w-3.5 h-3.5" />
@@ -282,7 +277,7 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
             </div>
           </div>
 
-          <form onSubmit={handleUpdateOllamaHost} className="space-y-2 pt-1">
+          <form onSubmit={(e) => void handleUpdateOllamaHost(e)} className="space-y-2 pt-1">
             <label htmlFor="linux-ollama-host-input" className="block text-[11px] text-slate-400">
               Zmień endpoint OLLAMA_HOST (lokalny lub zdalny serwer Ollama):
             </label>
@@ -291,7 +286,10 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
                 id="linux-ollama-host-input"
                 type="url"
                 value={ollamaHostInput}
-                onChange={(e) => setOllamaHostInput(e.target.value)}
+                onChange={(e) => {
+                  ollamaHostDirtyRef.current = true;
+                  setOllamaHostInput(e.target.value);
+                }}
                 placeholder="http://127.0.0.1:11434"
                 className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-[#0B0D13] border border-slate-700 text-xs font-mono text-slate-100 focus:outline-none focus:border-violet-500"
               />
@@ -318,7 +316,7 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
                 />
                 <button
                   type="button"
-                  onClick={handlePullOllamaModel}
+                  onClick={() => void handlePullOllamaModel()}
                   disabled={isUpdatingOllama || Boolean(pullState?.active)}
                   className="px-3 py-1.5 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold whitespace-nowrap"
                 >
@@ -404,7 +402,6 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
 
       {/* Bottom Split: Workspace File Manager & External Debian 13 Connection Instructions */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left 2 Columns: Interactive File Explorer for Generated Deployment & Python Files */}
         <div className="lg:col-span-2 p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-semibold text-slate-100">
@@ -412,7 +409,7 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
             </h2>
             <button
               type="button"
-              onClick={handleCopyFile}
+              onClick={() => void handleCopyFile()}
               className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 flex items-center gap-1.5 transition-colors whitespace-nowrap"
             >
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -442,7 +439,6 @@ export const LinuxDeployDashboard: React.FC<LinuxDeployDashboardProps> = ({
           </pre>
         </div>
 
-        {/* Right Column: Step-by-Step External Debian 13 Connection Guide */}
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-4">
           <h2 className="text-sm font-semibold text-slate-100">
             03. Instrukcja Podłączenia Zewnętrznego Hosta Debian 13 Trixie

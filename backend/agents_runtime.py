@@ -238,7 +238,9 @@ class SVLAgentOrchestrator:
         self._init_unconnected_profiles()
 
     def _ensure_agent_configs_table(self) -> None:
-        with self.kernel._connect() as conn:
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        def _init_tbl(conn: Any) -> None:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS agent_configs (
@@ -248,7 +250,6 @@ class SVLAgentOrchestrator:
                 )
                 """
             )
-            now_iso = datetime.now(timezone.utc).isoformat()
             for name, meta in CANONICAL_SVL_AGENTS.items():
                 default_cfg = {
                     **meta.get("default_config", {}),
@@ -263,7 +264,12 @@ class SVLAgentOrchestrator:
                         "INSERT INTO agent_configs (canonical_name, config_json, updated_at) VALUES (?, ?, ?)",
                         (name, json.dumps(default_cfg, ensure_ascii=False), now_iso),
                     )
-            conn.commit()
+                    conn.execute(
+                        "INSERT OR IGNORE INTO sync_entities (entity, entity_id, revision, updated_at, deleted) VALUES ('agent_config', ?, 1, ?, 0)",
+                        (name, now_iso),
+                    )
+
+        self.kernel.run_db(_init_tbl, write=True)
 
     def get_agent_config(self, canonical_name: str) -> dict[str, Any]:
         meta = CANONICAL_SVL_AGENTS.get(canonical_name, {})
@@ -272,20 +278,44 @@ class SVLAgentOrchestrator:
             "system_prompt": meta.get("system_prompt", ""),
         }
         try:
-            with self.kernel._connect() as conn:
-                row = conn.execute(
+            def _read(conn: Any) -> Any:
+                return conn.execute(
                     "SELECT config_json FROM agent_configs WHERE canonical_name = ?",
                     (canonical_name,),
                 ).fetchone()
-                if row and row["config_json"]:
-                    loaded = json.loads(row["config_json"])
-                    if isinstance(loaded, dict):
-                        base.update(loaded)
+
+            row = self.kernel.run_db(_read, write=False)
+            if row and row["config_json"]:
+                loaded = json.loads(row["config_json"])
+                if isinstance(loaded, dict):
+                    base.update(loaded)
         except Exception:
             pass
         return base
 
-    def update_agent_config(self, canonical_name: str, patch: dict[str, Any]) -> dict[str, Any]:
+    def get_agent_config_revision(self, canonical_name: str) -> int:
+        try:
+            def _read(conn: Any) -> Any:
+                return conn.execute(
+                    "SELECT revision FROM sync_entities WHERE entity = 'agent_config' AND entity_id = ?",
+                    (canonical_name,),
+                ).fetchone()
+
+            row = self.kernel.run_db(_read, write=False)
+            return int(row["revision"]) if row else 1
+        except Exception:
+            return 1
+
+    def update_agent_config_synced(
+        self,
+        canonical_name: str,
+        patch: dict[str, Any],
+        *,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+    ) -> dict[str, Any]:
         if canonical_name not in CANONICAL_SVL_AGENTS:
             raise ValueError(f"Unknown agent: {canonical_name}")
         current = self.get_agent_config(canonical_name)
@@ -306,7 +336,6 @@ class SVLAgentOrchestrator:
             if k in allowed_keys:
                 current[k] = v
 
-        # Keep fallback / numeric bounds sane
         try:
             temp_val = float(current.get("temperature", 0.7))
             current["temperature"] = max(0.0, min(1.5, round(temp_val, 2)))
@@ -314,25 +343,57 @@ class SVLAgentOrchestrator:
             current["temperature"] = 0.7
 
         now_iso = datetime.now(timezone.utc).isoformat()
-        with self.kernel._connect() as conn:
+
+        def _write(conn: Any) -> dict[str, Any]:
             conn.execute(
                 "INSERT OR REPLACE INTO agent_configs (canonical_name, config_json, updated_at) VALUES (?, ?, ?)",
                 (canonical_name, json.dumps(current, ensure_ascii=False), now_iso),
             )
-            conn.commit()
+            return self.kernel.commit_entity_event_tx(
+                conn,
+                entity="agent_config",
+                entity_id=canonical_name,
+                event_type="agent.config_updated",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                expected_revision=expected_revision,
+                payload={
+                    "agent": canonical_name,
+                    "config": current,
+                },
+                checksum_source=current,
+            )
+
+        sync_res = self.kernel.run_db(_write, write=True)
 
         if canonical_name in self.agent_states:
             self.agent_states[canonical_name]["config"] = current
+            self.agent_states[canonical_name]["config_revision"] = sync_res["revision"]
             self.kernel.register_agent(CANONICAL_SVL_AGENTS[canonical_name]["id"], self.agent_states[canonical_name])
         self.append_agent_log(
             canonical_name,
             "CONFIG_UPDATED",
-            f"Zaktualizowano konfigurację: model={current.get('preferred_model')}, ollama={current.get('ollama_model')}, temp={current.get('temperature')}",
+            f"Zaktualizowano konfigurację (rev {sync_res['revision']}): model={current.get('preferred_model')}, ollama={current.get('ollama_model')}, temp={current.get('temperature')}",
         )
         self.kernel.record_audit("operator", "AGENT_CONFIG_UPDATE", canonical_name, "OK", f"Updated config for {canonical_name}")
-        return current
+        return {
+            "config": current,
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
+        }
 
-    def configure_all_agents(self, patch: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    def update_agent_config(self, canonical_name: str, patch: dict[str, Any]) -> dict[str, Any]:
+        return self.update_agent_config_synced(canonical_name, patch)["config"]
+
+    def configure_all_agents(
+        self,
+        patch: Optional[dict[str, Any]] = None,
+        *,
+        origin: str = "client",
+        correlation_id: str = "",
+    ) -> dict[str, Any]:
         applied = patch or {
             "ollama_model": "llama3.2-vision:11b",
             "fallback_model": "gemini-3.1-flash-lite",
@@ -341,7 +402,9 @@ class SVLAgentOrchestrator:
         }
         updated: dict[str, dict[str, Any]] = {}
         for name in CANONICAL_SVL_AGENTS:
-            updated[name] = self.update_agent_config(name, applied)
+            updated[name] = self.update_agent_config_synced(
+                name, applied, origin=origin, correlation_id=correlation_id
+            )["config"]
         return updated
 
     def _init_unconnected_profiles(self) -> None:
@@ -368,18 +431,21 @@ class SVLAgentOrchestrator:
                 "memory_entries_count": self._count_memories(name),
                 "queue_depth": 0,
                 "config": cfg,
+                "config_revision": self.get_agent_config_revision(name),
             }
             self.agent_states[name] = state
             self.bus.register_worker(name, scope, state)
             self.kernel.register_agent(meta["id"], state)
 
     def _count_memories(self, canonical_name: str) -> int:
-        with self.kernel._connect() as conn:
+        def _read(conn: Any) -> int:
             row = conn.execute(
                 "SELECT COUNT(*) AS cnt FROM agent_memory WHERE scope IN (?, 'global')",
                 (f"agent:{canonical_name}",),
             ).fetchone()
             return int(row["cnt"]) if row else 0
+
+        return self.kernel.run_db(_read, write=False)
 
     def add_agent_memory(
         self,
@@ -388,37 +454,67 @@ class SVLAgentOrchestrator:
         kind: str = "episode",
         source: str = "system",
         scope: Optional[str] = None,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
     ) -> dict[str, Any]:
         mem_id = str(uuid.uuid4())
         now_iso = datetime.now(timezone.utc).isoformat()
         target_scope = scope or f"agent:{canonical_name}"
-        # Redact any accidental tokens before saving
+        agent_id = CANONICAL_SVL_AGENTS.get(canonical_name, {}).get("id", canonical_name)
         safe_content = content.replace(self.kernel.operator_token, "[REDACTED_OPERATOR_TOKEN]")
-        with self.kernel._connect() as conn:
+
+        def _write(conn: Any) -> dict[str, Any]:
             conn.execute(
                 "INSERT INTO agent_memory (id, agent_id, scope, kind, content, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (mem_id, CANONICAL_SVL_AGENTS.get(canonical_name, {}).get("id", canonical_name), target_scope, kind, safe_content, source, now_iso),
+                (mem_id, agent_id, target_scope, kind, safe_content, source, now_iso),
             )
-            conn.commit()
+            return self.kernel.commit_entity_event_tx(
+                conn,
+                entity="agent_memory",
+                entity_id=canonical_name,
+                event_type="agent.memory_added",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                payload={
+                    "agent": canonical_name,
+                    "memory": {
+                        "id": mem_id,
+                        "agent_id": agent_id,
+                        "scope": target_scope,
+                        "kind": kind,
+                        "content": safe_content,
+                        "source": source,
+                        "created_at": now_iso,
+                    },
+                },
+            )
+
+        sync_res = self.kernel.run_db(_write, write=True)
         if canonical_name in self.agent_states:
             self.agent_states[canonical_name]["memory_entries_count"] = self._count_memories(canonical_name)
         return {
             "id": mem_id,
-            "agent_id": CANONICAL_SVL_AGENTS.get(canonical_name, {}).get("id", canonical_name),
+            "agent_id": agent_id,
             "scope": target_scope,
             "kind": kind,
             "content": safe_content,
             "source": source,
             "created_at": now_iso,
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
         }
 
     def get_agent_memories(self, canonical_name: str, limit: int = 30) -> list[dict[str, Any]]:
-        with self.kernel._connect() as conn:
-            rows = conn.execute(
+        def _read(conn: Any) -> list[Any]:
+            return conn.execute(
                 "SELECT id, agent_id, scope, kind, content, source, created_at FROM agent_memory WHERE scope IN (?, 'global') ORDER BY created_at DESC LIMIT ?",
                 (f"agent:{canonical_name}", limit),
             ).fetchall()
-        return [dict(r) for r in rows]
+
+        return [dict(r) for r in self.kernel.run_db(_read, write=False)]
 
     def append_agent_log(self, canonical_name: str, level: str, message: str) -> dict[str, Any]:
         entry = {
@@ -622,6 +718,21 @@ class SVLAgentOrchestrator:
             "agents": spawned_agents,
         }
         self.last_Sync_report = report
+        sync_res = self.kernel.emit_sync_event(
+            entity="agent_runtime",
+            entity_id="workers",
+            event_type="agents.connected",
+            origin=triggered_by,
+            payload={
+                "connectedAt": self.connected_at,
+                "agents": [
+                    {"name": a["canonical_name"], "id": a["id"], "pid": a["pid"], "status": a["status"]}
+                    for a in spawned_agents
+                ],
+            },
+        )
+        report["revision"] = sync_res["revision"]
+        report["serverRevision"] = sync_res["serverRevision"]
         return report
 
     def refresh_states(self) -> list[dict[str, Any]]:
@@ -646,6 +757,7 @@ class SVLAgentOrchestrator:
             state["memory_entries_count"] = self._count_memories(name)
             state["queue_depth"] = len(self.agent_queues.get(name, []))
             state["config"] = self.get_agent_config(name)
+            state["config_revision"] = self.get_agent_config_revision(name)
             self.bus.record_heartbeat(name, state)
             result.append(state)
         return result
@@ -656,6 +768,9 @@ class SVLAgentOrchestrator:
         target_agent: str,
         task_title: str,
         task_payload: str,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Kolejkuje i wykonuje asynchroniczne zadanie na wybranym agencie (komunikacja operator->agent lub agent->agent)
@@ -695,6 +810,8 @@ class SVLAgentOrchestrator:
                 kind="task",
                 source=sender,
                 content=f"Zadanie: {task_title} | Wynik: {summary}",
+                origin=origin,
+                correlation_id=correlation_id,
             )
             self.append_agent_log(target_agent, "TASK_COMPLETED", summary)
             return task_record
@@ -713,7 +830,25 @@ class SVLAgentOrchestrator:
                 "outcome": exec_outcome,
             },
         )
+        sync_res = self.kernel.emit_sync_event(
+            entity="agent_runtime",
+            entity_id=target_agent,
+            event_type="agents.task_completed",
+            origin=origin,
+            correlation_id=correlation_id,
+            event_id=event_id,
+            payload={
+                "taskId": task_id,
+                "sender": sender,
+                "targetAgent": target_agent,
+                "title": task_title,
+                "ok": bool(exec_outcome.get("ok")),
+            },
+        )
         return {
             "task": task_record,
             "resilience": exec_outcome,
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
         }

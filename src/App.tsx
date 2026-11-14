@@ -3,143 +3,41 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ChatWorkspace } from './components/ChatWorkspace';
 import { AgentsPanel } from './components/AgentsPanel';
 import { TerminalsWorkspace } from './components/TerminalsWorkspace';
 import { KernelDiagnosticsView } from './components/KernelDiagnosticsView';
 import { LinuxDeployDashboard } from './components/LinuxDeployDashboard';
+import { SvlSyncProvider, useSvlSync } from './utils/svlSyncStore';
 
 type ActiveWorkspaceTab = 'chat' | 'agents' | 'terminals' | 'kernel' | 'linux';
 
-export default function App() {
+function SVLWorkspaceShell() {
   const [activeTab, setActiveTab] = useState<ActiveWorkspaceTab>('chat');
-  const [chatTargetAgent, setChatTargetAgent] = useState<'Auto' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius'>('Auto');
-  const [healthData, setHealthData] = useState<any>(null);
-  const [kernelData, setKernelData] = useState<any>(null);
-  const [agentsData, setAgentsData] = useState<any>(null);
-  const [isConnectingAi, setIsConnectingAi] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncRevision, setSyncRevision] = useState(0);
-  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
-
-  const fetchAllSystemState = useCallback(async () => {
-    try {
-      const [hResp, kResp, aResp] = await Promise.all([
-        fetch('/api/py/health'),
-        fetch('/api/py/kernel/report'),
-        fetch('/api/py/agents/status'),
-      ]);
-      if (hResp.ok) setHealthData(await hResp.json());
-      if (kResp.ok) setKernelData(await kResp.json());
-      if (aResp.ok) setAgentsData(await aResp.json());
-      setLastSyncedAt(new Date().toLocaleTimeString('pl-PL', { hour12: false }));
-    } catch {
-      // retry silently on next poll
-    }
-  }, []);
+  const {
+    agentsData,
+    isConnectingAi,
+    connectMyAi,
+    refreshDomainModules,
+  } = useSvlSync();
 
   useEffect(() => {
-    fetchAllSystemState();
-    const timer = setInterval(fetchAllSystemState, 6000);
-    return () => clearInterval(timer);
-  }, [fetchAllSystemState]);
-
-  // Real-time cross-component & cross-tab synchronization via WebSocket (/ws/svl) + BroadcastChannel
-  useEffect(() => {
-    let channel: BroadcastChannel | null = null;
-    if (typeof BroadcastChannel !== 'undefined') {
-      channel = new BroadcastChannel('svl_python_os_sync');
-      channel.onmessage = () => {
-        void fetchAllSystemState();
-        setSyncRevision((r) => r + 1);
-      };
+    if (activeTab === 'chat') {
+      void refreshDomainModules(['chat', 'agents', 'health', 'workspace']);
+    } else if (activeTab === 'agents') {
+      void refreshDomainModules(['agents', 'health', 'workspace']);
+    } else if (activeTab === 'terminals') {
+      void refreshDomainModules(['terminals', 'health']);
+    } else if (activeTab === 'kernel') {
+      void refreshDomainModules(['kernel', 'agents']);
+    } else if (activeTab === 'linux') {
+      void refreshDomainModules(['health', 'agents']);
     }
-
-    let ws: WebSocket | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let closedByUnmount = false;
-
-    const connectWs = () => {
-      if (closedByUnmount) return;
-      try {
-        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(`${proto}//${window.location.host}/ws/svl`);
-        ws.onmessage = (evt) => {
-          try {
-            const payload = JSON.parse(String(evt.data || '{}'));
-            if (payload.type === 'svl_sync') {
-              void fetchAllSystemState();
-              setSyncRevision((r) => r + 1);
-            }
-          } catch {
-            // ignore non-json frame
-          }
-        };
-        ws.onclose = () => {
-          if (!closedByUnmount) {
-            reconnectTimer = setTimeout(connectWs, 4000);
-          }
-        };
-      } catch {
-        // ignore ws init failure
-      }
-    };
-    connectWs();
-
-    return () => {
-      closedByUnmount = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      ws?.close();
-      channel?.close();
-    };
-  }, [fetchAllSystemState]);
-
-  const handleFullSystemSync = useCallback(async (localConversations?: any[]) => {
-    setIsSyncing(true);
-    try {
-      const resp = await fetch('/api/py/system/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          triggered_by: 'operator_sync_button',
-          conversations: localConversations || [],
-        }),
-      });
-      const data = await resp.json();
-      await fetchAllSystemState();
-      setSyncRevision((r) => r + 1);
-      if (typeof BroadcastChannel !== 'undefined') {
-        const bc = new BroadcastChannel('svl_python_os_sync');
-        bc.postMessage({ type: 'svl_sync', at: Date.now() });
-        bc.close();
-      }
-      return data;
-    } finally {
-      setIsSyncing(false);
-    }
-  }, [fetchAllSystemState]);
-
-  const handleConnectMyAi = useCallback(async () => {
-    setIsConnectingAi(true);
-    try {
-      const resp = await fetch('/api/py/agents/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ triggered_by: 'operator_header_cta' }),
-      });
-      const data = await resp.json();
-      await fetchAllSystemState();
-      setSyncRevision((r) => r + 1);
-      return data;
-    } finally {
-      setIsConnectingAi(false);
-    }
-  }, [fetchAllSystemState]);
+  }, [activeTab, refreshDomainModules]);
 
   const agentsList: any[] = agentsData?.agents || [];
   const activeWorkersCount = agentsList.filter((a) => a.status === 'ONLINE_LOCAL_WORKER').length;
-  const operatorToken = healthData?.security?.demo_operator_token_for_local_testing || '';
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#0B0D13] text-[#F1F5F9]">
@@ -223,7 +121,7 @@ export default function App() {
         <div className="flex items-center shrink-0">
           <button
             type="button"
-            onClick={handleConnectMyAi}
+            onClick={() => void connectMyAi('operator_header_cta')}
             disabled={isConnectingAi}
             className="min-h-[38px] px-4 py-2 text-xs font-semibold text-white bg-violet-600 hover:bg-violet-500 disabled:opacity-50 rounded-lg transition-colors whitespace-nowrap shrink-0"
           >
@@ -238,57 +136,25 @@ export default function App() {
 
       {/* Main Workspace Viewport */}
       <main className="flex-1 min-h-0 w-full overflow-hidden">
-        {activeTab === 'chat' && (
-          <ChatWorkspace
-            agentsStatus={agentsList}
-            healthData={healthData}
-            onExecuteConnectMyAi={handleConnectMyAi}
-            isConnectingAi={isConnectingAi}
-            onNavigateTab={setActiveTab}
-            onRefreshSystem={fetchAllSystemState}
-            targetAgent={chatTargetAgent}
-            onChangeTargetAgent={setChatTargetAgent}
-            syncRevision={syncRevision}
-            isSyncing={isSyncing}
-            lastSyncedAt={lastSyncedAt}
-            onFullSync={handleFullSystemSync}
-          />
-        )}
+        {activeTab === 'chat' && <ChatWorkspace onNavigateTab={setActiveTab} />}
         {activeTab === 'agents' && (
           <AgentsPanel
-            agentsData={agentsData}
-            healthData={healthData}
-            onConnectMyAi={handleConnectMyAi}
-            isConnecting={isConnectingAi}
-            onRefresh={fetchAllSystemState}
-            onChatWithAgent={(agent) => {
-              setChatTargetAgent(agent);
-              setActiveTab('chat');
-            }}
+            onNavigateToChat={() => setActiveTab('chat')}
           />
         )}
-        {activeTab === 'terminals' && (
-          <TerminalsWorkspace
-            operatorToken={operatorToken}
-            onRefreshSystem={fetchAllSystemState}
-          />
-        )}
-        {activeTab === 'kernel' && (
-          <KernelDiagnosticsView
-            kernelData={kernelData}
-            agentsData={agentsData}
-            operatorToken={operatorToken}
-            onRefresh={fetchAllSystemState}
-          />
-        )}
-        {activeTab === 'linux' && (
-          <LinuxDeployDashboard
-            healthData={healthData}
-            agentsData={agentsData}
-            onRefresh={fetchAllSystemState}
-          />
-        )}
+        {activeTab === 'terminals' && <TerminalsWorkspace />}
+        {activeTab === 'kernel' && <KernelDiagnosticsView />}
+        {activeTab === 'linux' && <LinuxDeployDashboard />}
       </main>
     </div>
   );
 }
+
+export default function App() {
+  return (
+    <SvlSyncProvider>
+      <SVLWorkspaceShell />
+    </SvlSyncProvider>
+  );
+}
+

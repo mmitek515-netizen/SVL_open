@@ -20,9 +20,11 @@ import platform
 import shutil
 import subprocess
 import sys
+import time
 import traceback
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -35,14 +37,21 @@ if str(BACKEND_DIR) not in sys.path:
 from agents_runtime import CANONICAL_SVL_AGENTS, SVLAgentOrchestrator
 from hyperspace_engine import BinaryHyperspaceKernel, WithoutNlpHarmonicEngine
 from spherical_bus import SphericalEventBus
-from svl_core import SVLProtectedVariable, SVLSystemKernel, TopologicalInfinityEngine, VisualScope
+from svl_core import (
+    SYNC_SCHEMA_VERSION,
+    RevisionConflictError,
+    SVLProtectedVariable,
+    SVLSystemKernel,
+    TopologicalInfinityEngine,
+    VisualScope,
+)
 
 
 class SVLBackendRuntime:
     """Central runtime instance combining SVLSystemKernel, SphericalEventBus, Agents, and Hyperspace engines."""
 
     def __init__(self) -> None:
-        self.boot_time = time.time() if "time" in globals() else __import__("time").time()
+        self.boot_time = time.time()
         self.kernel = SVLSystemKernel()
         self.bus = SphericalEventBus()
         self.orchestrator = SVLAgentOrchestrator(self.kernel, self.bus)
@@ -74,44 +83,75 @@ class SVLBackendRuntime:
             "without_nlp": self.without_nlp,
         }
         self._register_initial_services()
+        self.kernel.sync_chat_state_mutations(origin="python-kernel-boot")
+        self.apply_active_module_settings()
+
+    def apply_active_module_settings(self) -> list[dict[str, Any]]:
+        mods = self.kernel.list_system_modules()
+        target_buffer = 250
+        for m in mods:
+            if m.get("status") != "ACTIVE":
+                continue
+            cfg = m.get("config") or {}
+            buf = cfg.get("async_event_bus_buffer")
+            if isinstance(buf, (int, float)) and buf > target_buffer:
+                target_buffer = int(buf)
+        self.bus.configure_runtime_limits(max_history_size=target_buffer)
+        self.kernel.config["active_modules"] = [m["id"] for m in mods if m.get("status") == "ACTIVE"]
+        return mods
 
     def _load_persisted_ollama_host(self) -> str:
         default_host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
         try:
-            import sqlite3
-            with sqlite3.connect(self.kernel.db_path) as conn:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS runtime_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
-                )
-                row = conn.execute(
+            def _read(conn: Any) -> Any:
+                return conn.execute(
                     "SELECT value FROM runtime_settings WHERE key = 'ollama_host'"
                 ).fetchone()
-                if row and row[0]:
-                    return str(row[0]).rstrip("/")
+
+            row = self.kernel.run_db(_read, write=False)
+            if row and row["value"]:
+                return str(row["value"]).rstrip("/")
         except Exception:
             pass
         return default_host
 
-    def set_ollama_host(self, new_host: str) -> dict[str, Any]:
+    def set_ollama_host(
+        self,
+        new_host: str,
+        *,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
         clean = (new_host or "").strip().rstrip("/")
         if not (clean.startswith("http://") or clean.startswith("https://")):
             raise ValueError("Adres OLLAMA_HOST musi zaczynać się od http:// lub https://")
         self.ollama_host = clean
-        try:
-            import sqlite3
-            with sqlite3.connect(self.kernel.db_path) as conn:
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS runtime_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
-                )
-                conn.execute(
-                    "INSERT OR REPLACE INTO runtime_settings (key, value, updated_at) VALUES (?, ?, ?)",
-                    ("ollama_host", clean, datetime.now(timezone.utc).isoformat()),
-                )
-                conn.commit()
-        except Exception:
-            pass
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        def _write(conn: Any) -> dict[str, Any]:
+            conn.execute(
+                "INSERT OR REPLACE INTO runtime_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                ("ollama_host", clean, now_iso),
+            )
+            return self.kernel.commit_entity_event_tx(
+                conn,
+                entity="ollama",
+                entity_id="host",
+                event_type="ollama.host_updated",
+                origin=origin,
+                correlation_id=correlation_id,
+                event_id=event_id,
+                payload={"ollamaHost": clean},
+            )
+
+        sync_res = self.kernel.run_db(_write, write=True)
         self.kernel.record_audit("operator", "OLLAMA_HOST_UPDATE", clean, "OK", f"Zmieniono OLLAMA_HOST na {clean}")
-        return self.probe_ollama_status()
+        probe = self.probe_ollama_status()
+        probe["revision"] = sync_res["revision"]
+        probe["serverRevision"] = sync_res["serverRevision"]
+        probe["event"] = sync_res["event"]
+        return probe
 
     def _register_initial_services(self) -> None:
         self.kernel.register_service(
@@ -175,6 +215,7 @@ class SVLBackendRuntime:
             "kernel_release": platform.release(),
             "architecture": platform.machine(),
             "python_version": platform.python_version(),
+            "cpu_count": os.cpu_count() or 1,
             "systemd_active_as_pid1": systemd_pid1,
             "gpu_available": gpu_available,
             "gpu_info": gpu_info,
@@ -319,6 +360,13 @@ class SVLBackendRuntime:
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 self.kernel.record_audit("operator", "OLLAMA_PULL", clean_model, "OK", f"Pobrano model {clean_model}")
+                self.kernel.emit_sync_event(
+                    entity="ollama",
+                    entity_id="pull",
+                    event_type="ollama.pull_completed",
+                    origin="python-kernel",
+                    payload={"model": clean_model, "pullState": self.ollama_pull_state},
+                )
             except Exception as exc:
                 self.ollama_pull_state = {
                     "active": False,
@@ -328,15 +376,32 @@ class SVLBackendRuntime:
                     "error": str(exc),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
+                self.kernel.emit_sync_event(
+                    entity="ollama",
+                    entity_id="pull",
+                    event_type="ollama.pull_failed",
+                    origin="python-kernel",
+                    payload={"model": clean_model, "error": str(exc)},
+                )
 
         import threading
         threading.Thread(target=_worker, daemon=True).start()
+        sync_res = self.kernel.emit_sync_event(
+            entity="ollama",
+            entity_id="pull",
+            event_type="ollama.pull_started",
+            origin="python-kernel",
+            payload={"model": clean_model, "pullState": self.ollama_pull_state},
+        )
         return 202, {
             "ok": True,
             "started": True,
             "model": clean_model,
             "pull_state": self.ollama_pull_state,
             "status": self.probe_ollama_status(),
+            "revision": sync_res["revision"],
+            "serverRevision": sync_res["serverRevision"],
+            "event": sync_res["event"],
         }
 
     def probe_codex_status(self) -> dict[str, Any]:
@@ -404,13 +469,37 @@ class SVLBackendRuntime:
 runtime = SVLBackendRuntime()
 
 
-async def handle_api_request(method: str, path: str, query: dict[str, str], body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+async def handle_api_request(
+    method: str,
+    path: str,
+    query: dict[str, str],
+    body: dict[str, Any],
+    correlation_id: str = "",
+) -> tuple[int, dict[str, Any]]:
     """Unified async router used by both FastAPI and the built-in asyncio HTTP server."""
+    origin = str(body.get("origin") or "client").strip()[:120]
+    event_id = str(body.get("eventId") or "").strip()[:128] or None
+    corr = (correlation_id or str(body.get("correlationId") or "")).strip()[:120]
+
+    def _opt_int(val: Any) -> Optional[int]:
+        if val is None or val == "":
+            return None
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return None
+
+    expected_rev = _opt_int(body.get("expectedRevision"))
+
     if method == "GET" and path == "/api/py/health":
+        meta = runtime.kernel.get_sync_snapshot_meta()
         return 200, {
             "status": "ONLINE",
             "system": runtime.kernel.sys_version.value,
             "operator": runtime.kernel.operator.value,
+            "schemaVersion": meta["schemaVersion"],
+            "serverRevision": meta["serverRevision"],
+            "system_modules": runtime.kernel.list_system_modules(),
             "host": runtime.probe_host_environment(),
             "ollama": runtime.probe_ollama_status(),
             "codex": runtime.probe_codex_status(),
@@ -418,21 +507,100 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
                 "token_source": runtime.kernel.token_source,
                 "token_length": len(runtime.kernel.operator_token),
                 "hardcoded_token_removed": True,
-                "demo_operator_token_for_local_testing": runtime.kernel.operator_token,
+                "auth_required": True,
             },
         }
+
+    if method == "GET" and path == "/api/py/sync/events":
+        since_rev = _opt_int(query.get("sinceRevision")) or 0
+        limit = _opt_int(query.get("limit")) or 100
+        return 200, runtime.kernel.get_outbox_events_since(since_revision=since_rev, limit=limit)
+
+    if method == "GET" and path == "/api/py/sync/status":
+        return 200, {"ok": True, **runtime.kernel.get_sync_snapshot_meta()}
+
+    if method == "POST" and path == "/api/py/kernel/verify-token":
+        candidate = str(body.get("token", "")).strip()
+        valid = runtime.kernel.verify_operator_token(candidate)
+        return 200, {"ok": True, "valid": valid}
 
     if method == "GET" and path == "/api/py/kernel/report":
         include_demo = query.get("include_demo", "false").lower() in ("1", "true", "yes")
         raw_report = json.loads(runtime.kernel.generate_system_status_report(include_demo_history=include_demo))
+        meta = runtime.kernel.get_sync_snapshot_meta()
         return 200, {
+            "serverRevision": meta["serverRevision"],
+            "schemaVersion": meta["schemaVersion"],
             "report": raw_report,
             "visual_scopes": VisualScope.get_registry_snapshot(),
             "protected_variables": {
                 k: v.to_metadata() for k, v in runtime.kernel.protected_variables.items()
             },
+            "system_modules": runtime.kernel.list_system_modules(),
             "audit_logs": runtime.kernel.get_audit_logs(limit=40),
         }
+
+    if method == "GET" and path == "/api/py/modules":
+        meta = runtime.kernel.get_sync_snapshot_meta()
+        return 200, {
+            "ok": True,
+            "serverRevision": meta["serverRevision"],
+            "schemaVersion": meta["schemaVersion"],
+            "modules": runtime.kernel.list_system_modules(),
+        }
+
+    if method == "POST" and path == "/api/py/modules/upsert":
+        mod_id = str(body.get("id") or body.get("module_id") or "").strip()
+        if not mod_id:
+            return 400, {"ok": False, "error": "Wymagany identyfikator modułu (id)."}
+        try:
+            res = runtime.kernel.upsert_system_module(
+                mod_id,
+                name=str(body.get("name") or mod_id),
+                kind=str(body.get("kind") or "Extension Module"),
+                status=str(body.get("status") or "ACTIVE"),
+                description=str(body.get("description") or ""),
+                config=body.get("config") if isinstance(body.get("config"), dict) else {},
+                source=str(body.get("source") or "chat"),
+                source_message_id=str(body.get("sourceMessageId") or body.get("source_message_id") or ""),
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+                expected_revision=expected_rev,
+            )
+            mods = runtime.apply_active_module_settings()
+            return 200, {"ok": True, **res, "modules": mods}
+        except RevisionConflictError as conflict_exc:
+            return 409, {
+                "ok": False,
+                "conflict": True,
+                "error": str(conflict_exc),
+                "currentRevision": conflict_exc.current_revision,
+                "modules": runtime.kernel.list_system_modules(),
+            }
+        except Exception as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
+    if method == "POST" and path == "/api/py/modules/delete":
+        mod_id = str(body.get("id") or body.get("module_id") or "").strip()
+        if not mod_id:
+            return 400, {"ok": False, "error": "Wymagany identyfikator modułu (id)."}
+        try:
+            res = runtime.kernel.delete_system_module(
+                mod_id,
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+            )
+            mods = runtime.apply_active_module_settings()
+            return 200, {**res, "modules": mods}
+        except Exception as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
+    if method == "POST" and path == "/api/py/chat/sync-actions":
+        res = runtime.kernel.sync_chat_state_mutations(origin=origin, correlation_id=corr)
+        mods = runtime.apply_active_module_settings()
+        return 200, {**res, "modules": mods}
 
     if method == "POST" and path == "/api/py/kernel/evaluate-topology":
         raw_start = body.get("x_start", "-inf")
@@ -456,7 +624,15 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
         actor = str(body.get("actor", "operator")).strip()
         if not var_name:
             return 400, {"ok": False, "error": "Variable name is required"}
-        outcome = runtime.kernel.update_protected_variable(var_name, new_value, token, actor=actor)
+        outcome = runtime.kernel.update_protected_variable(
+            var_name,
+            new_value,
+            token,
+            actor=actor,
+            origin=origin,
+            correlation_id=corr,
+            event_id=event_id,
+        )
         return 200, outcome
 
     if method == "POST" and path == "/api/py/kernel/record-update":
@@ -469,13 +645,33 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
             return 403, {"ok": False, "error": "Autoryzacja odrzucona: wymagany prawidłowy SVL_OPERATOR_TOKEN (>=32 znaki)."}
         if not wersja or not opis:
             return 400, {"ok": False, "error": "Pola 'wersja' i 'opis' są wymagane."}
-        entry = runtime.kernel.record_update(wersja, typ, opis, author="operator")
-        return 200, {"ok": True, "entry": entry, "history": runtime.kernel.get_update_history(include_demo=False)}
+        entry = runtime.kernel.record_update(
+            wersja,
+            typ,
+            opis,
+            author="operator",
+            origin=origin,
+            correlation_id=corr,
+            event_id=event_id,
+        )
+        return 200, {
+            "ok": True,
+            "entry": entry,
+            "revision": entry.get("revision"),
+            "serverRevision": entry.get("serverRevision"),
+            "event": entry.get("event"),
+            "history": runtime.kernel.get_update_history(include_demo=False),
+        }
 
     if method == "POST" and path == "/api/py/agents/connect":
-        triggered_by = str(body.get("triggered_by", "operator"))
+        triggered_by = str(body.get("triggered_by", origin or "operator"))
         report = await runtime.orchestrator.connect_my_ai(triggered_by=triggered_by)
-        return 200, {"ok": True, "connection_report": report}
+        return 200, {
+            "ok": True,
+            "revision": report.get("revision"),
+            "serverRevision": report.get("serverRevision"),
+            "connection_report": report,
+        }
 
     if method == "GET" and path == "/api/py/agents/status":
         agents = runtime.orchestrator.refresh_states()
@@ -483,7 +679,10 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
             name: runtime.orchestrator.get_agent_memories(name, limit=15)
             for name in CANONICAL_SVL_AGENTS
         }
+        meta = runtime.kernel.get_sync_snapshot_meta()
         return 200, {
+            "serverRevision": meta["serverRevision"],
+            "schemaVersion": meta["schemaVersion"],
             "connected_at": runtime.orchestrator.connected_at,
             "last_sync_report": runtime.orchestrator.last_Sync_report,
             "agents": agents,
@@ -501,7 +700,15 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
         if not title:
             return 400, {"ok": False, "error": "Tytuł zadania jest wymagany."}
         try:
-            res = await runtime.orchestrator.dispatch_agent_task(sender, target_agent, title, payload)
+            res = await runtime.orchestrator.dispatch_agent_task(
+                sender,
+                target_agent,
+                title,
+                payload,
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+            )
             return 200, {"ok": True, **res}
         except Exception as exc:
             return 400, {"ok": False, "error": str(exc)}
@@ -512,24 +719,61 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
         kind = str(body.get("kind", "fact")).strip()
         if not content:
             return 400, {"ok": False, "error": "Treść pamięci jest wymagana."}
-        mem = runtime.orchestrator.add_agent_memory(agent_name, content, kind=kind, source="operator")
-        return 200, {"ok": True, "memory": mem}
+        mem = runtime.orchestrator.add_agent_memory(
+            agent_name,
+            content,
+            kind=kind,
+            source="operator",
+            origin=origin,
+            correlation_id=corr,
+            event_id=event_id,
+        )
+        return 200, {
+            "ok": True,
+            "memory": mem,
+            "revision": mem.get("revision"),
+            "serverRevision": mem.get("serverRevision"),
+            "event": mem.get("event"),
+        }
 
     if method == "POST" and path == "/api/py/agents/config":
         agent_name = str(body.get("agent", "")).strip()
         patch = body.get("config") if isinstance(body.get("config"), dict) else body
         try:
-            updated = runtime.orchestrator.update_agent_config(agent_name, patch)
-            return 200, {"ok": True, "agent": agent_name, "config": updated}
+            res = runtime.orchestrator.update_agent_config_synced(
+                agent_name,
+                patch,
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+                expected_revision=expected_rev,
+            )
+            return 200, {"ok": True, "agent": agent_name, **res}
+        except RevisionConflictError as conflict_exc:
+            return 409, {
+                "ok": False,
+                "conflict": True,
+                "error": str(conflict_exc),
+                "currentRevision": conflict_exc.current_revision,
+                "expectedRevision": conflict_exc.expected_revision,
+                "authoritativeConfig": runtime.orchestrator.get_agent_config(agent_name),
+            }
         except Exception as exc:
             return 400, {"ok": False, "error": str(exc)}
 
     if method == "POST" and path == "/api/py/agents/configure-all":
         patch = body.get("config") if isinstance(body.get("config"), dict) else None
         try:
-            updated = runtime.orchestrator.configure_all_agents(patch)
+            updated = runtime.orchestrator.configure_all_agents(
+                patch, origin=origin, correlation_id=corr
+            )
             report = await runtime.orchestrator.connect_my_ai(triggered_by="configure_all_agents")
-            return 200, {"ok": True, "configs": updated, "connection_report": report}
+            return 200, {
+                "ok": True,
+                "configs": updated,
+                "connection_report": report,
+                "serverRevision": report.get("serverRevision"),
+            }
         except Exception as exc:
             return 400, {"ok": False, "error": str(exc)}
 
@@ -548,8 +792,19 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
     if method == "POST" and path == "/api/py/ollama/config":
         new_host = str(body.get("ollama_host", "")).strip()
         try:
-            ollama_status = runtime.set_ollama_host(new_host)
-            return 200, {"ok": True, "ollama": ollama_status}
+            ollama_status = runtime.set_ollama_host(
+                new_host,
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+            )
+            return 200, {
+                "ok": True,
+                "ollama": ollama_status,
+                "revision": ollama_status.get("revision"),
+                "serverRevision": ollama_status.get("serverRevision"),
+                "event": ollama_status.get("event"),
+            }
         except Exception as exc:
             return 400, {"ok": False, "error": str(exc)}
 
@@ -565,13 +820,96 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
         res = runtime.execute_python_repl(code)
         return 200, res
 
+    if method == "GET" and path == "/api/py/terminal/history":
+        meta = runtime.kernel.get_sync_snapshot_meta()
+        return 200, {
+            "ok": True,
+            "terminalLogs": runtime.kernel.list_terminal_history(),
+            "serverRevision": meta["serverRevision"],
+        }
+
+    if method == "POST" and path == "/api/py/terminal/log":
+        tab = str(body.get("tab", "linux")).strip()
+        kind = str(body.get("kind", "stdout")).strip()
+        text = str(body.get("text", ""))
+        cmd = str(body.get("command", ""))
+        entry_id = str(body.get("id") or "").strip() or None
+        display_ts = str(body.get("timestamp") or "").strip() or None
+        if tab not in ("linux", "python", "codex", "hyperspace", "agents"):
+            return 400, {"ok": False, "error": f"Unknown terminal tab: {tab}"}
+        res = runtime.kernel.record_terminal_entry(
+            tab=tab,
+            kind=kind,
+            text=text,
+            command=cmd,
+            entry_id=entry_id,
+            display_timestamp=display_ts,
+            origin=origin,
+            correlation_id=corr,
+            event_id=event_id,
+        )
+        return 200, res
+
+    if method == "POST" and path == "/api/py/terminal/clear":
+        tab = str(body.get("tab", "linux")).strip()
+        if tab not in ("linux", "python", "codex", "hyperspace", "agents"):
+            return 400, {"ok": False, "error": f"Unknown terminal tab: {tab}"}
+        res = runtime.kernel.clear_terminal_history(
+            tab=tab,
+            origin=origin,
+            correlation_id=corr,
+            event_id=event_id,
+        )
+        return 200, res
+
+    if method == "GET" and path == "/api/py/workspace/state":
+        meta = runtime.kernel.get_sync_snapshot_meta()
+        return 200, {
+            "ok": True,
+            "workspaceState": runtime.kernel.get_workspace_ui_state(),
+            "serverRevision": meta["serverRevision"],
+        }
+
+    if method == "POST" and path == "/api/py/workspace/state":
+        key = str(body.get("key", "")).strip()
+        if key not in ("active_conversation_id", "selected_target_agent", "selected_agent_panel_id"):
+            return 400, {"ok": False, "error": f"Nieobsługiwany klucz stanu przestrzeni: {key}"}
+        try:
+            res = runtime.kernel.update_workspace_ui_state(
+                key=key,
+                value=body.get("value"),
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+                expected_revision=expected_rev,
+            )
+            return 200, {**res, "workspaceState": runtime.kernel.get_workspace_ui_state()}
+        except RevisionConflictError as conflict_exc:
+            return 409, {
+                "ok": False,
+                "conflict": True,
+                "error": str(conflict_exc),
+                "currentRevision": conflict_exc.current_revision,
+                "workspaceState": runtime.kernel.get_workspace_ui_state(),
+            }
+
     if method == "GET" and path == "/api/py/chat/conversations":
-        return 200, {"ok": True, "conversations": runtime.kernel.list_conversations_with_messages()}
+        meta = runtime.kernel.get_sync_snapshot_meta()
+        return 200, {
+            "ok": True,
+            "serverRevision": meta["serverRevision"],
+            "conversations": runtime.kernel.list_conversations_with_messages(),
+        }
 
     if method == "POST" and path == "/api/py/chat/conversations/sync":
         threads = body.get("conversations") if isinstance(body.get("conversations"), list) else []
-        merged = runtime.kernel.sync_conversations(threads)
-        return 200, {"ok": True, "conversations": merged}
+        detailed = runtime.kernel.sync_conversations_detailed(
+            threads,
+            origin=origin,
+            correlation_id=corr,
+            event_id=event_id,
+        )
+        return 200, {"ok": True, **detailed}
 
     if method == "POST" and path == "/api/py/chat/conversations/message":
         cid = str(body.get("conversation_id", "")).strip()
@@ -580,49 +918,225 @@ async def handle_api_request(method: str, path: str, query: dict[str, str], body
         msg = body.get("message") if isinstance(body.get("message"), dict) else {}
         if not cid or not msg:
             return 400, {"ok": False, "error": "conversation_id and message are required"}
-        saved = runtime.kernel.save_chat_message(cid, title, model, msg)
-        return 200, {**saved, "conversations": runtime.kernel.list_conversations_with_messages()}
+        try:
+            saved = runtime.kernel.save_chat_message(
+                cid,
+                title,
+                model,
+                msg,
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+                expected_revision=expected_rev,
+            )
+            return 200, {**saved, "conversations": runtime.kernel.list_conversations_with_messages()}
+        except RevisionConflictError as conflict_exc:
+            return 409, {
+                "ok": False,
+                "conflict": True,
+                "error": str(conflict_exc),
+                "currentRevision": conflict_exc.current_revision,
+                "expectedRevision": conflict_exc.expected_revision,
+                "conversations": runtime.kernel.list_conversations_with_messages(),
+            }
 
     if method == "POST" and path == "/api/py/chat/conversations/delete":
         cid = str(body.get("conversation_id", "")).strip()
         if not cid:
             return 400, {"ok": False, "error": "conversation_id is required"}
-        deleted = runtime.kernel.delete_conversation(cid)
-        return 200, {**deleted, "conversations": runtime.kernel.list_conversations_with_messages()}
+        try:
+            deleted = runtime.kernel.delete_conversation(
+                cid,
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+                expected_revision=expected_rev,
+            )
+            return 200, {**deleted, "conversations": runtime.kernel.list_conversations_with_messages()}
+        except RevisionConflictError as conflict_exc:
+            return 409, {
+                "ok": False,
+                "conflict": True,
+                "error": str(conflict_exc),
+                "currentRevision": conflict_exc.current_revision,
+                "conversations": runtime.kernel.list_conversations_with_messages(),
+            }
 
     if method == "POST" and path == "/api/py/system/sync":
-        # Full cross-subsystem synchronization: ensure all 4 workers alive, reload configs, probe Ollama/Codex, merge chat
-        client_threads = body.get("conversations") if isinstance(body.get("conversations"), list) else []
-        if client_threads:
-            runtime.kernel.sync_conversations(client_threads)
-        # Ensure all 4 workers are connected if any stopped
-        alive_count = sum(1 for p in runtime.orchestrator.processes.values() if p.is_alive())
-        sync_report = None
-        if alive_count < len(CANONICAL_SVL_AGENTS):
-            sync_report = await runtime.orchestrator.connect_my_ai(triggered_by="system_full_sync")
-        agents = runtime.orchestrator.refresh_states()
-        await runtime.bus.publish(
-            topic="svl.system.synchronized",
-            source=str(body.get("triggered_by", "operator_sync")),
-            target="*",
-            scope_mode="CAŁOŚĆ",
-            payload={"agents_online": len([a for a in agents if a.get("status") == "ONLINE_LOCAL_WORKER"])},
+        # Spójny, idempotentny i bezpieczny snapshot globalny bez niebezpiecznych operacji OS
+        sync_id = f"sync-{uuid.uuid4().hex[:12]}"
+        started_at = datetime.now(timezone.utc).isoformat()
+        client_rev = _opt_int(body.get("clientRevision"))
+        modules_status: dict[str, dict[str, Any]] = {}
+        warnings: list[str] = []
+
+        def _time_module(name: str, required: bool, fn: Any) -> Any:
+            t0 = time.perf_counter()
+            try:
+                val = fn()
+                modules_status[name] = {
+                    "status": "ok",
+                    "required": required,
+                    "durationMs": round((time.perf_counter() - t0) * 1000, 1),
+                    "error": None,
+                }
+                return val
+            except Exception as exc:
+                err_txt = str(exc)
+                modules_status[name] = {
+                    "status": "error" if required else "degraded",
+                    "required": required,
+                    "durationMs": round((time.perf_counter() - t0) * 1000, 1),
+                    "error": err_txt,
+                }
+                if not required:
+                    warnings.append(f"{name}: {err_txt}")
+                return None
+
+        # 1. Wymagane moduły rdzenia
+        sqlite_meta = _time_module("sqlite_persistence", True, runtime.kernel.get_sync_snapshot_meta)
+
+        def _load_chat() -> list[dict[str, Any]]:
+            client_threads = body.get("conversations") if isinstance(body.get("conversations"), list) else []
+            if client_threads:
+                return runtime.kernel.sync_conversations_detailed(
+                    client_threads, origin=origin, correlation_id=corr
+                )["conversations"]
+            return runtime.kernel.list_conversations_with_messages()
+
+        conversations = _time_module("chat", True, _load_chat)
+
+        def _load_agents() -> dict[str, Any]:
+            agents = runtime.orchestrator.refresh_states()
+            alive_count = sum(1 for a in agents if a.get("status") == "ONLINE_LOCAL_WORKER")
+            if alive_count < len(CANONICAL_SVL_AGENTS):
+                warnings.append(f"agents: aktywne workery lokalne {alive_count}/{len(CANONICAL_SVL_AGENTS)}")
+            memories = {
+                name: runtime.orchestrator.get_agent_memories(name, limit=15)
+                for name in CANONICAL_SVL_AGENTS
+            }
+            return {
+                "connected_at": runtime.orchestrator.connected_at,
+                "last_sync_report": runtime.orchestrator.last_Sync_report,
+                "agents": agents,
+                "agent_logs": runtime.orchestrator.agent_logs,
+                "agent_queues": runtime.orchestrator.agent_queues,
+                "agent_memories": memories,
+                "spherical_bus": runtime.bus.get_spherical_observability_snapshot(),
+            }
+
+        agents_payload = _time_module("agents", True, _load_agents)
+
+        def _sync_modules() -> list[dict[str, Any]]:
+            runtime.kernel.sync_chat_state_mutations(origin=origin, correlation_id=corr)
+            return runtime.apply_active_module_settings()
+
+        system_modules = _time_module("modules_registry", True, _sync_modules)
+
+        def _load_kernel() -> dict[str, Any]:
+            raw_report = json.loads(runtime.kernel.generate_system_status_report(include_demo_history=False))
+            return {
+                "report": raw_report,
+                "visual_scopes": VisualScope.get_registry_snapshot(),
+                "protected_variables": {
+                    k: v.to_metadata() for k, v in runtime.kernel.protected_variables.items()
+                },
+                "system_modules": system_modules or runtime.kernel.list_system_modules(),
+                "audit_logs": runtime.kernel.get_audit_logs(limit=40),
+            }
+
+        kernel_payload = _time_module("kernel", True, _load_kernel)
+        terminal_logs = _time_module("terminals", True, runtime.kernel.list_terminal_history)
+        workspace_state = _time_module("workspace_state", True, runtime.kernel.get_workspace_ui_state)
+
+        # 2. Moduły opcjonalne (degraded nie blokuje spójnego snapshotu rdzenia)
+        host_env = _time_module("host_telemetry", False, runtime.probe_host_environment)
+        ollama_status = _time_module("ollama", False, runtime.probe_ollama_status)
+        if ollama_status and not ollama_status.get("daemon_reachable"):
+            modules_status["ollama"]["status"] = "degraded"
+            modules_status["ollama"]["error"] = ollama_status.get("error") or "Daemon Ollama offline"
+            warnings.append(f"ollama: serwer {ollama_status.get('ollama_host')} nieosiągalny")
+
+        codex_status = _time_module("codex", False, runtime.probe_codex_status)
+
+        required_failures = [
+            m for m, st in modules_status.items() if st.get("required") and st.get("status") != "ok"
+        ]
+        if required_failures:
+            return 503, {
+                "ok": False,
+                "syncId": sync_id,
+                "schemaVersion": SYNC_SCHEMA_VERSION,
+                "timestamp": started_at,
+                "correlationId": corr,
+                "error": f"Błąd odczytu wymaganych modułów podczas synchronizacji: {', '.join(required_failures)}",
+                "modules": modules_status,
+                "warnings": warnings,
+            }
+
+        fresh_meta = runtime.kernel.get_sync_snapshot_meta()
+        sync_evt = runtime.kernel.emit_sync_event(
+            entity="system",
+            entity_id="snapshot",
+            event_type="system.snapshot_synced",
+            origin=origin,
+            correlation_id=corr,
+            event_id=event_id,
+            payload={
+                "syncId": sync_id,
+                "clientRevision": client_rev,
+                "warningsCount": len(warnings),
+            },
         )
-        runtime.kernel.record_audit("operator", "SYSTEM_FULL_SYNC", "all_subsystems", "OK", "Synchronized kernel, agents, Ollama, and SQLite chat history")
+        final_srv_rev = sync_evt["serverRevision"]
+        runtime.kernel.record_audit(
+            "operator",
+            "SYSTEM_FULL_SYNC",
+            "all_subsystems",
+            "OK" if not warnings else "OK_WITH_WARNINGS",
+            f"syncId={sync_id} srvRev={final_srv_rev} warnings={len(warnings)}",
+        )
+
         return 200, {
             "ok": True,
-            "synchronized_at": datetime.now(timezone.utc).isoformat(),
-            "connection_report": sync_report or runtime.orchestrator.last_Sync_report,
+            "syncId": sync_id,
+            "schemaVersion": fresh_meta["schemaVersion"],
+            "serverRevision": final_srv_rev,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "synchronized_at": started_at,
+            "correlationId": corr,
+            "warnings": warnings,
+            "modules": modules_status,
+            "systemModules": system_modules,
+            "entityRevisions": fresh_meta["entityRevisions"],
+            "deletedEntities": fresh_meta["deletedEntities"],
             "health": {
                 "status": "ONLINE",
                 "system": runtime.kernel.sys_version.value,
                 "operator": runtime.kernel.operator.value,
-                "host": runtime.probe_host_environment(),
-                "ollama": runtime.probe_ollama_status(),
-                "codex": runtime.probe_codex_status(),
+                "schemaVersion": fresh_meta["schemaVersion"],
+                "serverRevision": final_srv_rev,
+                "host": host_env,
+                "ollama": ollama_status,
+                "codex": codex_status,
+                "security": {
+                    "token_source": runtime.kernel.token_source,
+                    "token_length": len(runtime.kernel.operator_token),
+                    "hardcoded_token_removed": True,
+                    "auth_required": True,
+                },
             },
-            "agents": agents,
-            "conversations": runtime.kernel.list_conversations_with_messages(),
+            "kernel": kernel_payload,
+            "agentsData": agents_payload,
+            "agents": agents_payload.get("agents", []),
+            "connection_report": runtime.orchestrator.last_Sync_report,
+            "conversations": conversations,
+            "terminalLogs": terminal_logs,
+            "workspaceState": workspace_state,
+            "recentEvents": runtime.kernel.get_outbox_events_since(
+                since_revision=max(0, final_srv_rev - 25),
+                limit=25,
+            )["events"],
         }
 
     return 404, {"ok": False, "error": f"Unknown endpoint: {method} {path}"}
@@ -639,13 +1153,14 @@ try:
     async def _fastapi_dispatch(request: Request, full_path: str) -> JSONResponse:
         path = "/" + full_path.lstrip("/")
         query = dict(request.query_params)
+        corr_id = request.headers.get("x-request-id") or request.headers.get("x-correlation-id") or ""
         body: dict[str, Any] = {}
         if request.method == "POST":
             try:
                 body = await request.json()
             except Exception:
                 body = {}
-        status, payload = await handle_api_request(request.method, path, query, body)
+        status, payload = await handle_api_request(request.method, path, query, body, correlation_id=corr_id)
         return JSONResponse(status_code=status, content=payload)
 except ImportError:
     fastapi_app = None
@@ -653,7 +1168,7 @@ except ImportError:
 
 async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     try:
-        request_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        request_line = await asyncio.wait_for(reader.readline(), timeout=10.0)
         if not request_line:
             writer.close()
             return
@@ -667,25 +1182,50 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         query = dict(urllib.parse.parse_qsl(parsed.query))
 
         content_length = 0
+        correlation_id = ""
         while True:
-            header_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            header_line = await asyncio.wait_for(reader.readline(), timeout=10.0)
             if not header_line or header_line in (b"\r\n", b"\n"):
                 break
             h_str = header_line.decode("utf-8", errors="replace").strip()
-            if h_str.lower().startswith("content-length:"):
-                content_length = int(h_str.split(":", 1)[1].strip())
+            h_lower = h_str.lower()
+            if h_lower.startswith("content-length:"):
+                try:
+                    content_length = max(0, int(h_str.split(":", 1)[1].strip()))
+                except ValueError:
+                    content_length = 0
+            elif h_lower.startswith("x-request-id:") or h_lower.startswith("x-correlation-id:"):
+                correlation_id = h_str.split(":", 1)[1].strip()[:120]
 
         body: dict[str, Any] = {}
         if content_length > 0:
-            raw_body = await asyncio.wait_for(reader.readexactly(content_length), timeout=5.0)
+            raw_body = await asyncio.wait_for(reader.readexactly(content_length), timeout=15.0)
             try:
-                body = json.loads(raw_body.decode("utf-8", errors="replace"))
+                parsed_body = json.loads(raw_body.decode("utf-8", errors="replace"))
+                if isinstance(parsed_body, dict):
+                    body = parsed_body
             except Exception:
                 body = {}
 
-        status, response_payload = await handle_api_request(method, path, query, body)
+        try:
+            status, response_payload = await handle_api_request(method, path, query, body, correlation_id=correlation_id)
+        except Exception as route_exc:
+            traceback.print_exc()
+            status = 500
+            response_payload = {"ok": False, "error": f"Python backend exception: {route_exc}"}
+
         resp_bytes = json.dumps(response_payload, ensure_ascii=False).encode("utf-8")
-        status_text = {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found"}.get(status, "OK")
+        status_text = {
+            200: "OK",
+            202: "Accepted",
+            400: "Bad Request",
+            403: "Forbidden",
+            404: "Not Found",
+            409: "Conflict",
+            500: "Internal Server Error",
+            502: "Bad Gateway",
+            503: "Service Unavailable",
+        }.get(status, "OK")
         headers = (
             f"HTTP/1.1 {status} {status_text}\r\n"
             f"Content-Type: application/json; charset=utf-8\r\n"
@@ -694,8 +1234,19 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         ).encode("utf-8")
         writer.write(headers + resp_bytes)
         await writer.drain()
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            err_bytes = json.dumps({"ok": False, "error": f"HTTP transport error: {exc}"}, ensure_ascii=False).encode("utf-8")
+            err_headers = (
+                f"HTTP/1.1 500 Internal Server Error\r\n"
+                f"Content-Type: application/json; charset=utf-8\r\n"
+                f"Content-Length: {len(err_bytes)}\r\n"
+                f"Connection: close\r\n\r\n"
+            ).encode("utf-8")
+            writer.write(err_headers + err_bytes)
+            await writer.drain()
+        except Exception:
+            pass
     finally:
         try:
             writer.close()
@@ -704,15 +1255,19 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             pass
 
 
-async def main() -> None:
-    port = int(os.environ.get("SVL_PYTHON_PORT", "8085"))
-    # Automatically inspect SVL_System, spawn all 4 agent worker PIDs, and load full configs on boot
+async def _run_boot_autoconnect() -> None:
     try:
         await runtime.orchestrator.connect_my_ai(triggered_by="system_boot_autoconnect")
     except Exception as exc:
         print(f"[SVL Python OS] Warning during boot autoconnect: {exc}", flush=True)
+
+
+async def main() -> None:
+    port = int(os.environ.get("SVL_PYTHON_PORT", "8085"))
     server = await asyncio.start_server(_handle_client, "127.0.0.1", port)
     print(f"[SVL Python OS] Backend Kernel running on http://127.0.0.1:{port}", flush=True)
+    # Bind TCP server first so Gateway never gets ECONNREFUSED during GitHub inspection
+    asyncio.create_task(_run_boot_autoconnect())
     async with server:
         await server.serve_forever()
 
