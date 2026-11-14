@@ -206,7 +206,7 @@ function normalizeConversationsFromServer(rawList: any[]): SyncableConversation[
       messages:
         cleaned.length > 0
           ? cleaned
-          : INITIAL_WELCOME_CONVERSATIONS[0].messages,
+          : (INITIAL_WELCOME_CONVERSATIONS.find((template) => template.id === String(c.id))?.messages ?? []),
     };
   });
 }
@@ -292,10 +292,17 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((c: any) => ({
-            ...c,
-            messages: stripObsoleteDiagnosticMessages(c.messages),
-          }));
+          // Keep cached history while backfilling agent channels introduced in newer releases.
+          const restored = parsed
+            .filter((c: any) => c && typeof c.id === 'string')
+            .map((c: any) => ({
+              ...c,
+              title: getCanonicalConversationTitle(c.id, c.title),
+              messages: stripObsoleteDiagnosticMessages(c.messages),
+            }));
+          const knownIds = new Set(restored.map((c: SyncableConversation) => c.id));
+          const missingChannels = INITIAL_WELCOME_CONVERSATIONS.filter((c) => !knownIds.has(c.id));
+          return [...missingChannels, ...restored];
         }
       }
     } catch {
@@ -665,11 +672,11 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
               const rawConv = ws.active_conversation_id?.value ?? ws.active_conversation_id;
               if (typeof rawConv === 'string' && rawConv) setActiveConvIdState(rawConv);
               const rawTarget = ws.selected_target_agent?.value ?? ws.selected_target_agent;
-              if (rawTarget && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawTarget))) {
+              if (rawTarget && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawTarget))) {
                 setTargetAgentState(String(rawTarget) as any);
               }
               const rawPanel = ws.selected_agent_panel_id?.value ?? ws.selected_agent_panel_id;
-              if (rawPanel && ['Aria', 'Alex', 'Astyria', 'Aurelius'].includes(String(rawPanel))) {
+              if (rawPanel && ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawPanel))) {
                 setSelectedAgentPanelState(String(rawPanel) as any);
               }
             }
@@ -1363,6 +1370,9 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const clearAllConversationsAndBuffers = useCallback(async () => {
+    const previousConversations = conversationsRef.current;
+    const previousActiveConvId = activeConvIdState;
+    const previousTargetAgent = targetAgentState;
     deletedConvIdsRef.current.clear();
     pendingMsgIdsRef.current.clear();
     setConversations(INITIAL_WELCOME_CONVERSATIONS);
@@ -1385,9 +1395,14 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const hydrated = normalizeConversationsFromServer(res.data.conversations);
       setConversations(hydrated.length > 0 ? hydrated : INITIAL_WELCOME_CONVERSATIONS);
       notifyLocalMutation('chat', 'all', res.data.serverRevision);
+      return { ok: true };
     }
-    return { ok: true };
-  }, [notifyLocalMutation, tabOrigin]);
+    // Roll back optimistic clearing when Python/SQLite fails.
+    setConversations(previousConversations);
+    setActiveConvIdState(previousActiveConvId);
+    setTargetAgentState(previousTargetAgent);
+    return { ok: false, error: res.data?.error || res.error || 'Nie udało się wyczyścić rozmów w SQLite.' };
+  }, [activeConvIdState, notifyLocalMutation, tabOrigin, targetAgentState]);
 
   const clearTerminalTab = useCallback(
     async (tab: TerminalTabId) => {

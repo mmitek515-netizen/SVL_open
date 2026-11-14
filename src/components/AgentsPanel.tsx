@@ -341,7 +341,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
         </div>
       )}
 
-      {/* 4 Agents Cards Grid */}
+      {/* Canonical agent cards grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         {CANONICAL_AGENTS.map((meta) => {
           const live = agentsList.find((a) => a.canonical_name === meta.canonicalName) || {};
@@ -447,6 +447,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   <option value="Alex">Agent: Alex Mitek (id: Alex)</option>
                   <option value="Astyria">Agent: Astyria Mitek (id: Astyria)</option>
                   <option value="Aurelius">Agent: Aurelius Mitek (id: Aurelius)</option>
+                  <option value="Agata">Agent: Agata Mitek (id: Agata)</option>
                 </select>
               </div>
               <div>
@@ -463,6 +464,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   <option value="Alex">Alex Mitek (id: Alex)</option>
                   <option value="Astyria">Astyria Mitek (id: Astyria)</option>
                   <option value="Aurelius">Aurelius Mitek (id: Aurelius)</option>
+                  <option value="Agata">Agata Mitek (id: Agata)</option>
                 </select>
               </div>
             </div>

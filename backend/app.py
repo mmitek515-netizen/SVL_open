@@ -952,6 +952,10 @@ async def handle_api_request(
         cid = str(body.get("conversation_id", "")).strip()
         if not cid:
             return 400, {"ok": False, "error": "conversation_id is required"}
+        if cid == "conv-rodzina-mitek-wszyscy" or cid in {
+            f"conv-agent-{name.lower()}" for name in CANONICAL_SVL_AGENTS
+        }:
+            return 400, {"ok": False, "error": "Kanały Rodziny Mitek są stałe. Aby usunąć historię, użyj czyszczenia rozmów."}
         try:
             deleted = runtime.kernel.delete_conversation(
                 cid,

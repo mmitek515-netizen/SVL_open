@@ -283,7 +283,7 @@ def _agent_worker_process_loop(
 
 class SVLAgentOrchestrator:
     """
-    Zarządza cyklem życia czterech agentów (Aria, Alex, Astyria, Aurelius),
+    Zarządza cyklem życia pięciu agentów (Aria, Alex, Astyria, Aurelius, Agata),
     wykonuje polecenie 'podłącz moje ai', bada repozytoria SVL_System i Debian_13,
     tworzy rzeczywiste procesy potomne w systemie Linux oraz integruje je ze Sferyczną Magistralą Zdarzeń.
     """
@@ -777,9 +777,9 @@ class SVLAgentOrchestrator:
         self.kernel.record_audit(
             actor=triggered_by,
             action="CONNECT_MY_AI",
-            target="Aria,Alex,Astyria,Aurelius",
+            target=",".join(CANONICAL_SVL_AGENTS),
             status="SUCCESS",
-            details=f"Spawned 4 local Python workers from SVL_System definitions (PIDs: {[a['pid'] for a in spawned_agents]})",
+            details=f"Spawned {len(spawned_agents)} local Python workers from SVL_System definitions (PIDs: {[a['pid'] for a in spawned_agents]})",
         )
 
         report = {
@@ -792,9 +792,9 @@ class SVLAgentOrchestrator:
             "external_process_probe": external_probe,
             "architectural_finding": (
                 "W repozytorium SVL_System agenci Aria (id: si_1), Alex (id: Alex), Astyria (id: Astyria) "
-                "oraz Aurelius (id: Aurelius) istnieją jako definicje programowe (.github/agents/*.agent.md, "
+                "Aurelius (id: Aurelius) i Agata (id: Agata) istnieją jako definicje programowe (.github/agents/*.agent.md, "
                 "src/kernel/agents.ts) bez działających zdalnych daemonów. Zgodnie ze specyfikacją nie zmodyfikowano "
-                "repozytorium źródłowego i uruchomiono 4 nowe, rzeczywiste procesy workerów Python na lokalnym hoście Linux, "
+                f"repozytorium źródłowego i uruchomiono {len(spawned_agents)} nowych, rzeczywistych procesów workerów Python na lokalnym hoście Linux, "
                 "wyraźnie oznaczone jako nowe instancje lokalne (NEW_LOCAL_WORKER_FROM_REPO_CODE)."
             ),
             "agents": spawned_agents,

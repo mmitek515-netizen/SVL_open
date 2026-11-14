@@ -167,6 +167,22 @@ class TestSVLKernelSuite(unittest.TestCase):
             remaining = kernel.list_conversations_with_messages()
             self.assertEqual([c["id"] for c in remaining], ["conv-sync-1"])
 
+    def test_canonical_agent_channels_survive_stale_deletions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            kernel = SVLSystemKernel(
+                db_path=str(Path(tmpdir) / "channels.sqlite3"),
+                operator_token="test_operator_token_with_more_than_32_chars_abcdef",
+            )
+            kernel.ensure_mitek_family_channel()
+            ids = {c["id"] for c in kernel.list_conversations_with_messages()}
+            self.assertIn("conv-agent-agata", ids)
+            self.assertIn("conv-rodzina-mitek-wszyscy", ids)
+
+            kernel.delete_conversation("conv-agent-agata")
+            kernel.ensure_mitek_family_channel()
+            ids = {c["id"] for c in kernel.list_conversations_with_messages()}
+            self.assertIn("conv-agent-agata", ids)
+
     def test_system_modules_and_chat_state_sync_idempotency(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_file = str(Path(tmpdir) / "test_modules_sync.sqlite3")

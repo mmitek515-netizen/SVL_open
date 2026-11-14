@@ -128,7 +128,7 @@ function SVLWorkspaceShell() {
           >
             {isConnectingAi
               ? 'Łączenie...'
-              : activeWorkersCount >= 4
+              : activeWorkersCount >= CANONICAL_AGENTS.length
                 ? `AI (${activeWorkersCount}/${CANONICAL_AGENTS.length} Aktywne)`
                 : 'Podłącz AI'}
           </button>

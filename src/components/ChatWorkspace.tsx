@@ -908,7 +908,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                     {conv.messages.length} wiad. · {conv.updatedAt}
                   </div>
                 </button>
-                {conversations.length > 1 && !isFamilyChan && (
+                {conversations.length > 1 && !isFamilyChan && !conv.id.startsWith('conv-agent-') && (
                   <button
                     type="button"
                     aria-label={`Usuń konwersację ${conv.title}`}

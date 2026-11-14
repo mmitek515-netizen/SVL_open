@@ -781,6 +781,13 @@ class SVLSystemKernel:
             del_family = conn.execute(
                 "SELECT deleted FROM sync_entities WHERE entity = 'chat' AND entity_id = 'conv-rodzina-mitek-wszyscy'"
             ).fetchone()
+            if del_family and int(del_family["deleted"]) != 0:
+                # A stale tombstone must not hide a permanent canonical channel.
+                conn.execute(
+                    "UPDATE sync_entities SET deleted = 0, revision = revision + 1, updated_at = ? WHERE entity = 'chat' AND entity_id = ?",
+                    (now_iso, "conv-rodzina-mitek-wszyscy"),
+                )
+                del_family = None
             if not del_family or int(del_family["deleted"]) == 0:
                 fam_conv = conn.execute(
                     "SELECT id FROM conversations WHERE id = 'conv-rodzina-mitek-wszyscy'"
@@ -833,6 +840,12 @@ class SVLSystemKernel:
                     "SELECT deleted FROM sync_entities WHERE entity = 'chat' AND entity_id = ?",
                     (cid,),
                 ).fetchone()
+                if del_ag and int(del_ag["deleted"]) != 0:
+                    conn.execute(
+                        "UPDATE sync_entities SET deleted = 0, revision = revision + 1, updated_at = ? WHERE entity = 'chat' AND entity_id = ?",
+                        (now_iso, cid),
+                    )
+                    del_ag = None
                 if not del_ag or int(del_ag["deleted"]) == 0:
                     ag_conv = conn.execute("SELECT id FROM conversations WHERE id = ?", (cid,)).fetchone()
                     if not ag_conv:
