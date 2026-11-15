@@ -125,7 +125,117 @@ def redact(value: str, tokens: dict[str, str]) -> str:
     return result[:600]
 
 
-def create_report(port: int, logs: bool, limit: int) -> dict[str, Any]:
+def local_mcp_token() -> tuple[str, str]:
+    """Read only the current user's private MCP token, never its value in output."""
+    env_token = os.environ.get("SVL_MCP_TOKEN", "")
+    if env_token:
+        return (env_token, "environment") if len(env_token) >= 32 else ("", "invalid environment token")
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config"))
+    token_file = config_root / "svl-open-mcp" / "mcp-token"
+    try:
+        if token_file.is_symlink():
+            return "", "refusing symlinked MCP token file"
+        if not token_file.is_file():
+            return "", "private MCP token file not found for this user"
+        if stat.S_IMODE(token_file.stat().st_mode) & 0o077:
+            return "", "MCP token file has unsafe permissions"
+        value = token_file.read_text(encoding="utf-8").strip()
+        if len(value) < 32:
+            return "", "MCP token is too short"
+        return value, "private user token file"
+    except (OSError, UnicodeError, ValueError):
+        return "", "MCP token file could not be read"
+
+
+def mcp_rpc(port: int, token: str, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    """JSON-RPC on the actual Streamable HTTP /mcp route (not legacy /sse)."""
+    payload = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
+    }).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/mcp",
+        data=payload, headers=headers, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25 if method == "tools/call" else 5) as resp:
+            raw = resp.read(65537)
+            if len(raw) > 65536:
+                return {"reachable": True, "httpStatus": resp.status, "error": "response too large"}
+            result = json.loads(raw.decode("utf-8"))
+            if not isinstance(result, dict):
+                return {"reachable": True, "httpStatus": resp.status, "error": "unexpected RPC response"}
+            return {"reachable": True, "httpStatus": resp.status, "data": result}
+    except urllib.error.HTTPError as exc:
+        return {"reachable": True, "httpStatus": exc.code, "error": "HTTP " + str(exc.code)}
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return {"reachable": False, "error": type(exc).__name__}
+    except (UnicodeError, ValueError):
+        return {"reachable": True, "error": "invalid JSON response"}
+
+
+def mcp_diagnostics(port: int) -> dict[str, Any]:
+    token, token_state = local_mcp_token()
+    report: dict[str, Any] = {
+        "endpoint": f"http://127.0.0.1:{port}/mcp",
+        "tokenState": token_state,
+        "legacySseEndpoint": "/sse is not supported; 404 is expected there",
+    }
+    initial = mcp_rpc(port, token, "initialize", {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "svl-doctor", "version": "1.0"},
+    })
+    report["reachable"] = initial["reachable"]
+    report["httpStatus"] = initial.get("httpStatus")
+    if initial.get("httpStatus") == 401:
+        report["authenticated"] = False
+        report["diagnosis"] = "MCP requires a valid private Bearer token"
+        return report
+    if initial.get("httpStatus") == 404:
+        report["authenticated"] = False
+        report["diagnosis"] = "Wrong /mcp route or another service on this port"
+        return report
+    if initial.get("httpStatus") != 200:
+        report["authenticated"] = False
+        report["diagnosis"] = initial.get("error", "MCP not available")
+        return report
+    data = initial.get("data") or {}
+    if data.get("error"):
+        report["authenticated"] = False
+        report["diagnosis"] = "MCP initialize returned an RPC error"
+        return report
+    report["authenticated"] = True
+    report["server"] = (data.get("result") or {}).get("serverInfo", {}).get("name")
+    listed = mcp_rpc(port, token, "tools/list", {})
+    report["tools"] = [
+        entry.get("name")
+        for entry in (listed.get("data") or {}).get("result", {}).get("tools", [])
+        if isinstance(entry, dict)
+    ]
+    status = mcp_rpc(port, token, "tools/call", {
+        "name": "codex_status", "arguments": {},
+    })
+    try:
+        content = status["data"]["result"]["content"][0]["text"]
+        details = json.loads(content)
+        report["codex"] = {
+            "installed": details.get("installed"),
+            "loggedIn": details.get("loggedIn"),
+            "authenticationMode": details.get("authenticationMode"),
+            "writableTasksEnabled": details.get("writableTasksEnabled"),
+        }
+    except (KeyError, TypeError, ValueError, IndexError):
+        report["codex"] = {"diagnosis": "codex_status tool unavailable or failed"}
+    return report
+
+
+def create_report(port: int, logs: bool, limit: int, mcp_port: int = 8787) -> dict[str, Any]:
     credentials, credentials_state = local_tokens()
     operator = credentials.get("SVL_OPERATOR_TOKEN", "")
     codex_access = credentials.get("SVL_CODEX_CHAT_ACCESS_TOKEN", "")
@@ -139,6 +249,7 @@ def create_report(port: int, logs: bool, limit: int) -> dict[str, Any]:
             "codexAccessConfigured": bool(codex_access),
         },
         "codexLocal": codex_local_login(),
+        "mcp": mcp_diagnostics(mcp_port),
     }
 
     version = local_api("/api/deployment-info", port=port)
@@ -245,11 +356,12 @@ def main() -> int:
     parser.add_argument("--logs", action="store_true", help="include recent redacted Python logs")
     parser.add_argument("--limit", type=int, default=30, help="last N log lines (1–100)")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "3000")))
+    parser.add_argument("--mcp-port", type=int, default=int(os.environ.get("SVL_MCP_PORT", "8787")))
     args = parser.parse_args()
-    if not 1 <= args.port <= 65535:
+    if not 1 <= args.port <= 65535 or not 1 <= args.mcp_port <= 65535:
         parser.error("invalid port number")
     print(json.dumps(
-        create_report(args.port, args.logs, min(100, max(1, args.limit))),
+        create_report(args.port, args.logs, min(100, max(1, args.limit)), args.mcp_port),
         indent=2, ensure_ascii=False,
     ))
     return 0
