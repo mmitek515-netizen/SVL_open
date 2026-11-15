@@ -2,16 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CANONICAL_AGENTS,
+  DEFAULT_DEV_OPERATOR_TOKEN,
   buildChatHistoryPayload,
   calculateCompactMetricC,
   classifyCommandRisk,
   compactifyValue,
   extractExplicitChatModuleDirective,
+  formatAgentDisplayName,
+  getSvlOperatorAccessToken,
+  hasSvlOperatorAccessToken,
   isConnectMyAiCommand,
   isGitHubWorkspaceSyncRequest,
   mergeConversationThreads,
   safeParseJsonResponse,
   selectOllamaModelName,
+  setSvlOperatorAccessToken,
   validateOllamaHostUrl,
   validateOperatorTokenFormat,
 } from './svlLogic';
@@ -200,5 +205,23 @@ test('extractExplicitChatModuleDirective detects svl-364 and explicit module com
   assert.equal(custom.id, 'telemetry-bridge-v2');
 
   assert.equal(extractExplicitChatModuleDirective('Cześć Alex, jak minął dzień?'), null);
+});
+
+test('operator token initializes synchronously with valid default and formatAgentDisplayName normalizes all 5 Mitek agents', () => {
+  assert.equal(hasSvlOperatorAccessToken(), true);
+  assert.equal(getSvlOperatorAccessToken(), DEFAULT_DEV_OPERATOR_TOKEN);
+  assert.equal(validateOperatorTokenFormat(DEFAULT_DEV_OPERATOR_TOKEN).valid, true);
+
+  setSvlOperatorAccessToken('custom-operator-secret-token-for-testing-36-chars');
+  assert.equal(getSvlOperatorAccessToken(), 'custom-operator-secret-token-for-testing-36-chars');
+  setSvlOperatorAccessToken(DEFAULT_DEV_OPERATOR_TOKEN);
+
+  assert.equal(formatAgentDisplayName('si_1'), 'Aria Mitek');
+  assert.equal(formatAgentDisplayName('Aria'), 'Aria Mitek');
+  assert.equal(formatAgentDisplayName('Alex'), 'Alex Mitek');
+  assert.equal(formatAgentDisplayName('Astyria'), 'Astyria Mitek');
+  assert.equal(formatAgentDisplayName('Aurelius'), 'Aurelius Mitek');
+  assert.equal(formatAgentDisplayName('Agata'), 'Agata Mitek');
+  assert.equal(formatAgentDisplayName('Rodzina Mitek'), 'Rodzina Mitek (wszyscy)');
 });
 

@@ -189,7 +189,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [terminalLogsByTab, setTerminalLogsByTab] = useState<Record<TerminalTabId, TerminalLogLine[]>>(DEFAULT_TERMINAL_LOGS);
   const [workspaceState, setWorkspaceState] = useState<WorkspaceUiState>({
     active_conversation_id: null,
-    selected_target_agent: 'Auto',
+    selected_target_agent: 'Rodzina Mitek',
     selected_agent_panel_id: 'Alex',
     revisions: {},
   });
@@ -197,7 +197,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [activeConvIdState, setActiveConvIdState] = useState<string>(
     () => conversations[0]?.id || 'conv-rodzina-mitek-wszyscy',
   );
-  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Auto');
+  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Rodzina Mitek');
   const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Alex');
 
   const pendingMsgIdsRef = useRef<Set<string>>(new Set());

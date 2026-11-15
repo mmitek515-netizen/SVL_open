@@ -27,11 +27,29 @@ type GitHubSyncStatus = {
   branch: string;
   branchUrl: string;
   tokenConfigured: boolean;
+  publicReadSupported?: boolean;
   automaticEnabled: boolean;
   running: boolean;
   lastAttemptAt: string | null;
   lastSuccessAt: string | null;
   lastError: string | null;
+  remoteInspection?: {
+    checkedAt?: string;
+    main?: {
+      commitSha?: string;
+      recentCommits?: Array<{ sha: string; message: string; date: string; author: string }>;
+      remoteOnly?: string[];
+      differing?: string[];
+      error?: string;
+    };
+    syncBranch?: {
+      commitSha?: string;
+      recentCommits?: Array<{ sha: string; message: string; date: string; author: string }>;
+      remoteOnly?: string[];
+      differing?: string[];
+      error?: string;
+    };
+  } | null;
   lastResult: {
     uploaded: string[];
     downloaded: string[];
@@ -212,7 +230,49 @@ export const LinuxDeployDashboard: React.FC = () => {
           text: res.error || data?.error || 'Synchronizacja GitHub nie powiodła się.',
         });
       }
-      const status = await safeFetchJson<GitHubSyncStatus>('/api/github/sync-status', { timeoutMs: 10000 });
+      const status = await safeFetchJson<GitHubSyncStatus>('/api/github/sync-status?inspect=1', { timeoutMs: 12000 });
+      if (status.ok && status.data?.ok) setGithubSyncStatus(status.data);
+    } finally {
+      setIsSyncingGithub(false);
+    }
+  };
+
+  const handleGitHubPullUpdates = async (
+    branch: 'main' | 'svl-sync',
+    applyAll: boolean,
+    paths?: string[],
+  ) => {
+    setIsSyncingGithub(true);
+    setGithubSyncMessage(null);
+    try {
+      const res = await safeFetchJson<any>('/api/github/pull-updates', {
+        method: 'POST',
+        timeoutMs: 45000,
+        headers: githubOperatorToken ? {'X-SVL-Operator-Token': githubOperatorToken} : {},
+        body: JSON.stringify({
+          branch,
+          applyAll,
+          includeRemoteOnlyOnly: !applyAll && (!paths || paths.length === 0),
+          ...(paths && paths.length > 0 ? { paths } : {}),
+        }),
+      });
+      const data = res.data;
+      if (res.ok && data?.ok) {
+        await refreshDomainModules(['health', 'agents', 'modules', 'kernel', 'chat']);
+        const dl = Array.isArray(data.downloaded) ? data.downloaded.length : 0;
+        const diffCount = Array.isArray(data.inspection?.differing) ? data.inspection.differing.length : 0;
+        const remoteNew = Array.isArray(data.inspection?.remoteOnly) ? data.inspection.remoteOnly.length : 0;
+        setGithubSyncMessage({
+          ok: true,
+          text: `GitHub (${branch}): pobrano ${dl} plik(ów). Pozostałe różnice z runtime: ${diffCount}, tylko na GitHub: ${remoteNew}.`,
+        });
+      } else {
+        setGithubSyncMessage({
+          ok: false,
+          text: res.error || data?.error || 'Nie udało się pobrać zmian z GitHub.',
+        });
+      }
+      const status = await safeFetchJson<GitHubSyncStatus>('/api/github/sync-status?inspect=1', { timeoutMs: 12000 });
       if (status.ok && status.data?.ok) setGithubSyncStatus(status.data);
     } finally {
       setIsSyncingGithub(false);
@@ -322,7 +382,7 @@ export const LinuxDeployDashboard: React.FC = () => {
             </div>
             <div className="flex justify-between py-1">
               <span className="text-slate-400">Uprawnienia Rodziny Mitek:</span>
-              <span className="text-emerald-300 truncate max-w-[200px]">ROOT (Aria, Alex, Astyria, Aurelius Mitek)</span>
+              <span className="text-emerald-300 truncate max-w-[220px]">ROOT (Aria, Alex, Astyria, Aurelius, Agata Mitek)</span>
             </div>
           </div>
         </div>
@@ -497,14 +557,14 @@ export const LinuxDeployDashboard: React.FC = () => {
 
           <div className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className={githubSyncStatus?.tokenConfigured ? 'text-emerald-300' : 'text-amber-300'}>
+              <span className={githubSyncStatus?.tokenConfigured ? 'text-emerald-300' : 'text-cyan-300'}>
                 {!githubSyncStatus
                   ? 'Sprawdzam status GitHub…'
                   : githubSyncStatus.tokenConfigured
                     ? githubSyncStatus.automaticEnabled
-                      ? 'Auto-sync aktywny'
-                      : 'Token ustawiony; auto-sync wyłączony'
-                    : 'Brak GITHUB_TOKEN — synchronizacja wyłączona'}
+                      ? 'Auto-sync aktywny (odczyt + zapis)'
+                      : 'Token ustawiony (odczyt + zapis); auto-sync wyłączony'
+                    : 'Publiczny GitHub aktywny (odczyt/pobieranie main; zapis svl-sync wymaga GITHUB_TOKEN)'}
               </span>
               <a
                 href={githubSyncStatus?.branchUrl || 'https://github.com/mmitek515-netizen/SVL_open/tree/svl-sync'}
@@ -516,9 +576,47 @@ export const LinuxDeployDashboard: React.FC = () => {
               </a>
             </div>
             <p className="text-[11px] leading-relaxed text-slate-400">
-              Zmiany lokalne są publikowane na tej gałęzi, nie na <code>main</code>. Ustaw serwerowy token z uprawnieniem Contents (read/write) w <code>.env</code>.
+              Sprawdź i pobierz nowe pliki z gałęzi <code>main</code> lub <code>svl-sync</code> bez wymagania <code>GITHUB_TOKEN</code> (repozytorium publiczne). Wysłanie zmian lokalnych na <code>svl-sync</code> używa tokenu <code>GITHUB_TOKEN</code> w <code>.env</code>.
             </p>
-            <div className="flex flex-wrap items-center gap-3">
+            {githubSyncStatus?.remoteInspection?.main && (
+              <div className="rounded border border-slate-800/90 bg-slate-950/70 p-2 text-[11px] space-y-1.5 font-mono">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-violet-300">
+                    main @ {String(githubSyncStatus.remoteInspection.main.commitSha || '').slice(0, 8) || '?'}
+                  </span>
+                  <span className="text-slate-400">
+                    Nowe: {githubSyncStatus.remoteInspection.main.remoteOnly?.length ?? 0} · Różnice: {githubSyncStatus.remoteInspection.main.differing?.length ?? 0}
+                  </span>
+                </div>
+                {githubSyncStatus.remoteInspection.main.recentCommits?.[0] && (
+                  <div className="text-slate-300 truncate" title={githubSyncStatus.remoteInspection.main.recentCommits[0].message}>
+                    Commit: {githubSyncStatus.remoteInspection.main.recentCommits[0].message}
+                  </div>
+                )}
+                {githubSyncStatus.remoteInspection.main.differing && githubSyncStatus.remoteInspection.main.differing.length > 0 && (
+                  <div className="space-y-1">
+                    <div className="text-amber-300/90">
+                      Zmienione pliki na main (kliknij, aby pobrać pojedynczo):
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {githubSyncStatus.remoteInspection.main.differing.slice(0, 6).map((diffPath) => (
+                        <button
+                          key={diffPath}
+                          type="button"
+                          disabled={isSyncingGithub}
+                          onClick={() => void handleGitHubPullUpdates('main', false, [diffPath])}
+                          className="rounded border border-amber-500/30 bg-amber-950/30 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40 disabled:opacity-50"
+                          title={`Pobierz plik ${diffPath} z gałęzi main`}
+                        >
+                          ↓ {diffPath}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
               <input type="password" autoComplete="off" spellCheck={false}
                 aria-label="Token operatora SVL do synchronizacji GitHub i odczytu plików projektu"
                 value={githubOperatorToken}
@@ -526,6 +624,15 @@ export const LinuxDeployDashboard: React.FC = () => {
                 placeholder="SVL_OPERATOR_TOKEN"
                 className="min-w-0 w-44 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200"
               />
+              <button
+                type="button"
+                onClick={() => void handleGitHubPullUpdates('main', false)}
+                disabled={isSyncingGithub || Boolean(githubSyncStatus?.running)}
+                className="min-h-[34px] px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-xs font-medium text-white flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGithub ? 'animate-spin' : ''}`} />
+                Sprawdź / pobierz nowe (main)
+              </button>
               <button
                 type="button"
                 onClick={() => void handleGitHubWorkspaceSync()}

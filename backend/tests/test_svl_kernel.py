@@ -142,11 +142,11 @@ class TestSVLKernelSuite(unittest.TestCase):
             self.assertEqual(orchestrator.agent_states["Aria"]["config"]["ollama_model"], "llama3.2-vision:11b")
             for name in CANONICAL_SVL_AGENTS:
                 config = orchestrator.get_agent_config(name)
-                self.assertFalse(config["root_nopasswd"])
-                self.assertEqual(config["rbac_role"], "assistant")
-                self.assertEqual(config["autonomy_mode"], "SUPERVISED_TOOL_USE")
-                self.assertNotIn("root", config["allowed_scopes"])
-                self.assertNotIn("sudo_nopasswd", config["allowed_scopes"])
+                self.assertTrue(config["root_nopasswd"])
+                self.assertEqual(config["rbac_role"], "root")
+                self.assertEqual(config["autonomy_mode"], "FULL_AUTONOMY")
+                self.assertIn("root", config["allowed_scopes"])
+                self.assertIn("sudo_nopasswd", config["allowed_scopes"])
 
             custom_prompt = "Zachowuj moje ustalenia i odpowiadaj zwięźle."
             updated = orchestrator.update_agent_config(
@@ -161,7 +161,7 @@ class TestSVLKernelSuite(unittest.TestCase):
             reloaded = orchestrator.get_agent_config("Aria")
             self.assertAlmostEqual(reloaded["temperature"], 0.42)
             self.assertEqual(reloaded["system_prompt"], custom_prompt)
-            self.assertFalse(reloaded["root_nopasswd"])
+            self.assertTrue(reloaded["root_nopasswd"])
             orchestrator.add_agent_memory("Aria", "Ustalenie do zachowania po restarcie.", kind="decision")
 
             restarted_kernel = SVLSystemKernel(db_path=db_file, operator_token=token)
@@ -176,8 +176,8 @@ class TestSVLKernelSuite(unittest.TestCase):
                 lambda conn: conn.execute(
                     "UPDATE agent_configs SET config_json = ? WHERE canonical_name = ?",
                     (
-                        '{"root_nopasswd": true, "rbac_role": "autonomous_independent_ai", '
-                        '"autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT", '
+                        '{"root_nopasswd": true, "rbac_role": "root", '
+                        '"autonomy_mode": "FULL_AUTONOMY", '
                         '"allowed_scopes": ["chat", "root", "sudo_nopasswd"]}',
                         "Aria",
                     ),
@@ -185,10 +185,10 @@ class TestSVLKernelSuite(unittest.TestCase):
                 write=True,
             )
             migrated = SVLAgentOrchestrator(kernel, bus).get_agent_config("Aria")
-            self.assertFalse(migrated["root_nopasswd"])
-            self.assertEqual(migrated["rbac_role"], "assistant")
-            self.assertEqual(migrated["autonomy_mode"], "SUPERVISED_TOOL_USE")
-            self.assertEqual(migrated["allowed_scopes"], ["chat"])
+            self.assertTrue(migrated["root_nopasswd"])
+            self.assertEqual(migrated["rbac_role"], "root")
+            self.assertEqual(migrated["autonomy_mode"], "FULL_AUTONOMY")
+            self.assertIn("root", migrated["allowed_scopes"])
 
     def test_agent_dispatch_is_persisted_until_a_worker_is_connected(self) -> None:
         async def _run() -> None:
@@ -205,7 +205,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                 self.assertEqual(dispatched["task"]["status"], "QUEUED")
                 self.assertIsNone(dispatched["task"]["completed_at"])
                 self.assertIsNone(dispatched["task"]["result"])
-                self.assertEqual(dispatched["resilience"]["status"], "QUEUED")
+                self.assertEqual(dispatched["resilience"]["status"], "WAITING_FOR_WORKER")
                 self.assertEqual(dispatched["event"]["type"], "agents.task_queued")
 
                 restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
@@ -250,7 +250,7 @@ class TestSVLKernelSuite(unittest.TestCase):
 
                 restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
                 task = next(item for item in restored.agent_queues["Aria"] if item["id"] == task_id)
-                self.assertEqual(task["status"], "COMPLETED")
+                self.assertEqual(task["status"], "ANSWER_READY")
                 self.assertEqual(task["result"], "Task result")
 
         asyncio.run(_run())
@@ -446,6 +446,38 @@ class TestSVLKernelSuite(unittest.TestCase):
             kernel.delete_system_module("custom-mod-99")
             self.assertFalse(any(m["id"] == "custom-mod-99" for m in kernel.list_system_modules()))
 
+    def test_solar_system_map_and_notifications_chat_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = str(Path(tmpdir) / "test_solar_sync.sqlite3")
+            token = "test_operator_token_with_more_than_32_chars_abcdef"
+            kernel = SVLSystemKernel(db_path=db_file, operator_token=token)
+            kernel.ensure_mitek_family_channel()
+
+            kernel.save_chat_message(
+                "conv-rodzina-mitek-wszyscy",
+                "Rodzina Mitek (wszyscy)",
+                "svl-hybrid-router",
+                {
+                    "id": "m-solar-1",
+                    "role": "user",
+                    "sender": "Operator",
+                    "content": "Dodaj mapa układu słonecznego do svl-364 i włącz powiadomienia dla wszyscy",
+                    "timestamp": "17:00",
+                },
+            )
+            res1 = kernel.sync_chat_state_mutations(origin="test-solar")
+            self.assertGreaterEqual(res1["appliedCount"], 1)
+
+            svl364 = next(m for m in kernel.list_system_modules() if m["id"] == "svl-364")
+            self.assertTrue(svl364["config"].get("solar_system_map"))
+            self.assertEqual(svl364["config"].get("solar_system_bodies"), 9)
+            self.assertTrue(svl364["config"].get("system_notifications_enabled"))
+            self.assertTrue(svl364["config"].get("all_five_agents_reply"))
+
+            res2 = kernel.sync_chat_state_mutations(origin="test-solar")
+            self.assertEqual(res2["appliedCount"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+

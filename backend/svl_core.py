@@ -2128,6 +2128,8 @@ class SVLSystemKernel:
             svl364_has_opt_request = False
             has_dynamic_alloc_req = False
             has_dolphin_model_req = False
+            has_solar_map_req = False
+            has_notifications_req = False
             for r in msgs:
                 txt = str(r["content"] or "")
                 low = txt.lower()
@@ -2141,8 +2143,12 @@ class SVLSystemKernel:
                     has_dynamic_alloc_req = True
                 if "dolphin-llama3" in low or "dolphin llama3" in low:
                     has_dolphin_model_req = True
+                if any(kw in low for kw in ("układ słoneczny", "uklad sloneczny", "układu słonecznego", "ukladu slonecznego", "solar system", "solar_system")):
+                    has_solar_map_req = True
+                if any(kw in low for kw in ("powiadomien", "wszyscy", "system notification")):
+                    has_notifications_req = True
 
-            if (svl364_msg_id or "svl-364" in existing_mods) and "svl-364" not in deleted_mods:
+            if (svl364_msg_id or has_solar_map_req or has_notifications_req or "svl-364" in existing_mods) and "svl-364" not in deleted_mods:
                 mod_name = "SVL-364 Ebon Apex" if svl364_has_apex_name else "SVL-364 Ebon Apex"
                 desired_patch: dict[str, Any] = {
                     "module_alias": "svl-364-ebon-apex",
@@ -2160,7 +2166,11 @@ class SVLSystemKernel:
                     "root_nopasswd": True,
                     "bidirectional_interactive_chat": True,
                     "family_channel": "Rodzina Mitek (wszyscy)",
-                    "container_runtime_note": "Zastosowano w SVLSystemKernel, SphericalEventBus, lokalnym daemonie Ollama (127.0.0.1:11434) i konfiguracji agentów Rodziny Mitek (ROOT UID 0 NOPASSWD).",
+                    "solar_system_map": True,
+                    "solar_system_bodies": 9,
+                    "system_notifications_enabled": True,
+                    "all_five_agents_reply": True,
+                    "container_runtime_note": "Zastosowano w SVLSystemKernel, SphericalEventBus, lokalnym daemonie Ollama (127.0.0.1:11434) i konfiguracji wszystkich 5 agentów Rodziny Mitek (ROOT UID 0 NOPASSWD).",
                 }
 
                 if "svl-364" not in existing_mods:
@@ -2408,7 +2418,7 @@ class SVLSystemKernel:
                             "Pełna Autonomia i Niezależność AI (1-na-1 & Duplex)",
                             "Autonomous Cognitive Core",
                             "ACTIVE",
-                            "Zsynchronizowano z czatu i terminali: usunięto skrypty sterujące dla wszystkich 4 AI (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek) oraz wydzielono kanały indywidualne 1-na-1.",
+                            "Zsynchronizowano z czatu i terminali: pełna autonomia i uprawnienia ROOT (UID 0) dla wszystkich 5 AI (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek) oraz kanały indywidualne 1-na-1 i grupowy wszyscy.",
                             json.dumps(autonomy_cfg, ensure_ascii=False),
                             "chat",
                             "autonomy-sync",
@@ -2430,7 +2440,7 @@ class SVLSystemKernel:
                         (
                             "5.6.4-Autonomous-AI-Sync",
                             "Autonomous Cognitive Core",
-                            "Globalna synchronizacja zmian z czatu i terminali: pełna autonomia i niezależność wszystkich 4 AI (usunięcie skryptów sterujących) oraz separacja kanałów indywidualnych 1-na-1.",
+                            "Globalna synchronizacja zmian z czatu i terminali: pełna autonomia i niezależność wszystkich 5 AI (Aria, Alex, Astyria, Aurelius, Agata Mitek) oraz separacja kanałów 1-na-1 i wszyscy.",
                             now_date_str,
                             "ChatSyncBridge",
                         ),

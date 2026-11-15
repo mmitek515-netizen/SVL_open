@@ -1,8 +1,12 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 export const SVL_GITHUB_REPOSITORY = 'mmitek515-netizen/SVL_open';
 export const DEFAULT_GITHUB_SYNC_BRANCH = 'svl-sync';
@@ -225,21 +229,30 @@ export class GitHubSyncService {
     }
   }
 
-  private async request(path: string, init: RequestInit = {}): Promise<GitHubApiResult> {
-    if (!this.token) {
+  private async request(
+    path: string,
+    init: RequestInit = {},
+    allowPublic = false,
+  ): Promise<GitHubApiResult> {
+    if (!this.token && !allowPublic) {
       throw new GitHubSyncError('GitHub sync is unavailable: GITHUB_TOKEN is not configured on the server.');
+    }
+
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'SVL-Python-OS-Sync',
+      'X-GitHub-Api-Version': '2022-11-28',
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init.headers as Record<string, string> | undefined),
+    };
+    if (this.token) {
+      headers.Authorization = `Bearer ${this.token}`;
     }
 
     const response = await this.fetcher(`${this.apiBase}${path}`, {
       ...init,
       signal: AbortSignal.timeout(12000),
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${this.token}`,
-        'X-GitHub-Api-Version': '2022-11-28',
-        ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-        ...init.headers,
-      },
+      headers,
     });
 
     const text = await response.text();
@@ -320,9 +333,11 @@ export class GitHubSyncService {
     };
   }
 
-  private async getBranchTree(branch: string): Promise<BranchSnapshot> {
+  private async getBranchTree(branch: string, allowPublic = false): Promise<BranchSnapshot> {
     const branchResult = await this.request(
       `/repos/${this.repository}/branches/${encodeURIComponent(branch)}`,
+      {},
+      allowPublic,
     );
     if (!branchResult.ok) {
       throw new GitHubSyncError(`Cannot read ${branch} branch (GitHub API ${branchResult.status}).`);
@@ -332,6 +347,8 @@ export class GitHubSyncService {
 
     const treeResult = await this.request(
       `/repos/${this.repository}/git/trees/${encodeURIComponent(commitSha)}?recursive=1`,
+      {},
+      allowPublic,
     );
     if (!treeResult.ok) {
       throw new GitHubSyncError(`Cannot read ${branch} tree (GitHub API ${treeResult.status}).`);
@@ -388,12 +405,14 @@ export class GitHubSyncService {
     }
   }
 
-  private async readBlob(filePath: string, entry: GitHubTreeFile): Promise<string> {
+  private async readBlob(filePath: string, entry: GitHubTreeFile, allowPublic = false): Promise<string> {
     if (entry.size > MAX_GITHUB_SYNC_FILE_BYTES) {
       throw new GitHubSyncError(`File ${filePath} exceeds the ${MAX_GITHUB_SYNC_FILE_BYTES}-byte sync limit.`);
     }
     const result = await this.request(
       `/repos/${this.repository}/git/blobs/${encodeURIComponent(entry.sha)}`,
+      {},
+      allowPublic,
     );
     if (!result.ok) {
       throw new GitHubSyncError(`Cannot read ${filePath} blob (GitHub API ${result.status}).`);
@@ -809,6 +828,301 @@ export class GitHubSyncService {
       path: filePath,
       branch: this.branch,
       commitSha: String(updated.data?.commit?.sha || ''),
+    };
+  }
+
+  private static readonly mirrorLocks = new Map<string, Promise<any>>();
+
+  private async ensurePublicGitMirrorBranch(cleanBranch: string): Promise<{
+    mirrorDir: string;
+    refName: string;
+    commitSha: string;
+    files: Map<string, GitHubTreeFile>;
+    recentCommits: Array<{ sha: string; message: string; date: string; author: string }>;
+  }> {
+    const safeRepo = this.repository.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeBranch = cleanBranch.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const mirrorDir = path.join(os.tmpdir(), `svl-github-mirror-${safeRepo}-${safeBranch}`);
+    const previous = GitHubSyncService.mirrorLocks.get(mirrorDir) || Promise.resolve();
+    const run = previous.catch(() => undefined).then(async () => {
+      await fs.mkdir(mirrorDir, { recursive: true });
+      const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+      try {
+        await fs.access(path.join(mirrorDir, 'HEAD'));
+      } catch {
+        await execFileAsync('git', ['init', '--bare', mirrorDir], { timeout: 10000, env: gitEnv });
+      }
+      const refName = `refs/remotes/origin/${cleanBranch}`;
+      const remoteUrl = `https://github.com/${this.repository}.git`;
+      await execFileAsync(
+        'git',
+        ['-C', mirrorDir, 'fetch', '--depth=5', remoteUrl, `+refs/heads/${cleanBranch}:${refName}`],
+        { timeout: 30000, env: gitEnv },
+      );
+
+      const { stdout: shaOut } = await execFileAsync(
+        'git',
+        ['-C', mirrorDir, 'rev-parse', refName],
+        { timeout: 5000, env: gitEnv },
+      );
+      const commitSha = shaOut.trim();
+
+    const { stdout: logOut } = await execFileAsync(
+      'git',
+      ['-C', mirrorDir, 'log', '-n', '5', '--format=%H%x1f%s%x1f%cI%x1f%an', refName],
+      { timeout: 5000, env: gitEnv },
+    );
+    const recentCommits = logOut
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [sha = '', message = '', date = '', author = 'GitHub'] = line.split('\x1f');
+        return {
+          sha: sha.trim(),
+          message: message.trim().slice(0, 140),
+          date: date.trim(),
+          author: author.trim() || 'GitHub',
+        };
+      });
+
+    const { stdout: treeOut } = await execFileAsync(
+      'git',
+      ['-C', mirrorDir, 'ls-tree', '-rz', '--long', refName],
+      { timeout: 10000, maxBuffer: 20 * 1024 * 1024, env: gitEnv },
+    );
+    const files = new Map<string, GitHubTreeFile>();
+    for (const record of treeOut.split('\0')) {
+      const sep = record.indexOf('\t');
+      if (sep < 0) continue;
+      const metaParts = record.slice(0, sep).trim().split(/\s+/);
+      const mode = metaParts[0] || '';
+      const objType = metaParts[1] || '';
+      const sha = metaParts[2] || '';
+      const rawSize = metaParts[3] || '0';
+      const filePath = record.slice(sep + 1);
+      if (objType !== 'blob' || !isAllowedGithubSyncPath(filePath) || !/^[a-f0-9]{40}$/i.test(sha)) {
+        continue;
+      }
+      const parsedSize = mode === '120000'
+        ? MAX_GITHUB_SYNC_FILE_BYTES + 1
+        : Number(rawSize === '-' ? 0 : rawSize);
+      files.set(filePath, { sha, size: parsedSize });
+    }
+
+      return { mirrorDir, refName, commitSha, files, recentCommits };
+    });
+    GitHubSyncService.mirrorLocks.set(mirrorDir, run);
+    return run;
+  }
+
+  private async readGitMirrorBlob(mirrorDir: string, filePath: string, entry: GitHubTreeFile): Promise<string> {
+    if (entry.size > MAX_GITHUB_SYNC_FILE_BYTES) {
+      throw new GitHubSyncError(`File ${filePath} exceeds the ${MAX_GITHUB_SYNC_FILE_BYTES}-byte sync limit.`);
+    }
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', mirrorDir, 'cat-file', 'blob', entry.sha],
+      { encoding: 'buffer', timeout: 10000, maxBuffer: MAX_GITHUB_SYNC_FILE_BYTES * 2 },
+    );
+    const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(String(stdout), 'utf8');
+    if (bytes.byteLength > MAX_GITHUB_SYNC_FILE_BYTES) {
+      throw new GitHubSyncError(`File ${filePath} exceeds the ${MAX_GITHUB_SYNC_FILE_BYTES}-byte sync limit.`);
+    }
+    const content = bytes.toString('utf8');
+    if (containsLikelySecret(content)) {
+      throw new GitHubSyncError(`File ${filePath} appears to contain a secret and was not synced.`);
+    }
+    return content;
+  }
+
+  async inspectRemoteChanges(
+    rootPath: string,
+    targetBranch = 'main',
+  ): Promise<{
+    repository: string;
+    branch: string;
+    commitSha: string;
+    recentCommits: Array<{ sha: string; message: string; date: string; author: string }>;
+    remoteOnly: string[];
+    differing: string[];
+    localOnly: string[];
+    matchingCount: number;
+  }> {
+    const cleanBranch = String(targetBranch || 'main').trim() || 'main';
+    if (!/^[A-Za-z0-9._/-]{1,100}$/.test(cleanBranch) || cleanBranch.includes('..')) {
+      throw new GitHubSyncError('Nieprawidłowa nazwa gałęzi GitHub.');
+    }
+
+    const localSnapshot = await scanWorkspace(rootPath);
+    let remoteCommitSha = '';
+    let remoteFiles = new Map<string, GitHubTreeFile>();
+    let recentCommits: Array<{ sha: string; message: string; date: string; author: string }> = [];
+
+    const useDirectGitMirror = !this.token && this.fetcher === fetch;
+    if (useDirectGitMirror) {
+      const mirror = await this.ensurePublicGitMirrorBranch(cleanBranch);
+      remoteCommitSha = mirror.commitSha;
+      remoteFiles = mirror.files;
+      recentCommits = mirror.recentCommits;
+    } else {
+      try {
+        const [remoteSnapshot, commitsRes] = await Promise.all([
+          this.getBranchTree(cleanBranch, true),
+          this.request(
+            `/repos/${this.repository}/commits?sha=${encodeURIComponent(cleanBranch)}&per_page=5`,
+            {},
+            true,
+          ),
+        ]);
+        remoteCommitSha = remoteSnapshot.commitSha;
+        remoteFiles = remoteSnapshot.files;
+        recentCommits = Array.isArray(commitsRes.data)
+          ? commitsRes.data.slice(0, 5).map((item: any) => ({
+              sha: String(item?.sha || ''),
+              message: String(item?.commit?.message || '').split(/\r?\n/)[0].slice(0, 140),
+              date: String(item?.commit?.committer?.date || item?.commit?.author?.date || ''),
+              author: String(item?.commit?.author?.name || item?.author?.login || 'GitHub'),
+            }))
+          : [];
+      } catch (err) {
+        if (this.fetcher === fetch) {
+          const mirror = await this.ensurePublicGitMirrorBranch(cleanBranch);
+          remoteCommitSha = mirror.commitSha;
+          remoteFiles = mirror.files;
+          recentCommits = mirror.recentCommits;
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    const remoteOnly: string[] = [];
+    const differing: string[] = [];
+    const localOnly: string[] = [];
+    let matchingCount = 0;
+
+    for (const [filePath, remoteEntry] of remoteFiles.entries()) {
+      const localEntry = localSnapshot.files.get(filePath);
+      if (!localEntry) {
+        remoteOnly.push(filePath);
+      } else if (localEntry.sha !== remoteEntry.sha) {
+        differing.push(filePath);
+      } else {
+        matchingCount += 1;
+      }
+    }
+    for (const filePath of localSnapshot.files.keys()) {
+      if (!remoteFiles.has(filePath)) {
+        localOnly.push(filePath);
+      }
+    }
+
+    return {
+      repository: this.repository,
+      branch: cleanBranch,
+      commitSha: remoteCommitSha,
+      recentCommits,
+      remoteOnly: remoteOnly.sort(),
+      differing: differing.sort(),
+      localOnly: localOnly.sort(),
+      matchingCount,
+    };
+  }
+
+  async pullRemoteChanges(
+    rootPath: string,
+    options: { branch?: string; paths?: string[]; includeRemoteOnlyOnly?: boolean } = {},
+  ): Promise<{
+    repository: string;
+    branch: string;
+    commitSha: string;
+    downloaded: string[];
+    skipped: string[];
+  }> {
+    const cleanBranch = String(options.branch || 'main').trim() || 'main';
+    if (!/^[A-Za-z0-9._/-]{1,100}$/.test(cleanBranch) || cleanBranch.includes('..')) {
+      throw new GitHubSyncError('Nieprawidłowa nazwa gałęzi GitHub.');
+    }
+    const root = path.resolve(rootPath);
+    const localSnapshot = await scanWorkspace(root);
+
+    let remoteCommitSha = '';
+    let remoteFiles = new Map<string, GitHubTreeFile>();
+    let mirrorDir: string | null = null;
+
+    const useDirectGitMirror = !this.token && this.fetcher === fetch;
+    if (useDirectGitMirror) {
+      const mirror = await this.ensurePublicGitMirrorBranch(cleanBranch);
+      mirrorDir = mirror.mirrorDir;
+      remoteCommitSha = mirror.commitSha;
+      remoteFiles = mirror.files;
+    } else {
+      try {
+        const remoteSnapshot = await this.getBranchTree(cleanBranch, true);
+        remoteCommitSha = remoteSnapshot.commitSha;
+        remoteFiles = remoteSnapshot.files;
+      } catch (err) {
+        if (this.fetcher === fetch) {
+          const mirror = await this.ensurePublicGitMirrorBranch(cleanBranch);
+          mirrorDir = mirror.mirrorDir;
+          remoteCommitSha = mirror.commitSha;
+          remoteFiles = mirror.files;
+        } else {
+          throw err;
+        }
+      }
+    }
+
+    const explicitPaths = Array.isArray(options.paths) && options.paths.length > 0
+      ? new Set(options.paths.map((p) => String(p).trim()).filter(Boolean))
+      : null;
+
+    const downloaded: string[] = [];
+    const skipped: string[] = [];
+
+    for (const [filePath, remoteEntry] of remoteFiles.entries()) {
+      if (explicitPaths && !explicitPaths.has(filePath)) continue;
+      if (!isAllowedGithubSyncPath(filePath)) {
+        skipped.push(filePath);
+        continue;
+      }
+      if (remoteEntry.size > MAX_GITHUB_SYNC_FILE_BYTES) {
+        skipped.push(filePath);
+        continue;
+      }
+      const localEntry = localSnapshot.files.get(filePath);
+      if (localEntry && localEntry.sha === remoteEntry.sha) continue;
+      if (options.includeRemoteOnlyOnly && localEntry && !explicitPaths) {
+        skipped.push(filePath);
+        continue;
+      }
+      const absolutePath = path.resolve(root, filePath);
+      if (!absolutePath.startsWith(`${root}${path.sep}`)) {
+        skipped.push(filePath);
+        continue;
+      }
+      try {
+        const content = mirrorDir
+          ? await this.readGitMirrorBlob(mirrorDir, filePath, remoteEntry)
+          : await this.readBlob(filePath, remoteEntry, true);
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+        await fs.writeFile(absolutePath, content, 'utf8');
+        downloaded.push(filePath);
+      } catch (error) {
+        if (error instanceof GitHubSyncError && /appears to contain a secret/.test(error.message)) {
+          skipped.push(filePath);
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return {
+      repository: this.repository,
+      branch: cleanBranch,
+      commitSha: remoteCommitSha,
+      downloaded,
+      skipped,
     };
   }
 }

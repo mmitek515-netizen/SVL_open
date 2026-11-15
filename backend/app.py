@@ -1215,7 +1215,20 @@ async def handle_api_request(
                     warnings.append(f"{name}: {err_txt}")
                 return None
 
-        # 1. Wymagane moduły rdzenia
+        # 1. Zastosuj i zmaterializuj zmiany z czatu/terminali oraz wymagane moduły rdzenia
+        req_origin = str(body.get("origin") or "operator_sync_button")
+        req_corr = str(body.get("correlationId") or sync_id)
+
+        def _sync_chat_and_runtime() -> dict[str, Any]:
+            runtime.kernel.ensure_mitek_family_channel()
+            mut_res = runtime.kernel.sync_chat_state_mutations(
+                origin=req_origin,
+                correlation_id=req_corr,
+            )
+            runtime.apply_active_module_settings()
+            return mut_res
+
+        _time_module("chat_state_mutations", True, _sync_chat_and_runtime)
         sqlite_meta = _time_module("sqlite_persistence", True, runtime.kernel.get_sync_snapshot_meta)
 
         def _load_chat() -> list[dict[str, Any]]:

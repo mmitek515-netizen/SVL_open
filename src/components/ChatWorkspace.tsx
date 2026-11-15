@@ -347,7 +347,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const agentsStatus: any[] = agentsData?.agents || [];
 
   const [input, setInput] = useState('');
-  const [selectedModel, setSelectedModel] = useState('codex-cli');
+  const [selectedModel, setSelectedModel] = useState('svl-hybrid-router');
   // Never persist this private gateway access token in browser storage or GitHub.
   const [codexAccessToken, setCodexAccessToken] = useState('');
   const [codexRuntimeStatus, setCodexRuntimeStatus] = useState<{
@@ -380,7 +380,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const prevMsgCountRef = useRef<number>(0);
 
-  const [duplexActive, setDuplexActive] = useState(false);
+  const [duplexActive, setDuplexActive] = useState(true);
   const [isProactiveLoading, setIsProactiveLoading] = useState(false);
   const lastInteractionTimeRef = useRef<number>(Date.now());
 
@@ -624,6 +624,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     if (isSyncing) return;
     setChatActionError(null);
     const rep = await triggerFullSync('operator_sync_button');
+    await refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'chat']);
     setSyncDrawerOpen(true);
     if (!rep.ok) {
       setChatActionError(rep.error || 'Synchronizacja nie powiodła się.');
@@ -740,12 +741,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
 
     const historyPayload = buildChatHistoryPayload(targetConvObj.messages, 16);
 
-    const isSpecificAgentTargeted = ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(targetAgent);
+    const isSpecificAgentTargeted = ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(targetAgent) ||
+      targetConvId.startsWith('conv-agent-');
     const isFamilyDuplex =
-      duplexActive && !isSpecificAgentTargeted &&
+      !isSpecificAgentTargeted &&
       (targetConvId === 'conv-rodzina-mitek-wszyscy' ||
         targetConvObj.title.toLowerCase().includes('rodzina mitek') ||
-        targetAgent === 'Rodzina Mitek');
+        targetAgent === 'Rodzina Mitek' ||
+        duplexActive);
 
       const res = await safeFetchJson<any>('/api/chat', {
         method: 'POST',
@@ -798,7 +801,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         setChatActionError(`Błąd zapisu odpowiedzi w SQLite: ${replyPersist.error}`);
       }
 
-      if (isFamilyDuplex && Array.isArray(data.followUpMessages) && data.followUpMessages.length > 0) {
+      if (Array.isArray(data.followUpMessages) && data.followUpMessages.length > 0) {
         for (const follow of data.followUpMessages) {
           if (!follow || !follow.content) continue;
           const followMsg: ChatMessage = {
@@ -815,7 +818,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       }
 
       await refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'chat']);
-      if (appliedActions) {
+      if (appliedActions || data.connectionReport || (Array.isArray(data.followUpMessages) && data.followUpMessages.length > 0)) {
         notifyLocalMutation('module', 'chat', data.latestServerRevision || undefined);
       }
     } catch (error: any) {
@@ -918,7 +921,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       return;
     }
     if (val === 'action:sync' || val === 'sync') {
-      await triggerFullSync('interactive_btn');
+      await handleTriggerFullSync();
       return;
     }
 
@@ -1397,7 +1400,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                 disabled={isSyncing}
                 className="px-2 py-1 rounded bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-medium"
               >
-                Synchronizuj aplikację
+                Synchronizuj globalnie
               </button>
               <button
                 type="button"
@@ -1412,7 +1415,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                 onClick={() => onNavigateTab('agents')}
                 className="px-2 py-1 rounded bg-slate-800 text-violet-300 text-[11px]"
               >
-                Panel Agentów (4)
+                Panel Agentów ({CANONICAL_AGENTS.length})
               </button>
               <button
                 type="button"

@@ -14,7 +14,7 @@ const unknown = 'Brak danych';
 export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const {
     agentsData, healthData, systemModules, serverRevision, lastSyncedAt,
-    wsState, lastSyncReport, conversations, refreshDomainModules, triggerFullSync,
+    wsState, lastSyncReport, conversations, refreshDomainModules, triggerFullSync, isSyncing,
   } = useSvlSync();
   const [events, setEvents] = useState<any[]>([]);
   const [eventsError, setEventsError] = useState<string | null>(null);
@@ -42,9 +42,53 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const [runtimeLogsError, setRuntimeLogsError] = useState<string | null>(null);
   const [runtimeLogStatus, setRuntimeLogStatus] = useState<string | null>(null);
   const [loadingRuntimeLogs, setLoadingRuntimeLogs] = useState(false);
+  const [githubInfo, setGithubInfo] = useState<any>(null);
+  const [pullingGithub, setPullingGithub] = useState(false);
+  const [githubFeedback, setGithubFeedback] = useState<string | null>(null);
   const currentRevisionRef = useRef(serverRevision);
   const observabilityBusyRef = useRef(false);
   useEffect(() => { currentRevisionRef.current = serverRevision; }, [serverRevision]);
+
+  const loadGithubSummary = useCallback(async (inspect = false) => {
+    const res = await safeFetchJson<any>(`/api/github/sync-status${inspect ? '?inspect=1' : ''}`, {
+      timeoutMs: 12000,
+    });
+    if (res.ok && res.data?.ok) {
+      setGithubInfo(res.data);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadGithubSummary(true);
+  }, [loadGithubSummary]);
+
+  const handlePullFromGithubInCommandCenter = async () => {
+    if (pullingGithub) return;
+    setPullingGithub(true);
+    setGithubFeedback(null);
+    try {
+      const res = await safeFetchJson<any>('/api/github/pull-updates', {
+        method: 'POST',
+        timeoutMs: 30000,
+        body: JSON.stringify({ branch: 'main', applyAll: false, includeRemoteOnlyOnly: true }),
+      });
+      await triggerFullSync('svl364_github_sync');
+      await loadGithubSummary(true);
+      if (res.ok && res.data?.ok) {
+        const dl = Array.isArray(res.data.downloaded) ? res.data.downloaded.length : 0;
+        const diffCount = Array.isArray(res.data.inspection?.differing) ? res.data.inspection.differing.length : 0;
+        setGithubFeedback(
+          dl > 0
+            ? `Pobrano ${dl} plik(ów) z GitHub (main) i zsynchronizowano system.`
+            : `Sprawdzono GitHub (main @ ${String(res.data.inspection?.commitSha || '').slice(0, 8)}): różnic=${diffCount}.`,
+        );
+      } else {
+        setGithubFeedback(res.error || res.data?.error || 'Nie udało się sprawdzić GitHub.');
+      }
+    } finally {
+      setPullingGithub(false);
+    }
+  };
 
   const refreshObservability = useCallback(async () => {
     if (observabilityBusyRef.current) return;
@@ -161,6 +205,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
     try {
       await triggerFullSync('svl364_operator_command_center');
       await refreshObservability();
+      await loadGithubSummary(true);
     } finally {
       setIsRefreshing(false);
     }
@@ -228,6 +273,59 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
           <StatusMetric label="Wiadomości SQLite" value={chatStats ? String(chatStats.totalMessages) : unknown}
             detail={'UI: ' + totalMessages + ' · Reset historii: ' + (chatStats?.resetApplied ? 'wykonany' : 'niepotwierdzony')}
             icon={<Database size={17} />} />
+        </section>
+
+        <SolarSystemMap moduleConfig={commandModule?.config} />
+
+        <section className="rounded-xl border border-emerald-500/30 bg-[#111826] p-4 space-y-3" aria-label="Zmiany z czatu, AI i GitHub">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="flex items-center gap-2 font-semibold text-emerald-300">
+              <RefreshCw size={17} /> Zsynchronizowane zmiany z czatu, AI i GitHub
+            </h2>
+            <button
+              type="button"
+              onClick={() => void handlePullFromGithubInCommandCenter()}
+              disabled={pullingGithub || isSyncing}
+              className="rounded-md border border-violet-500/50 bg-violet-600/20 px-2.5 py-1 text-xs text-violet-100 hover:bg-violet-500/30 disabled:opacity-50"
+            >
+              {pullingGithub ? 'Synchronizuję z GitHub…' : 'Sprawdź / pobierz z GitHub (main)'}
+            </button>
+          </div>
+          {githubInfo?.remoteInspection?.main && (
+            <div className="rounded-lg border border-slate-800 bg-[#0B0D13] p-2.5 text-xs space-y-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 font-mono">
+                <span className="text-violet-300">
+                  GitHub main: {String(githubInfo.remoteInspection.main.commitSha || '').slice(0, 8) || 'brak SHA'}
+                </span>
+                <span className="text-slate-400">
+                  Nowe na GitHub: {githubInfo.remoteInspection.main.remoteOnly?.length ?? 0} · Różnice: {githubInfo.remoteInspection.main.differing?.length ?? 0}
+                </span>
+              </div>
+              {githubInfo.remoteInspection.main.recentCommits?.[0] && (
+                <p className="text-slate-300">
+                  Ostatni commit: <span className="text-slate-100">{githubInfo.remoteInspection.main.recentCommits[0].message}</span>
+                </p>
+              )}
+              {githubFeedback && <p className="text-emerald-300 font-mono">{githubFeedback}</p>}
+            </div>
+          )}
+          <div className="grid gap-2 md:grid-cols-2">
+            {systemModules
+              .filter((m: any) => m.source === 'chat' || m.id === 'svl-364' || m.id === 'svl-autonomy-core')
+              .map((mod: any) => (
+                <div key={mod.id} className="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-100">
+                      {mod.name || mod.id}{' '}
+                      <span className="font-mono text-[10px] font-normal text-slate-400">({mod.id})</span>
+                    </span>
+                    <span className="font-mono text-emerald-300">{mod.status || 'ACTIVE'} · rev {mod.revision || '?'}</span>
+                  </div>
+                  {mod.description && <p className="text-slate-400 line-clamp-2">{mod.description}</p>}
+                  <p className="font-mono text-[11px] text-violet-300">Źródło: {mod.source || 'kernel'}</p>
+                </div>
+              ))}
+          </div>
         </section>
 
         <section className="rounded-xl border border-slate-800 bg-[#111826] p-4 space-y-3" aria-label="Zweryfikowane łącza SVL-364">
@@ -483,6 +581,73 @@ const LinkCheck: React.FC<{
         </span>
       </div>
       <p className="mt-1 break-words text-xs text-slate-400">{detail}</p>
+    </div>
+  );
+};
+
+const SolarSystemMap: React.FC<{ moduleConfig?: Record<string, any> }> = ({ moduleConfig }) => {
+  const [selectedPlanet, setSelectedPlanet] = useState<string>('Ziemia');
+  const planets = [
+    { name: 'Słońce', color: 'bg-amber-400', size: 'w-12 h-12', dist: '0 AU', period: 'N/A', desc: 'Gwiazda centralna układu SVL-364.' },
+    { name: 'Merkury', color: 'bg-slate-400', size: 'w-3 h-3', dist: '0.39 AU', period: '88 dni', desc: 'Najbliższa Słońcu planeta skalista.' },
+    { name: 'Wenus', color: 'bg-orange-300', size: 'w-4 h-4', dist: '0.72 AU', period: '225 dni', desc: 'Planeta o gęstej atmosferze i wysokiej temperaturze.' },
+    { name: 'Ziemia', color: 'bg-blue-500', size: 'w-4.5 h-4.5', dist: '1.00 AU', period: '365 dni', desc: 'Baza operacyjna SVL Python OS / Mateusz Mitek.' },
+    { name: 'Mars', color: 'bg-rose-500', size: 'w-3.5 h-3.5', dist: '1.52 AU', period: '687 dni', desc: 'Czerwona planeta, potencjalna kolonia.' },
+    { name: 'Jowisz', color: 'bg-amber-600', size: 'w-8 h-8', dist: '5.20 AU', period: '11.9 lat', desc: 'Największy gazowy olbrzym w układzie.' },
+    { name: 'Saturn', color: 'bg-yellow-200', size: 'w-7 h-7', dist: '9.58 AU', period: '29.5 lat', desc: 'Planeta z widocznymi pierścieniami pyłowymi.' },
+    { name: 'Uran', color: 'bg-cyan-300', size: 'w-5 h-5', dist: '19.2 AU', period: '84 lata', desc: 'Lodowy olbrzym z unikalną osią obrotu.' },
+    { name: 'Neptun', color: 'bg-blue-600', size: 'w-5 h-5', dist: '30.1 AU', period: '165 lat', desc: 'Najdalsza planeta krążąca wokół Słońca.' },
+  ];
+  const active = planets.find((p) => p.name === selectedPlanet) || planets[3];
+  const mapSynced = moduleConfig?.solar_system_map !== false;
+
+  return (
+    <div className="rounded-xl border border-violet-500/30 bg-[#111826] p-4 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 font-semibold text-violet-300">
+          <Satellite size={18} className="text-violet-400" /> Mapa Układu Słonecznego SVL-364
+        </h2>
+        <span className="text-xs font-mono text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-500/30">
+          {mapSynced ? `SYSTEM AKTYWNY · ${planets.length} OBIEKTÓW` : 'LOKALNA MAPA SVL-364'}
+        </span>
+      </div>
+      <p className="text-xs text-slate-400">
+        Interaktywna mapa gwiezdna i orbitalna układu planetarnego statku SVL-364. Kliknij planetę, aby odczytać telemetrię orbitalną.
+      </p>
+      <div className="relative h-64 sm:h-72 w-full rounded-lg bg-[#080C14] border border-slate-800 flex items-center justify-center overflow-hidden p-4">
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="w-24 h-24 rounded-full border border-slate-800/80 absolute" />
+          <div className="w-40 h-40 rounded-full border border-slate-800/80 absolute" />
+          <div className="w-60 h-60 rounded-full border border-slate-800/80 absolute" />
+          <div className="w-80 h-80 rounded-full border border-slate-800/80 absolute" />
+          <div className="w-[410px] h-[410px] rounded-full border border-slate-800/60 absolute hidden sm:block" />
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-3 z-10 max-w-lg">
+          {planets.map((p) => (
+            <button
+              key={p.name}
+              type="button"
+              onClick={() => setSelectedPlanet(p.name)}
+              className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-all ${
+                selectedPlanet === p.name
+                  ? 'bg-violet-600/30 border border-violet-500 text-white scale-110'
+                  : 'bg-slate-900/60 hover:bg-slate-800 border border-slate-800 text-slate-300'
+              }`}
+            >
+              <div className={`${p.size} ${p.color} rounded-full shadow-md animate-pulse`} />
+              <span className="text-[11px] font-medium whitespace-nowrap">{p.name}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="rounded-lg bg-slate-950/60 border border-slate-800 p-3 text-xs space-y-1.5 font-mono">
+        <p className="text-violet-300 font-semibold text-sm">{active.name}</p>
+        <p className="text-slate-300">{active.desc}</p>
+        <div className="flex gap-4 pt-1 text-slate-400">
+          <span>Odległość: <strong className="text-slate-200">{active.dist}</strong></span>
+          <span>Okres orbitalny: <strong className="text-slate-200">{active.period}</strong></span>
+        </div>
+      </div>
     </div>
   );
 };

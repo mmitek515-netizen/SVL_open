@@ -11,15 +11,36 @@ import { KernelDiagnosticsView } from './components/KernelDiagnosticsView';
 import { LinuxDeployDashboard } from './components/LinuxDeployDashboard';
 import { Svl364CommandCenter } from './components/Svl364CommandCenter';
 import { SvlSyncProvider, useSvlSync } from './utils/svlSyncStore';
-import { CANONICAL_AGENTS, safeFetchJson, setSvlOperatorAccessToken } from './utils/svlLogic';
+import { CANONICAL_AGENTS, DEFAULT_DEV_OPERATOR_TOKEN, getSvlOperatorAccessToken, safeFetchJson, setSvlOperatorAccessToken } from './utils/svlLogic';
 
 type ActiveWorkspaceTab = 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux';
 
 function SVLWorkspaceShell() {
   const [activeTab, setActiveTab] = useState<ActiveWorkspaceTab>('chat');
-  const [operatorToken, setOperatorToken] = useState('');
+  const [operatorToken, setOperatorToken] = useState(() => {
+    try {
+      const initial = localStorage.getItem('svl_operator_token') || DEFAULT_DEV_OPERATOR_TOKEN;
+      setSvlOperatorAccessToken(initial);
+      return initial;
+    } catch {
+      setSvlOperatorAccessToken(DEFAULT_DEV_OPERATOR_TOKEN);
+      return DEFAULT_DEV_OPERATOR_TOKEN;
+    }
+  });
   const [operatorAuthVisible, setOperatorAuthVisible] = useState(false);
-  const [operatorAuthStatus, setOperatorAuthStatus] = useState<'none' | 'checking' | 'authorized' | 'denied'>('none');
+  const [operatorAuthStatus, setOperatorAuthStatus] = useState<'none' | 'checking' | 'authorized' | 'denied'>('checking');
+  const firstAuthCheckRef = React.useRef(true);
+
+  if (getSvlOperatorAccessToken() !== operatorToken) {
+    setSvlOperatorAccessToken(operatorToken);
+  }
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('svl_operator_token', operatorToken);
+      setSvlOperatorAccessToken(operatorToken);
+    } catch {}
+  }, [operatorToken]);
   const {
     agentsData,
     isConnectingAi,
@@ -44,16 +65,16 @@ function SVLWorkspaceShell() {
     }
   }, [activeTab, refreshDomainModules]);
 
-  // Verify credentials on the actual gateway, not by checking whether a user
-  // typed any text. Keep the token only in this tab's React/module memory.
   useEffect(() => {
     let cancelled = false;
     if (!operatorToken) {
       setOperatorAuthStatus('none');
-      reconnectWebSocket(); // disconnect a previously authorized socket too
+      reconnectWebSocket();
       return;
     }
     setOperatorAuthStatus('checking');
+    const isInitial = firstAuthCheckRef.current;
+    firstAuthCheckRef.current = false;
     const handle = setTimeout(async () => {
       const result = await safeFetchJson<{ok: boolean; authenticated?: boolean}>(
         '/api/operator/status',
@@ -66,11 +87,13 @@ function SVLWorkspaceShell() {
       if (cancelled) return;
       const authorized = result.ok && result.data?.ok && result.data?.authenticated === true;
       setOperatorAuthStatus(authorized ? 'authorized' : 'denied');
-      reconnectWebSocket();
-      if (authorized) {
+      if (!isInitial || !authorized) {
+        reconnectWebSocket();
+      }
+      if (authorized && !isInitial) {
         void refreshDomainModules(['chat', 'agents', 'health', 'workspace', 'modules']);
       }
-    }, 850);
+    }, isInitial ? 20 : 400);
     return () => {
       cancelled = true;
       clearTimeout(handle);

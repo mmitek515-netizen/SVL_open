@@ -359,3 +359,83 @@ test('automatic sync does not overwrite a remote edit made after its tree snapsh
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test('public GitHub inspectRemoteChanges & pullRemoteChanges work without GITHUB_TOKEN and block secret blobs', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'svl-public-pull-'));
+  try {
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, 'src/existing.ts'), 'export const v = 1;', 'utf8');
+
+    const remoteFiles: Record<string, string> = {
+      'src/existing.ts': 'export const v = 2;',
+      'src/new-feature.ts': 'export const addedFromGithub = true;',
+      'src/leaked.ts': secretFixture,
+    };
+    const toTree = (files: Record<string, string>) =>
+      Object.entries(files).map(([filePath, content]) => ({
+        path: filePath,
+        mode: '100644',
+        type: 'blob',
+        sha: blobSha(content),
+        size: Buffer.byteLength(content, 'utf8'),
+      }));
+
+    const fetcher: typeof fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/branches/main')) {
+        return Response.json({ commit: { sha: 'public-main-sha' } });
+      }
+      if (url.pathname.endsWith('/commits')) {
+        return Response.json([
+          {
+            sha: 'public-main-sha',
+            commit: {
+              message: 'Add feature on main',
+              author: { name: 'Mateusz', date: '2026-11-15T00:00:00Z' },
+            },
+          },
+        ]);
+      }
+      if (url.pathname.endsWith('/git/trees/public-main-sha')) {
+        return Response.json({ tree: toTree(remoteFiles), truncated: false });
+      }
+      if (url.pathname.includes('/git/blobs/')) {
+        const sha = url.pathname.split('/').pop();
+        const content = Object.values(remoteFiles).find((c) => blobSha(c) === sha);
+        if (content === undefined) return Response.json({ message: 'Not Found' }, { status: 404 });
+        return Response.json({
+          encoding: 'base64',
+          content: Buffer.from(content, 'utf8').toString('base64'),
+        });
+      }
+      return Response.json({ message: `Unexpected ${url}` }, { status: 500 });
+    };
+
+    const service = new GitHubSyncService({ token: '', fetcher });
+    const inspected = await service.inspectRemoteChanges(root, 'main');
+    assert.equal(inspected.commitSha, 'public-main-sha');
+    assert.deepEqual(inspected.remoteOnly, ['src/leaked.ts', 'src/new-feature.ts']);
+    assert.deepEqual(inspected.differing, ['src/existing.ts']);
+    assert.equal(inspected.recentCommits[0].message, 'Add feature on main');
+
+    const pulledNewOnly = await service.pullRemoteChanges(root, {
+      branch: 'main',
+      includeRemoteOnlyOnly: true,
+    });
+    assert.deepEqual(pulledNewOnly.downloaded, ['src/new-feature.ts']);
+    assert.equal(pulledNewOnly.skipped.includes('src/leaked.ts'), true);
+    assert.equal(pulledNewOnly.skipped.includes('src/existing.ts'), true);
+    assert.equal(await fs.readFile(path.join(root, 'src/existing.ts'), 'utf8'), 'export const v = 1;');
+    assert.equal(await fs.readFile(path.join(root, 'src/new-feature.ts'), 'utf8'), 'export const addedFromGithub = true;');
+
+    const pulledSelected = await service.pullRemoteChanges(root, {
+      branch: 'main',
+      paths: ['src/existing.ts'],
+    });
+    assert.deepEqual(pulledSelected.downloaded, ['src/existing.ts']);
+    assert.equal(await fs.readFile(path.join(root, 'src/existing.ts'), 'utf8'), 'export const v = 2;');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
