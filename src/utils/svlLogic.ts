@@ -86,6 +86,24 @@ export function formatAgentDisplayName(rawName?: string | null): string {
   if (low === 'all' || low === 'rodzina mitek' || low === 'rodzina mitek (wszyscy)') {
     return 'Rodzina Mitek (wszyscy)';
   }
+
+  export function parseChatInteractiveToken(token: string): { label: string; action: string } | null {
+    const match = token.trim().match(/^\[(?:btn|button|action):([^\]]+)\]$/);
+    if (!match) return null;
+
+    const separator = match[1].indexOf('|');
+    const label = (separator < 0 ? match[1] : match[1].slice(0, separator)).trim();
+    const action = (separator < 0 ? label : match[1].slice(separator + 1)).trim();
+    return label ? { label, action: action || label } : null;
+  }
+
+  export function isUnsafeChatInteractiveAction(action: string): boolean {
+    const value = action.trim();
+    if (/^(?:\/|run:|exec:)/i.test(value)) return true;
+
+    const sentText = value.match(/^send:\s*([\s\S]*)$/i)?.[1]?.trim() || '';
+    return /^\/exec(?:\s|$)/i.test(sentText);
+  }
   return clean;
 }
 
