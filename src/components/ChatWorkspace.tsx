@@ -344,7 +344,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const agentsStatus: any[] = agentsData?.agents || [];
 
   const [input, setInput] = useState('');
-  const [selectedModel, setSelectedModel] = useState('svl-hybrid-router');
+  const [selectedModel, setSelectedModel] = useState('codex-cli');
+  // Never persist this private gateway access token in browser storage or GitHub.
+  const [codexAccessToken, setCodexAccessToken] = useState('');
   const [isSending, setIsSending] = useState(false);
   const sendingRef = useRef(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -664,7 +666,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
 
       const res = await safeFetchJson<any>('/api/chat', {
         method: 'POST',
-        timeoutMs: 95000,
+        timeoutMs: 175000,
+        headers: codexAccessToken ? {'X-SVL-Codex-Access': codexAccessToken} : {},
         body: JSON.stringify({
           message: fullPrompt,
           model: selectedModel,
@@ -1087,6 +1090,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               onChange={(e) => setSelectedModel(e.target.value)}
               className="min-w-0 flex-1 max-w-[195px] bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-violet-500 truncate"
             >
+              <option value="codex-cli">Codex CLI · konto ChatGPT (tylko tekst)</option>
               <option value="svl-hybrid-router">
                 SVL Router ({ollamaReachable && ollamaModels.length > 0 ? 'Ollama -> Gemini' : 'Auto'})
               </option>
@@ -1110,9 +1114,24 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                   Ollama: llama3.2-vision:11b
                 </option>
               )}
-              <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
-              <option value="gemini-4-hydrogen">Gemini 4 Hydrogen</option>
+              <option value="gemini-3.1-flash-lite">Gemini (jeśli dostępny)</option>
+              <option value="gemini-4-hydrogen">Gemini — starsza konfiguracja</option>
             </select>
+            {selectedModel === 'codex-cli' && (
+              <label className="flex min-w-0 items-center gap-1.5 text-[11px] text-slate-400">
+                <span className="hidden sm:inline whitespace-nowrap">Dostęp SVL</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  aria-label="Prywatny token dostępu do czatu Codex CLI"
+                  value={codexAccessToken}
+                  onChange={(event) => setCodexAccessToken(event.target.value)}
+                  placeholder="Token operatora"
+                  className="w-24 sm:w-36 min-w-0 bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-100"
+                />
+              </label>
+            )}
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">

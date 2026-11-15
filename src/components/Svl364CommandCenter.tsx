@@ -20,6 +20,9 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [chatStats, setChatStats] = useState<{totalMessages: number; resetApplied: boolean; databaseName: string} | null>(null);
   const [runningCommit, setRunningCommit] = useState<string | null>(null);
+  const [codexState, setCodexState] = useState<{
+    enabled: boolean; accessConfigured: boolean; loggedIn: boolean; reason: string;
+  } | null>(null);
   const [diagnosticsCheckedAt, setDiagnosticsCheckedAt] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -39,6 +42,12 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
       ),
     ]);
     setDiagnosticsCheckedAt(new Date().toISOString());
+    const codexStatus = await safeFetchJson<{
+      ok: boolean; enabled: boolean; accessConfigured: boolean; loggedIn: boolean; reason: string;
+    }>('/api/codex-chat/status', {timeoutMs: 9000});
+    if (codexStatus.ok && codexStatus.data?.ok) {
+      setCodexState(codexStatus.data);
+    }
     if (chatDiag.ok && chatDiag.data?.ok) setChatStats(chatDiag.data);
     if (deployDiag.ok && deployDiag.data?.ok) setRunningCommit(deployDiag.data.commit || null);
     if (response.ok && response.data?.ok && Array.isArray(response.data.events)) {
@@ -192,6 +201,15 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
               </span>
             </div>
             <p className="text-xs text-slate-400">Rejestr modułów: {systemModules.length} · endpoint telemetrii: {physicalTelemetryEndpoint ? 'zapisany, niezweryfikowany' : 'nie skonfigurowany'}</p>
+            <p className="text-xs text-slate-400">
+              Codex CLI / ChatGPT OAuth: {codexState
+                ? codexState.loggedIn ? 'ZALOGOWANY W RUNTIME' : codexState.reason
+                : 'Niepotwierdzony'}
+            </p>
+            <p className="text-xs text-slate-400">
+              Czat Codex: {codexState?.enabled ? 'Włączony' : 'Wyłączony'}
+              {' · Ochrona dostępu: ' + (codexState?.accessConfigured ? 'skonfigurowana' : 'niepotwierdzona')}
+            </p>
             <div className="max-h-48 overflow-auto space-y-1">
               {systemModules.slice(0, 16).map((mod: any) => (
                 <div key={mod.id} className="flex justify-between gap-2 border-b border-slate-800/70 py-1 text-xs">
