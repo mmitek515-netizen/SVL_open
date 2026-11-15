@@ -585,23 +585,9 @@ export interface SafeFetchJsonOptions extends Omit<RequestInit, 'signal'> {
   maxRetries?: number;
 }
 
-export const DEFAULT_DEV_OPERATOR_TOKEN = 'svl-operator-dev-token-364-omniklucz-secure-2026';
-
-function readInitialOperatorToken(): string {
-  try {
-    if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
-      const stored = window.localStorage.getItem('svl_operator_token');
-      if (stored && stored.trim().length > 0) {
-        return stored.trim().slice(0, 512);
-      }
-    }
-  } catch {
-    // ignore storage restriction
-  }
-  return DEFAULT_DEV_OPERATOR_TOKEN;
-}
-
-let svlOperatorAccessToken = readInitialOperatorToken();
+// Operator credentials are intentionally ephemeral and never loaded from
+// persistent browser storage or a well-known development token.
+let svlOperatorAccessToken = '';
 let svlCodexAccessToken = '';
 export function setSvlCodexAccessToken(value: string): void {
   svlCodexAccessToken = String(value || '').slice(0, 512);
