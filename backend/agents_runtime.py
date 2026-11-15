@@ -43,6 +43,7 @@ MAX_AGENT_TASK_TITLE_CHARS = 240
 MAX_AGENT_TASK_PAYLOAD_CHARS = 4000
 MAX_AGENT_TASK_RESULT_CHARS = 8000
 MAX_AGENT_TASK_TIMEOUT_SEC = 120
+MAX_CODEX_BUSY_RETRIES = 12
 
 
 GITHUB_AGENT_SCOPES = ("github.read", "github.write_sync")
@@ -412,8 +413,14 @@ def _agent_worker_process_loop(
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             })
         except Exception as exc:
+            # A shared ChatGPT account being busy is not a failed mission.
+            # The supervisor will requeue it with bounded backoff.
+            retryable = (
+                isinstance(exc, RuntimeError)
+                and str(exc).startswith("Codex CLI busy;")
+            )
             result_queue.put({
-                "type": "task_failed",
+                "type": "task_retry" if retryable else "task_failed",
                 "task_id": current_task_id,
                 "agent": canonical_name,
                 "worker_pid": pid,
@@ -613,6 +620,8 @@ class SVLAgentOrchestrator:
         self.worker_task_queues: dict[str, Any] = {}
         self.worker_result_queue: Any = multiprocessing.Queue()
         self._submitted_task_ids: set[str] = set()
+        self._busy_retry_counts: dict[str, int] = {}
+        self._task_retry_after: dict[str, float] = {}
         self._task_execution_configs: dict[str, dict[str, Any]] = {}
         self._result_supervisor_task: Optional[asyncio.Task[None]] = None
         self._worker_restart_after: dict[str, float] = {}
@@ -1183,6 +1192,9 @@ class SVLAgentOrchestrator:
             return False
         if task_id in self._submitted_task_ids:
             return True
+        if time.monotonic() < self._task_retry_after.get(task_id, 0):
+            return False
+        self._task_retry_after.pop(task_id, None)
         try:
             task_queue.put_nowait(self._build_worker_payload(task))
         except queue.Full:
@@ -1264,12 +1276,55 @@ class SVLAgentOrchestrator:
             state["current_task_id"] = task_id
             state["worker_phase"] = "BUSY"
             await self._publish_task_event(task, "RUNNING")
+        elif message_type == "task_retry":
+            if (
+                task.get("status") != "RUNNING"
+                or task.get("worker_pid") != message.get("worker_pid")
+            ):
+                return
+            retries = self._busy_retry_counts.get(task_id, 0) + 1
+            self._busy_retry_counts[task_id] = retries
+            self._submitted_task_ids.discard(task_id)
+            state = self.agent_states.get(canonical_name, {})
+            state["current_task_id"] = None
+            state["worker_phase"] = "IDLE"
+            if retries > MAX_CODEX_BUSY_RETRIES:
+                task.update({
+                    "status": "FAILED",
+                    "worker_pid": None,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "error": "Codex CLI remained busy after the permitted retries.",
+                })
+                self._task_retry_after.pop(task_id, None)
+                self._busy_retry_counts.pop(task_id, None)
+                self.append_agent_log(
+                    canonical_name, "TASK_FAILED",
+                    f"{task['title']}: współdzielone konto Codex pozostawało zajęte.",
+                )
+                await self._publish_task_event(task, "FAILED")
+            else:
+                wait_sec = min(30, retries * 4)
+                self._task_retry_after[task_id] = time.monotonic() + wait_sec
+                task.update({
+                    "status": "QUEUED",
+                    "worker_pid": None,
+                    "started_at": None,
+                    "completed_at": None,
+                    "error": f"Codex CLI busy; queued for retry {retries}/{MAX_CODEX_BUSY_RETRIES}.",
+                })
+                self.append_agent_log(
+                    canonical_name, "TASK_WAITING_FOR_CODEX",
+                    f"{task['title']}: konto zajęte, ponowienie za {wait_sec}s ({retries}/{MAX_CODEX_BUSY_RETRIES}).",
+                )
+                await self._publish_task_event(task, "QUEUED")
         elif message_type in {"task_completed", "task_answer_ready", "task_failed"}:
             if (
                 task.get("status") != "RUNNING"
                 or task.get("worker_pid") != message.get("worker_pid")
             ):
                 return
+            self._task_retry_after.pop(task_id, None)
+            self._busy_retry_counts.pop(task_id, None)
             completed = message.get("completed_at") or datetime.now(timezone.utc).isoformat()
             task.update({
                 "status": "FAILED" if message_type == "task_failed" else "ANSWER_READY",
@@ -1309,6 +1364,7 @@ class SVLAgentOrchestrator:
             self._save_agent_task(task)
 
     async def _run_worker_supervisor(self) -> None:
+        last_queue_scan = time.monotonic()
         while True:
             while True:
                 try:
@@ -1319,6 +1375,10 @@ class SVLAgentOrchestrator:
                     await self._handle_worker_message(message)
 
             now = time.monotonic()
+            # Retry pending items without spawning a hot SQLite polling loop.
+            if now - last_queue_scan >= 3.0:
+                self._submit_pending_agent_tasks()
+                last_queue_scan = now
             for canonical_name, process in list(self.processes.items()):
                 if process.is_alive():
                     if now - self._worker_started_monotonic.get(canonical_name, now) >= 30:
