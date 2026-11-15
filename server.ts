@@ -990,12 +990,22 @@ async function startServer() {
   }));
 
   // Read-only build provenance: a GitHub commit is not proof of deployed code.
-  app.get('/api/codex-chat/status', asyncRoute(async (_req, res) => {
+  app.get('/api/codex-chat/status', asyncRoute(async (req, res) => {
     const state = codexChatConfiguration();
-    const probe = state.enabled && state.accessConfigured
-      ? await probeCodexCli(__dirname)
-      : {loggedIn: false, reason: 'Disabled or not configured'};
-    res.json({ok: true, ...state, loggedIn: probe.loggedIn, reason: probe.reason});
+    const authenticated = codexChatAccessAllowed(req.headers['x-svl-codex-access']);
+    if (!authenticated) {
+      res.json({
+        ok: true,
+        enabled: state.enabled,
+        accessConfigured: state.accessConfigured,
+        authenticated: false,
+        loggedIn: false,
+        reason: 'Podaj token operatora, aby sprawdzić logowanie Codex CLI.',
+      });
+      return;
+    }
+    const probe = await probeCodexCli(__dirname);
+    res.json({ok: true, ...state, authenticated: true, loggedIn: probe.loggedIn, reason: probe.reason});
   }));
 
   app.get('/api/deployment-info', (_req, res) => {

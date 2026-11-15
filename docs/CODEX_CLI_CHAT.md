@@ -29,7 +29,8 @@ Stan procesu i logowania pokazuje `GET /api/codex-chat/status`, a po wdrożeniu 
 ## Bezpieczeństwo i ograniczenia
 
 - `SVL_CODEX_CHAT_ENABLED` jest domyślnie `false`. Włączenie wymaga prywatnego tokenu operatora długości minimum 32 znaków.
-- Backend uruchamia Codex CLI z `--sandbox read-only`, bez API key i z ograniczeniami czasu, liczby wyników i liczby jednoczesnych żądań. Nie wystawia sesji OAuth przez MCP HTTP.
+- Backend uruchamia Codex CLI z `--sandbox read-only` w pustym, tymczasowym katalogu bez projektu, bez API key i z ograniczeniami czasu, rozmiaru odpowiedzi oraz liczby równoczesnych żądań. Nie wystawia sesji OAuth przez MCP HTTP.
+- Szczegółowa diagnostyka zalogowania wymaga prywatnego tokenu operatora w nagłówku `X-SVL-Codex-Access`. Bez niego endpoint pokazuje jedynie ogólny stan konfiguracji.
 - Tryb jest tekstowy. Nie deklaruje obsługi obrazów ani uruchomionych usług Ollama.
 - Nie wklejaj `auth.json`, sekretu operatora ani kodów logowania urządzenia do czatu, logów lub repozytorium.
 - Samo wgranie nowego commitu na GitHub **nie aktualizuje** automatycznie procesu AI Studio. Tam musi działać ta sama wersja backendu, mieć lokalnie Codex CLI i konto OAuth, co zwykle nie zachodzi.

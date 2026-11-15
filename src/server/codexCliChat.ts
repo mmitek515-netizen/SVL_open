@@ -8,6 +8,9 @@
  */
 import { spawn } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_PROMPT_BYTES = 11_000;
@@ -18,18 +21,18 @@ let lastProbe: { expires: number; loggedIn: boolean; reason: string } | null = n
 type RunResult = { code: number; stdout: string; stderr: string; timedOut: boolean; truncated: boolean };
 
 function codexEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  // OAuth session is taken from the configured CODEX_HOME. API keys cannot
-  // silently replace the user's ChatGPT device login.
-  delete env.OPENAI_API_KEY;
-  delete env.CODEX_API_KEY;
-  delete env.GEMINI_API_KEY;
-  delete env.GOOGLE_API_KEY;
-  delete env.API_KEY;
-  delete env.SVL_CODEX_CHAT_ACCESS_TOKEN;
-  delete env.SVL_OPERATOR_TOKEN;
-  delete env.GITHUB_TOKEN;
-  delete env.GH_TOKEN;
+  // Deliberate environment allowlist. No application keys, database paths,
+  // operator tokens, local MCP settings or secret env may reach the CLI subprocess.
+  const keys = [
+    'PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'SHELL',
+    'TERM', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
+    'CODEX_HOME', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR',
+  ];
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of keys) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
   return env;
 }
 
@@ -164,17 +167,26 @@ export async function generateCodexCliChat(
       ...history,
       'Operator: ' + String(input.message || '').slice(0,4000),
     ].join('\n').slice(0,MAX_PROMPT_BYTES);
-    const run = await runCodex(
-      ['exec', '--ignore-user-config', '--ephemeral', '--json', '--sandbox', 'read-only', '-'],
-      prompt,
-      CHAT_TIMEOUT_MS,
-      cwd,
-    );
-    if (run.timedOut) return {ok:false,error:'Codex CLI exceeded its response timeout'};
-    if (run.truncated) return {ok:false,error:'Codex CLI produced too much output'};
-    if (run.code !== 0) return {ok:false,error:'Codex CLI failed or the logged-in account reached its usage limit'};
-    const reply = finalAgentReply(run.stdout);
-    return reply ? {ok:true,reply} : {ok:false,error:'Codex CLI returned no agent message'};
+    // Keep the conversation outside SVL_open's source directory. Read-only
+    // Codex must not read the application's checked-out code by default.
+    const isolatedRoot = await mkdtemp(path.join(os.tmpdir(), 'svl-codex-chat-'));
+    try {
+      const run = await runCodex(
+        ['exec', '--ignore-user-config', '--ignore-rules',
+         '--skip-git-repo-check', '--ephemeral', '--json',
+         '--sandbox', 'read-only', '-'],
+        prompt,
+        CHAT_TIMEOUT_MS,
+        isolatedRoot,
+      );
+      if (run.timedOut) return {ok:false,error:'Codex CLI exceeded its response timeout'};
+      if (run.truncated) return {ok:false,error:'Codex CLI produced too much output'};
+      if (run.code !== 0) return {ok:false,error:'Codex CLI failed or the logged-in account reached its usage limit'};
+      const reply = finalAgentReply(run.stdout);
+      return reply ? {ok:true,reply} : {ok:false,error:'Codex CLI returned no agent message'};
+    } finally {
+      await rm(isolatedRoot, {recursive: true, force: true});
+    }
   } finally {
     running = false;
   }
