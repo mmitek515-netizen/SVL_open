@@ -526,6 +526,14 @@ async function startServer() {
     res.json({ok: true, ...state, authenticated: true, loggedIn: probe.loggedIn, reason: probe.reason});
   }));
 
+  app.get('/api/operator/status', (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ok:false, authenticated:false, error:'Nieprawidłowy token operatora.'});
+      return;
+    }
+    res.json({ok:true,authenticated:true});
+  });
+
   app.get('/api/deployment-info', (_req, res) => {
     let commit = process.env.GITHUB_SHA || process.env.VITE_GIT_SHA || '';
     let source = commit ? 'environment' : 'unknown';
