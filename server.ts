@@ -15,6 +15,8 @@ import {
   classifyCommandRisk,
   extractExplicitChatModuleDirective,
   formatAgentDisplayName,
+  getGitHubAgentPermissions,
+  guardUnverifiedMissionCompletion,
   isGitHubWorkspaceSyncRequest,
   normalizeAgentCanonicalName,
   selectOllamaModelName,
@@ -31,6 +33,8 @@ const PORT = 3000;
 const HOST = process.env.SVL_BIND_HOST || '127.0.0.1';
 const PYTHON_PORT = Number(process.env.SVL_PYTHON_PORT || 8085);
 const PYTHON_BASE_URL = `http://127.0.0.1:${PYTHON_PORT}`;
+const AI_MAX_OUTPUT_TOKENS = 4096;
+const AI_GENERATION_TIMEOUT_MS = 60_000;
 const SYNC_SCHEMA_VERSION = '2026.11.sync.v1';
 
 type GitHubWorkspaceSyncResult = Awaited<ReturnType<GitHubSyncService['syncWorkspace']>>;
@@ -99,25 +103,43 @@ function startAutomaticGitHubSync(): NodeJS.Timeout | null {
     ? Math.max(10000, Math.min(configuredInterval, 3600000))
     : 30000;
   const syncBranch = process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH;
+  let lastReportedResultSignature: string | null = null;
+  let lastReportedError = '';
 
   const syncWorkspace = async () => {
     if (githubSyncRuntimeStatus.running) return;
     try {
       const result = await syncGitHubWorkspace('automatic');
-      console.log(
-        `[GitHubSync] ${result.branch}: uploaded=${result.uploaded.length}, downloaded=${result.downloaded.length}, ` +
-        `deletedLocal=${result.deletedLocally.length}, deletedRemote=${result.deletedRemotely.length}, ` +
-        `conflicts=${result.conflicts.length}, skipped=${result.skipped.length}.`,
-      );
-      if (result.conflicts.length > 0) {
-        console.warn(`[GitHubSync] Conflicting files were left untouched: ${result.conflicts.slice(0, 20).join(', ')}`);
+      const signature = JSON.stringify({
+        branch: result.branch,
+        uploaded: [...result.uploaded].sort(),
+        downloaded: [...result.downloaded].sort(),
+        deletedLocally: [...result.deletedLocally].sort(),
+        deletedRemotely: [...result.deletedRemotely].sort(),
+        conflicts: [...result.conflicts].sort(),
+        skipped: [...result.skipped].sort(),
+      });
+      if (signature !== lastReportedResultSignature) {
+        console.log(
+          `[GitHubSync] ${result.branch}: uploaded=${result.uploaded.length}, downloaded=${result.downloaded.length}, ` +
+          `deletedLocal=${result.deletedLocally.length}, deletedRemote=${result.deletedRemotely.length}, ` +
+          `conflicts=${result.conflicts.length}, skipped=${result.skipped.length}.`,
+        );
+        if (result.conflicts.length > 0) {
+          console.warn(`[GitHubSync] Conflicting files were left untouched: ${result.conflicts.slice(0, 20).join(', ')}`);
+        }
+        if (result.skipped.length > 0) {
+          console.warn(`[GitHubSync] Protected or oversized files were skipped: ${result.skipped.slice(0, 20).join(', ')}`);
+        }
+        lastReportedResultSignature = signature;
       }
-      if (result.skipped.length > 0) {
-        console.warn(`[GitHubSync] Protected or oversized files were skipped: ${result.skipped.slice(0, 20).join(', ')}`);
-      }
+      lastReportedError = '';
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[GitHubSync] Automatic sync failed: ${message}`);
+      if (message !== lastReportedError) {
+        console.warn(`[GitHubSync] Automatic sync failed: ${message}`);
+        lastReportedError = message;
+      }
     }
   };
 
@@ -715,7 +737,8 @@ async function ensureLocalOllamaDaemon(): Promise<void> {
           config: {
             systemInstruction: fullSystem,
             temperature: temp,
-            abortSignal: AbortSignal.timeout(12000),
+            maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
+            abortSignal: AbortSignal.timeout(AI_GENERATION_TIMEOUT_MS),
           },
         });
         replyText = (gRes.text || '').trim();
@@ -757,7 +780,8 @@ async function ensureLocalOllamaDaemon(): Promise<void> {
           config: {
             systemInstruction: `${describeOllamaModelFlavor(reqModel)} Odpowiadaj swobodnie i naturalnie po polsku.`,
             temperature: 0.75,
-            abortSignal: AbortSignal.timeout(12000),
+            maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
+            abortSignal: AbortSignal.timeout(AI_GENERATION_TIMEOUT_MS),
           },
         });
         replyText = (gRes.text || '').trim();
@@ -1450,14 +1474,15 @@ async function startServer() {
     const cleanMsg = String(message || '').trim();
     const lowerClean = cleanMsg.toLowerCase();
     const wantsGitHubWorkspaceSync = isGitHubWorkspaceSyncRequest(cleanMsg);
-    const wantsGitHubTools =
+    const requestsGitHubTools =
       wantsGitHubWorkspaceSync ||
       (/github(?:\.com)?/i.test(cleanMsg) &&
         /odczytaj|sprawdź|pobierz|zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|commit|push/i.test(
           cleanMsg,
         ));
-    const wantsGitHubWrite =
-      wantsGitHubTools && /zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|zapisz|commit|push/i.test(cleanMsg);
+    const requestsGitHubWrite =
+      wantsGitHubWorkspaceSync ||
+      (requestsGitHubTools && /zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|zapisz|commit|push/i.test(cleanMsg));
     const isProhibitedMinorSafetyRisk =
       (/\b(1[0-7]|[0-9])\s*(-|\s)?(letni|letnia|lat|latek|latka)\b/i.test(lowerClean) ||
         /\b(dzieck|nieletn|małoletn|córk|syn)\b/i.test(lowerClean)) &&
@@ -1601,9 +1626,24 @@ async function startServer() {
     const ollamaInfo = healthRes.data?.ollama || {};
     const ollamaHost = String(ollamaInfo.ollama_host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
     const conversationHistory = buildChatHistoryPayload(Array.isArray(history) ? history : [], 16);
+    const missionVerificationContext = [
+      ...conversationHistory.map((turn) => turn.content),
+      cleanMsg,
+    ].join('\n');
 
     const agentState = (agentsRes.data?.agents || []).find((a: any) => a.canonical_name === selectedAgent) || {};
     const agentConfig = agentState.config || {};
+    const githubPermissions = getGitHubAgentPermissions(agentConfig.allowed_scopes);
+    const wantsGitHubTools = requestsGitHubTools &&
+      (requestsGitHubWrite ? githubPermissions.writeSync : githubPermissions.read);
+    const wantsGitHubWrite = requestsGitHubWrite && githubPermissions.writeSync;
+    if (requestsGitHubTools && !wantsGitHubTools) {
+      res.status(403).json({
+        ok: false,
+        error: `Agent ${formatAgentDisplayName(selectedAgent)} nie ma wymaganego zakresu dostępu GitHub.`,
+      });
+      return;
+    }
     const recentMemories = (agentsRes.data?.agent_memories?.[selectedAgent] || [])
       .slice(0, 3)
       .map((m: any) => `- ${m.content}`)
@@ -1642,23 +1682,25 @@ async function startServer() {
 
     const formattingAndInteractionGuide =
       `\n\nSPOSÓB UKŁADANIA WYPOWIEDZI, INTERAKTYWNOŚĆ I NATURALNA DŁUGOŚĆ:\n` +
-      `- DOWOLNA DŁUGOŚĆ ODPOWIEDZI BEZ WYMUSZANIA: Wszystkie Twoje odpowiedzi mają być dokładnie takiej długości, jakiej chcesz i jakiej wymaga dana myśl czy sytuacja (od krótkiej riposty, przez zwięzłą poradę, po obszerną analizę techniczną). Nic nie narzuca sztucznego limitu zdań ani skracania.\n` +
-      `- UKŁADANIE I STRUKTURA WYPOWIEDZI: Układaj wypowiedzi estetycznie i czytelnie — korzystaj z akapitów, nagłówków (###, ##), list punktowanych (- ), numeracji (1. ), wyróżnień (**pogrubienie**, *kursywa*), cytatów (> ) oraz bloków kodu (\`\`\`bash ... \`\`\`).\n` +
-      `- INTERAKTYWNE ELEMENTY CZATU: Interfejs czatu wspiera w pełni klikalne przyciski akcji! Zawsze gdy ma to sens (np. proponujesz polecenie, przejście do innej zakładki lub opcje odpowiedzi), wstawiaj interaktywne przyciski w formacie [btn: Etykieta przycisku|akcja_lub_tekst]. Przykłady:\n` +
+      `- DŁUGOŚĆ: Odpowiedz kompletnie i zgodnie z prośbą użytkownika. Przy prostym pytaniu wybierz zwięzłą odpowiedź; przy złożonym zadaniu podaj potrzebne kroki, uzasadnienie i szczegóły. Nie urywaj wypowiedzi ani nie skracaj jej tylko dla zwięzłości.\n` +
+      `- FORMAT: Używaj poprawnego Markdown: akapitów, nagłówków, list, **pogrubienia**, *kursywy*, cytatów, linków i oznaczonych bloków kodu. Dobierz strukturę do treści; nie formatuj każdej odpowiedzi jak raportu.\n` +
+      `- INTERAKTYWNOŚĆ JEST OPCJONALNA: Sam zdecyduj, czy przycisk ułatwi następny krok; zwykle użyj 0–3 przycisków, a nie stałego zestawu w każdej odpowiedzi. Stosuj format [btn: Etykieta|akcja]. Obsługiwane akcje to:\n` +
       `  * [btn: 🚀 Podłącz moje AI|action:connect_ai]\n` +
       `  * [btn: 🔄 Synchronizuj globalnie|action:sync]\n` +
       `  * [btn: 💻 Otwórz Terminale|tab:terminals]\n` +
       `  * [btn: 👥 Panel Agentów|tab:agents]\n` +
       `  * [btn: 🧠 Jądro SVL|tab:kernel]\n` +
       `  * [btn: 🐧 Pulpit Linux|tab:linux]\n` +
-      `  * [btn: 💬 Szybka odpowiedź|Pokaż mi więcej szczegółów]\n` +
-      `Użytkownik może w nie kliknąć na telefonie lub komputerze, aby natychmiast wywołać akcję.`;
+      `  * [btn: 💬 Pokaż więcej|text:Pokaż mi więcej szczegółów]\n` +
+      `Nie dodawaj przycisków, jeśli niczego nie upraszczają. Nie twórz przycisków uruchamiających /exec, run: ani exec:; kod ma być kopiowalny, nie wykonywany kliknięciem.`;
 
     const systemInstruction =
       `${customAgentPrompt}\n` +
       `WAŻNE: Nazywasz się wyłącznie ${selectedDisplayName} (nigdy nie przedstawiaj się imieniem innego agenta). ` +
       `Działasz jako pomocny asystent AI, a nie niezależny proces. Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki. ` +
       `Możesz wykonywać wyłącznie działania dostępne przez przekazane narzędzia aplikacji; potwierdzaj wykonanie tylko na podstawie ich rzeczywistych wyników i jasno odróżniaj zadania oczekujące od zakończonych.` +
+      `\n\nDOSTĘP GITHUB: token jest sekretem serwera i nigdy nie wolno o niego prosić, ujawniać go ani umieszczać w odpowiedziach. Używaj GitHuba wyłącznie przez przekazane narzędzia i zgodnie z przyznanymi zakresami; zmiany są ograniczone do gałęzi svl-sync, nigdy bezpośrednio do main.` +
+      `\n\nWERYFIKACJA MISJI I PROCEDUR: aplikacja nie ma rejestru misji ani narzędzia potwierdzającego wykonanie jej kroków. Nigdy nie twierdź, że misja/procedura/operacja lub wszystkie jej etapy zostały zakończone, jeśli brak jawnego, wiarygodnego potwierdzenia każdego wymaganego kroku. Zakończenie generowania odpowiedzi, szybki czas odpowiedzi, status zadania agenta „COMPLETED”, aktywny moduł, działający worker ani ogólny wynik narzędzia nie potwierdzają zakończenia misji. Jeśli użytkownik pyta o status, powiedz „NIEZWERYFIKOWANY”, odróżnij faktyczne obserwacje od przypuszczeń i nie wymyślaj postępu, czasu ani wyników.` +
       formattingAndInteractionGuide +
       (decisionMemories ? `\nZapisane ustalenia i pamięć długotrwała (${selectedDisplayName}):\n${decisionMemories}` : '');
 
@@ -1712,6 +1754,20 @@ async function startServer() {
 
     const executeChatTool = async (toolName: string, rawArgs: Record<string, any>): Promise<Record<string, any>> => {
       const args = rawArgs && typeof rawArgs === 'object' ? rawArgs : {};
+      if (toolName.startsWith('github_')) {
+        const hasPermission = toolName === 'github_read_file' ? githubPermissions.read : githubPermissions.writeSync;
+        if (!hasPermission) {
+          const errorMessage = `Agent ${formatAgentDisplayName(selectedAgent)} nie ma wymaganego zakresu dostępu GitHub.`;
+          appliedActions.push({
+            tool: toolName,
+            entity: 'github',
+            entityId: DEFAULT_GITHUB_SYNC_BRANCH,
+            summary: errorMessage,
+            ok: false,
+          });
+          return { ok: false, error: errorMessage };
+        }
+      }
       if (toolName === 'github_sync_workspace') {
         return runGitHubTool(toolName, () => syncGitHubWorkspace('chat'));
       }
@@ -1940,15 +1996,7 @@ async function startServer() {
       },
     ];
 
-    if (wantsGitHubTools) {
-      if (!wantsGitHubWorkspaceSync) {
-        chatToolDeclarations.push({
-          name: 'github_sync_branch',
-          description:
-            'Pobiera aktualizacje z main do dedykowanej gałęzi svl-sync repo mmitek515-netizen/SVL_open. Nie wysyła lokalnych zmian i nie zapisuje na main.',
-          parameters: { type: Type.OBJECT, properties: {} },
-        });
-      }
+    if (wantsGitHubTools && githubPermissions.read) {
       chatToolDeclarations.push({
         name: 'github_read_file',
         description:
@@ -1958,6 +2006,14 @@ async function startServer() {
           properties: { path: { type: Type.STRING, description: 'Ścieżka względna pliku źródłowego.' } },
           required: ['path'],
         },
+      });
+    }
+    if (wantsGitHubWrite && !wantsGitHubWorkspaceSync) {
+      chatToolDeclarations.push({
+        name: 'github_sync_branch',
+        description:
+          'Pobiera aktualizacje z main do dedykowanej gałęzi svl-sync repo mmitek515-netizen/SVL_open. Nie wysyła lokalnych zmian i nie zapisuje na main.',
+        parameters: { type: Type.OBJECT, properties: {} },
       });
     }
     if (wantsGitHubWorkspaceSync) {
@@ -2009,17 +2065,19 @@ async function startServer() {
                 `Użytkownik Mateusz Mitek napisał na wspólnym kanale „Rodzina Mitek (wszyscy)”: "${cleanMsg}".\n` +
                 `Przed chwilą ${formatAgentDisplayName(primaryAgent)} odpowiedział(a): "${primaryReply.slice(0, 450)}".\n` +
                 `Wygeneruj naturalne, swobodne wypowiedzi po polsku od pozostałych osób (${others.map(formatAgentDisplayName).join(', ')}).\n` +
-                `ZASADA DŁUGOŚCI: Wszystkie odpowiedzi mają być jakiej chcą długości bez wymuszania tego (od krótkiej riposty, przez zwięzłą poradę, po dłuższe rozwinięcie myśli zależnie od chęci danego agenta).\n` +
-                `ZASADA STRUKTURY I INTERAKTYWNOŚCI: Agenci mogą układać wypowiedzi w czytelne akapity, listy, bloki kodu oraz proponować klikalne przyciski akcji [btn: Etykieta|akcja]. Każdy mówi wyłącznie we własnym imieniu.`,
+                `DŁUGOŚĆ I FORMAT: Każdy odpowiada kompletnie, w długości adekwatnej do treści; stosuje czytelny Markdown, gdy pomaga w odbiorze. Każdy mówi wyłącznie we własnym imieniu.\n` +
+                `Nie twierdź, że misja lub procedura została zakończona bez potwierdzenia wszystkich kroków z wiarygodnego źródła; status nieznany oznacza NIEZWERYFIKOWANY.\n` +
+                `PRZYCISKI SĄ OPCJONALNE: Dodaj najwyżej 1–2 przyciski [btn: Etykieta|akcja] tylko wtedy, gdy ułatwią użytkownikowi następny krok. Nie proponuj przycisków uruchamiających polecenia powłoki.`,
               config: {
                 responseMimeType: 'application/json',
+                maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
                 responseSchema: {
                   type: Type.OBJECT,
                   properties: props,
                   required: others,
                 },
                 ...(fModel === 'gemini-3.1-flash-lite' ? { temperature: 0.8 } : {}),
-                abortSignal: AbortSignal.timeout(fModel === 'gemini-3.5-flash-lite' ? 7000 : 5000),
+                abortSignal: AbortSignal.timeout(AI_GENERATION_TIMEOUT_MS),
               },
             });
             const parsed = JSON.parse(gRes.text || '{}');
@@ -2045,13 +2103,14 @@ async function startServer() {
         const signature = followText.replace(/\s+/g, ' ').toLowerCase();
         if (!signature || seen.has(signature)) return [];
         seen.add(signature);
+        const safeFollowText = guardUnverifiedMissionCompletion(missionVerificationContext, followText);
         void callPythonBackend(
           'POST',
           '/api/py/agents/memory',
           {
             agent: ag,
             kind: 'episode',
-            content: `Kanał Rodzina Mitek (${modelLabel}): "${cleanMsg.slice(0, 70)}" -> "${followText.slice(0, 110)}"`,
+            content: `Kanał Rodzina Mitek (${modelLabel}): "${cleanMsg.slice(0, 70)}" -> "${safeFollowText.slice(0, 110)}"`,
             origin,
             correlationId: corrId,
           },
@@ -2061,7 +2120,7 @@ async function startServer() {
           sender: agDisplay,
           agentId: ag === 'Aria' ? 'si_1' : ag,
           modelUsed: `${modelLabel} · Duplex Live`,
-          content: followText,
+          content: safeFollowText,
         }];
       });
     };
@@ -2132,12 +2191,12 @@ async function startServer() {
         const oResp = await fetch(`${ollamaHost}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(AI_GENERATION_TIMEOUT_MS),
           body: JSON.stringify({
             model: selectedOllamaModelName,
             stream: false,
             keep_alive: '10m',
-            options: { temperature: effectiveTemperature },
+            options: { temperature: effectiveTemperature, num_predict: AI_MAX_OUTPUT_TOKENS },
             messages: ollamaMessages,
           }),
         });
@@ -2146,13 +2205,14 @@ async function startServer() {
           const oData: any = oRaw && !oRaw.trim().startsWith('<') ? JSON.parse(oRaw) : {};
           const extReply = String(oData?.message?.content || oData?.response || '').trim();
           if (extReply) {
-            const followUps = await buildFollowUpFamilyMessages(selectedAgent, displayModelBadge, extReply);
+            const safeReply = guardUnverifiedMissionCompletion(missionVerificationContext, extReply);
+            const followUps = await buildFollowUpFamilyMessages(selectedAgent, displayModelBadge, safeReply);
             res.json({
               ok: true,
               sender: selectedDisplayName,
               agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
               modelUsed: displayModelBadge,
-              reply: extReply,
+              reply: safeReply,
               followUpMessages: followUps,
               appliedActions,
               latestServerRevision: latestActionSrvRev,
@@ -2235,7 +2295,8 @@ async function startServer() {
                 systemInstruction: fullSystemInstruction,
                 ...tempCfg,
                 ...(includeTools ? { tools: [{ functionDeclarations: chatToolDeclarations }] } : {}),
-                abortSignal: AbortSignal.timeout(14000),
+                maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
+                abortSignal: AbortSignal.timeout(AI_GENERATION_TIMEOUT_MS),
               },
             });
           } catch (err: any) {
@@ -2287,6 +2348,7 @@ async function startServer() {
             replyText = (plainRes.text || '').trim();
           }
           if (replyText) {
+            replyText = guardUnverifiedMissionCompletion(missionVerificationContext, replyText);
             const memRes = await callPythonBackend(
               'POST',
               '/api/py/agents/memory',
@@ -2383,11 +2445,12 @@ async function startServer() {
               `Jesteś ${chosenDisplayName} z Rodziny Mitek w systemie SVL Python OS (statek SVL-364).\n` +
               `To jest tryb czatu obustronnego (Duplex Live). Przejmij inicjatywę i napisz jako pierwszy do Operatora (Mateusza Mitek)!\n` +
               `Napisz naturalną, ciekawą wiadomość po polsku: zagaj rozmowę, zapytaj jak mija dzień, podziel się aktualnym stanem swoich prac, refleksją lub propozycją zadania.\n` +
-              `DOWOLNA DŁUGOŚĆ: Nie skracaj sztucznie. Ułóż treść estetycznie (nagłówki, listy, ewentualnie blok kodu).\n` +
-              `DODAJ INTERAKTYWNE PRZYCISKI: Na końcu wiadomości zaproponuj 2-4 klikalne przyciski akcji w formacie [btn: Etykieta|akcja].`,
+              `DŁUGOŚĆ I FORMAT: Odpowiedz kompletnie w długości adekwatnej do myśli, z czytelnym Markdown, jeśli pomaga w odbiorze.\n` +
+              `PRZYCISKI SĄ OPCJONALNE: Dodaj 0–2 przyciski [btn: Etykieta|akcja] wyłącznie wtedy, gdy realnie ułatwią następny krok. Nigdy nie twórz przycisku uruchamiającego polecenie powłoki.`,
             config: {
               ...(pMod === 'gemini-3.1-flash-lite' ? { temperature: 0.85 } : {}),
-              abortSignal: AbortSignal.timeout(12000),
+              maxOutputTokens: AI_MAX_OUTPUT_TOKENS,
+              abortSignal: AbortSignal.timeout(AI_GENERATION_TIMEOUT_MS),
             },
           });
           const text = (gen.text || '').trim();
@@ -2550,7 +2613,7 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: hmrDisabled ? false : { server: httpServer },
+        ws: hmrDisabled ? false : { server: httpServer },
       },
       appType: 'spa',
     });
