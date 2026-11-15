@@ -11,12 +11,14 @@ import { KernelDiagnosticsView } from './components/KernelDiagnosticsView';
 import { LinuxDeployDashboard } from './components/LinuxDeployDashboard';
 import { Svl364CommandCenter } from './components/Svl364CommandCenter';
 import { SvlSyncProvider, useSvlSync } from './utils/svlSyncStore';
-import { CANONICAL_AGENTS } from './utils/svlLogic';
+import { CANONICAL_AGENTS, setSvlOperatorAccessToken } from './utils/svlLogic';
 
 type ActiveWorkspaceTab = 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux';
 
 function SVLWorkspaceShell() {
   const [activeTab, setActiveTab] = useState<ActiveWorkspaceTab>('chat');
+  const [operatorToken, setOperatorToken] = useState('');
+  const [operatorAuthVisible, setOperatorAuthVisible] = useState(false);
   const {
     agentsData,
     isConnectingAi,
@@ -134,6 +136,35 @@ function SVLWorkspaceShell() {
           </button>
         </nav>
 
+        {/* Operator authorization (memory only, never stored on disk) */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            aria-expanded={operatorAuthVisible}
+            aria-label="Otwórz autoryzację operatora"
+            title="Token operatora do administracji, czatu i danych SQLite"
+            onClick={() => setOperatorAuthVisible((visible) => !visible)}
+            className={`px-2 py-1 rounded-md border text-[11px] ${operatorToken
+              ? 'border-emerald-700 text-emerald-300'
+              : 'border-slate-700 text-slate-400'}`}
+          >{operatorToken ? '🔐 SVL' : '🔒 SVL'}</button>
+          {operatorAuthVisible && (
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={operatorToken}
+              aria-label="Prywatny SVL_OPERATOR_TOKEN"
+              placeholder="SVL_OPERATOR_TOKEN"
+              onChange={(event) => {
+                const value = event.target.value;
+                setOperatorToken(value);
+                setSvlOperatorAccessToken(value);
+              }}
+              className="min-w-0 w-28 md:w-44 bg-[#0B0D13] border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-200"
+            />
+          )}
+        </div>
         {/* Zone 3: 1 compact primary action */}
         <div className="flex items-center shrink-0">
           <button
