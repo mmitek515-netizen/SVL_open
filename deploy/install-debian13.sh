@@ -4,7 +4,7 @@
 # Installs:
 # - Python 3.12+ & venv (FastAPI, Pydantic, SQLAlchemy, WebSockets)
 # - Local Ollama service + auto-detection of RAM/VRAM for ~14B Vision model
-# - Official OpenAI Codex CLI (@openai/codex) with `codex login --device` support
+# - Official OpenAI Codex CLI (@openai/codex) with `codex login --device-auth` support
 # - Dedicated Linux accounts & systemd unit for SVLSystemKernel & 4 Agents
 # ============================================================================
 set -euo pipefail
@@ -70,7 +70,7 @@ ollama pull "$OLLAMA_MODEL"
 
 echo "=== [5/6] Instalacja oficjalnego OpenAI Codex CLI ==="
 npm install -g @openai/codex || true
-echo "Aby zalogowac Codex CLI przez konto ChatGPT (device flow), wykonaj: codex login --device"
+echo "Aby zalogowac Codex CLI przez konto ChatGPT (device flow), wykonaj: codex login --device-auth"
 
 echo "=== [6/6] Rejestracja i uruchomienie uslugi systemd svl-python-os.service ==="
 install -o root -g root -m 0644 /opt/svl-python-os/deploy/systemd/svl-python-os.service /etc/systemd/system/svl-python-os.service
