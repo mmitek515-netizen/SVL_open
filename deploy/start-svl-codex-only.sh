@@ -17,8 +17,12 @@ if [[ -z "${CODEX_HOME:-}" ]]; then
   export CODEX_HOME="$HOME/.codex"
 fi
 unset OPENAI_API_KEY CODEX_API_KEY
-LOGIN_STATUS="$(codex login status 2>&1 || true)"
-if ! grep -qi chatgpt <<< "$LOGIN_STATUS"; then
+if ! LOGIN_STATUS="$(codex login status 2>&1)"; then
+  echo "Codex CLI login status failed; sign in with ChatGPT." >&2
+  echo "Run: codex login --device-auth" >&2
+  exit 1
+fi
+if ! grep -Eqi 'logged in (using|with) chatgpt' <<< "$LOGIN_STATUS"; then
   echo "Codex CLI requires the same Linux user's ChatGPT login." >&2
   echo "Run: codex login --device-auth" >&2
   exit 1
