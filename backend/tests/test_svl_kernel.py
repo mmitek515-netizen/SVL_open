@@ -15,10 +15,12 @@ import asyncio
 import json
 import math
 import multiprocessing
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -38,9 +40,12 @@ from svl_core import (
 
 from agents_runtime import (
     CANONICAL_SVL_AGENTS,
+    GITHUB_AGENT_SCOPES,
     SVLAgentOrchestrator,
+    _agent_github_tool_names,
     _agent_worker_process_loop,
     execute_agent_task,
+    guard_unverified_mission_completion,
 )
 
 
@@ -147,6 +152,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                 self.assertEqual(config["autonomy_mode"], "SUPERVISED_TOOL_USE")
                 self.assertNotIn("root", config["allowed_scopes"])
                 self.assertNotIn("sudo_nopasswd", config["allowed_scopes"])
+                self.assertTrue(set(GITHUB_AGENT_SCOPES).issubset(config["allowed_scopes"]))
 
             custom_prompt = "Zachowuj moje ustalenia i odpowiadaj zwięźle."
             updated = orchestrator.update_agent_config(
@@ -188,9 +194,12 @@ class TestSVLKernelSuite(unittest.TestCase):
             self.assertFalse(migrated["root_nopasswd"])
             self.assertEqual(migrated["rbac_role"], "assistant")
             self.assertEqual(migrated["autonomy_mode"], "SUPERVISED_TOOL_USE")
-            self.assertEqual(migrated["allowed_scopes"], ["chat"])
+            self.assertEqual(
+                migrated["allowed_scopes"],
+                ["chat", *GITHUB_AGENT_SCOPES],
+            )
 
-    def test_agent_dispatch_is_persisted_until_a_worker_is_connected(self) -> None:
+    def test_agent_dispatch_is_persisted_and_submitted_to_a_live_worker(self) -> None:
         async def _run() -> None:
             with tempfile.TemporaryDirectory() as tmpdir:
                 kernel = SVLSystemKernel(
@@ -198,14 +207,20 @@ class TestSVLKernelSuite(unittest.TestCase):
                     operator_token="test_operator_token_with_more_than_32_chars_abcdef",
                 )
                 orchestrator = SVLAgentOrchestrator(kernel, SphericalEventBus())
-                dispatched = await orchestrator.dispatch_agent_task(
-                    "test-suite", "Aria", "Inspect sync", "Check event delivery."
-                )
+                with patch.dict("agents_runtime.os.environ", {"SVL_CODEX_AGENTS_ENABLED": "true"}):
+                    dispatched = await orchestrator.dispatch_agent_task(
+                        "test-suite",
+                        "Aria",
+                        "Inspect sync",
+                        "Check event delivery.",
+                        ai_provider="codex",
+                    )
 
                 self.assertEqual(dispatched["task"]["status"], "QUEUED")
                 self.assertIsNone(dispatched["task"]["completed_at"])
                 self.assertIsNone(dispatched["task"]["result"])
-                self.assertEqual(dispatched["resilience"]["status"], "QUEUED")
+                self.assertEqual(dispatched["resilience"]["status"], "SUBMITTED_TO_WORKER")
+                self.assertTrue(dispatched["resilience"]["workerAccepted"])
                 self.assertEqual(dispatched["event"]["type"], "agents.task_queued")
 
                 restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
@@ -216,6 +231,10 @@ class TestSVLKernelSuite(unittest.TestCase):
                 )
                 self.assertEqual(persisted["status"], "QUEUED")
                 self.assertEqual(persisted["payload"], "Check event delivery.")
+                self.assertEqual(
+                    restored._build_worker_payload(persisted)["ai_provider"],
+                    "codex",
+                )
 
         asyncio.run(_run())
 
@@ -240,7 +259,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                     "started_at": "2025-01-01T00:00:00+00:00",
                 })
                 await orchestrator._handle_worker_message({
-                    "type": "task_completed",
+                    "type": "task_answer_ready",
                     "task_id": task_id,
                     "agent": "Aria",
                     "worker_pid": 1234,
@@ -250,7 +269,7 @@ class TestSVLKernelSuite(unittest.TestCase):
 
                 restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
                 task = next(item for item in restored.agent_queues["Aria"] if item["id"] == task_id)
-                self.assertEqual(task["status"], "COMPLETED")
+                self.assertEqual(task["status"], "ANSWER_READY")
                 self.assertEqual(task["result"], "Task result")
 
         asyncio.run(_run())
@@ -289,7 +308,133 @@ class TestSVLKernelSuite(unittest.TestCase):
         request_body = json.loads(request.data.decode("utf-8"))
         self.assertFalse(request_body["stream"])
         self.assertEqual([message["role"] for message in request_body["messages"]], ["system", "user"])
+        self.assertIn("no mission registry", request_body["messages"][0]["content"])
         self.assertNotIn("tools", request_body)
+
+    def test_agent_task_uses_codex_only_when_selected_and_scopes_github_tools(self) -> None:
+        codex_response = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "Generated by Codex"},
+        })
+
+        def fake_codex_run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+            if command[1:3] == ["login", "status"]:
+                return subprocess.CompletedProcess(command, 0, stdout="Logged in using ChatGPT", stderr="")
+            return subprocess.CompletedProcess(command, 0, stdout=codex_response, stderr="")
+
+        with (
+            patch.dict(
+                "agents_runtime.os.environ",
+                {
+                    "SVL_CODEX_AGENTS_ENABLED": "true",
+                    "SVL_OPERATOR_TOKEN": "test_operator_token_with_more_than_32_chars_abcdef",
+                },
+            ),
+            patch("agents_runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch("agents_runtime.subprocess.run", side_effect=fake_codex_run) as mock_run,
+            patch("agents_runtime.urllib.request.urlopen") as mock_ollama,
+        ):
+            answer = execute_agent_task({
+                "ai_provider": "codex",
+                "title": "Review GitHub repository",
+                "payload": "Read package.json.",
+                "system_prompt": "Be concise.",
+                "allowed_scopes": ["github.read"],
+            })
+
+        self.assertEqual(answer, "Generated by Codex")
+        mock_ollama.assert_not_called()
+        command = mock_run.call_args_list[1].args[0]
+        self.assertIn("--sandbox", command)
+        self.assertIn("read-only", command)
+        self.assertIn("--ephemeral", command)
+        self.assertIn("--ignore-user-config", command)
+        self.assertNotIn("mcp_servers.svl-workspace-filesystem.enabled=false", command)
+        self.assertIn("mcp_servers.svl-github.enabled=true", command)
+        self.assertIn('mcp_servers.svl-github.enabled_tools=["github_read_file"]', command)
+        self.assertIn('mcp_servers.svl-github.bearer_token_env_var="SVL_OPERATOR_TOKEN"', command)
+        self.assertIn("GitHub policy", mock_run.call_args_list[1].kwargs["input"])
+
+    def test_codex_agent_timeout_is_reported_clearly(self) -> None:
+        timeout = subprocess.TimeoutExpired(["codex"], timeout=85)
+        with (
+            patch.dict("agents_runtime.os.environ", {"SVL_CODEX_AGENTS_ENABLED": "true"}),
+            patch("agents_runtime.shutil.which", return_value="/usr/bin/codex"),
+            patch(
+                "agents_runtime.subprocess.run",
+                side_effect=[
+                    subprocess.CompletedProcess(
+                        ["codex", "login", "status"],
+                        0,
+                        stdout="Logged in using ChatGPT",
+                        stderr="",
+                    ),
+                    timeout,
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Codex CLI task timed out after 85 seconds"):
+                execute_agent_task({
+                    "ai_provider": "codex",
+                    "title": "Timed Codex task",
+                    "payload": "Test timeout handling.",
+                })
+
+    def test_codex_agent_tasks_require_server_enablement(self) -> None:
+        with (
+            patch.dict("agents_runtime.os.environ", {"SVL_CODEX_AGENTS_ENABLED": "false"}),
+            patch("agents_runtime.subprocess.run") as mock_run,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Codex agent tasks are disabled"):
+                execute_agent_task({"ai_provider": "codex"})
+        mock_run.assert_not_called()
+
+    def test_agent_task_rejects_unknown_ai_provider(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unsupported agent AI provider"):
+            execute_agent_task({"ai_provider": "unknown"})
+
+    def test_agent_github_mcp_tools_require_scope_and_explicit_github_intent(self) -> None:
+        read_task = {
+            "title": "Review GitHub repository",
+            "payload": "Read the current implementation.",
+            "allowed_scopes": ["github.read"],
+        }
+        self.assertEqual(_agent_github_tool_names(read_task), ["github_read_file"])
+
+        write_task = {
+            "title": "Update GitHub source",
+            "payload": "Fix the documented bug and commit the source change.",
+            "allowed_scopes": ["github.read", "github.write_sync"],
+        }
+        self.assertEqual(
+            _agent_github_tool_names(write_task),
+            ["github_read_file", "github_update_file"],
+        )
+
+        no_github_intent = {
+            "title": "Explain a Python function",
+            "payload": "Use the same agent scopes.",
+            "allowed_scopes": ["github.read", "github.write_sync"],
+        }
+        self.assertEqual(_agent_github_tool_names(no_github_intent), [])
+
+        read_only_write_request = {
+            **write_task,
+            "allowed_scopes": ["github.read"],
+        }
+        self.assertEqual(_agent_github_tool_names(read_only_write_request), ["github_read_file"])
+
+    def test_worker_mission_completion_claim_is_blocked_without_verified_state(self) -> None:
+        guarded = guard_unverified_mission_completion(
+            "Prowadzę misję, sprawdź status procedury.",
+            "Cała procedura misji dobiegła już końca.",
+        )
+        self.assertIn("Status misji: NIEZWERYFIKOWANY", guarded)
+        planned = "Procedurę można uznać za zakończoną dopiero po weryfikacji każdego kroku."
+        self.assertEqual(
+            guard_unverified_mission_completion("Opisz procedurę misji.", planned),
+            planned,
+        )
 
     def test_worker_process_consumes_tasks_and_reports_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -445,6 +590,69 @@ class TestSVLKernelSuite(unittest.TestCase):
 
             kernel.delete_system_module("custom-mod-99")
             self.assertFalse(any(m["id"] == "custom-mod-99" for m in kernel.list_system_modules()))
+
+    def test_chat_command_module_changes_are_persisted_as_visible_chat_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("os.environ", {"SVL_SQLITE_PATH": str(Path(tmpdir) / "app.sqlite3")}):
+                import app as backend_app
+
+            class FakeKernel:
+                def __init__(self) -> None:
+                    self.saved_messages: list[dict[str, Any]] = []
+
+                def save_chat_message(self, _cid: str, _title: str, _model: str, msg: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+                    self.saved_messages.append(msg)
+                    return {"ok": True, "deduplicated": False}
+
+                def sync_chat_state_mutations(self, **_kwargs: Any) -> dict[str, Any]:
+                    return {
+                        "ok": True,
+                        "appliedCount": 1,
+                        "materializedModules": ["svl-364"],
+                        "serverRevision": 12,
+                        "modules": [{"id": "svl-364", "name": "SVL-364", "revision": 4}],
+                    }
+
+                def list_conversations_with_messages(self) -> list[dict[str, Any]]:
+                    return [{"id": "conv-test", "messages": self.saved_messages}]
+
+            class FakeRuntime:
+                def __init__(self) -> None:
+                    self.kernel = FakeKernel()
+
+                def apply_active_module_settings(self) -> None:
+                    return None
+
+            fake_runtime = FakeRuntime()
+            body = {
+                "conversation_id": "conv-test",
+                "title": "Test",
+                "model": "svl-hybrid-router",
+                "eventId": "evt-user-test",
+                "message": {
+                    "id": "user-test",
+                    "role": "user",
+                    "sender": "Operator",
+                    "content": "Skonfiguruj moduł SVL-364",
+                    "timestamp": "04:00",
+                },
+            }
+            with patch.object(backend_app, "runtime", fake_runtime):
+                status, response = asyncio.run(
+                    backend_app.handle_api_request(
+                        "POST",
+                        "/api/py/chat/conversations/message",
+                        {},
+                        body,
+                    )
+                )
+
+            self.assertEqual(status, 200)
+            self.assertEqual(len(fake_runtime.kernel.saved_messages), 2)
+            report = fake_runtime.kernel.saved_messages[1]
+            self.assertEqual(report["role"], "system")
+            self.assertEqual(report["appliedActions"][0]["entityId"], "svl-364")
+            self.assertEqual(response["conversations"][0]["messages"][1]["appliedActions"][0]["ok"], True)
 
 
 if __name__ == "__main__":

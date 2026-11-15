@@ -18,14 +18,14 @@ from __future__ import annotations
 import asyncio
 import json
 import fcntl
-import shutil
-import subprocess
-import tempfile
 import multiprocessing
 import os
 import queue
 import re
 import signal
+import shutil
+import subprocess
+import tempfile
 import time
 import urllib.parse
 import urllib.error
@@ -43,8 +43,8 @@ MAX_AGENT_TASK_TITLE_CHARS = 240
 MAX_AGENT_TASK_PAYLOAD_CHARS = 4000
 MAX_AGENT_TASK_RESULT_CHARS = 8000
 MAX_AGENT_TASK_TIMEOUT_SEC = 120
-
-
+MAX_AGENT_GITHUB_TOOL_CALLS = 4
+GITHUB_MCP_DEFAULT_URL = "http://127.0.0.1:3000/mcp/github"
 GITHUB_AGENT_SCOPES = ("github.read", "github.write_sync")
 GITHUB_AGENT_SCOPE_VERSION = 1
 MISSION_CONTEXT_PATTERN = re.compile(r"\b(?:misj|procedur|operacj)\w*", re.IGNORECASE)
@@ -302,11 +302,58 @@ def normalize_agent_canonical_name(raw_name: str) -> str:
     return raw_name.strip() if raw_name else "Alex"
 
 
+def sanitize_agent_avatar(avatar: Any) -> dict[str, str] | None:
+    if avatar is None:
+        return None
+    if not isinstance(avatar, dict):
+        raise ValueError("Avatar musi zawierać zweryfikowane metadane Wikimedia Commons.")
+
+    image_url = str(avatar.get("image_url") or "").strip()
+    source_url = str(avatar.get("source_url") or "").strip()
+    license_name = str(avatar.get("license") or "").strip()
+    title = re.sub(r"\s+", " ", str(avatar.get("title") or "")).strip()
+    author = re.sub(r"\s+", " ", re.sub(r"<[^>]*>", " ", str(avatar.get("author") or ""))).strip()
+    try:
+        image_parts = urllib.parse.urlsplit(image_url)
+        source_parts = urllib.parse.urlsplit(source_url)
+        valid_urls = (
+            image_parts.scheme == "https"
+            and image_parts.hostname == "upload.wikimedia.org"
+            and image_parts.path.startswith("/wikipedia/commons/thumb/")
+            and not image_parts.username
+            and not image_parts.password
+            and source_parts.scheme == "https"
+            and source_parts.hostname == "commons.wikimedia.org"
+            and source_parts.path.startswith("/wiki/File:")
+            and not source_parts.username
+            and not source_parts.password
+        )
+    except ValueError:
+        valid_urls = False
+
+    allowed_license = re.match(
+        r"^(?:public domain\b|cc0\b|cc by(?:-sa)?\s+[1-4](?:\.\d)?\b)",
+        license_name,
+        re.IGNORECASE,
+    )
+    if not valid_urls or not allowed_license or not title or len(title) > 160 or len(author) > 200:
+        raise ValueError("Avatar wymaga bezpiecznego URL Wikimedia oraz licencji Public Domain, CC0, CC BY lub CC BY-SA.")
+    return {
+        "title": title,
+        "image_url": image_url,
+        "source_url": source_url,
+        "license": license_name[:80],
+        "author": author,
+    }
+
+
 def sanitize_agent_config(config: dict[str, Any]) -> dict[str, Any]:
     safe_config = dict(config)
     safe_config["root_nopasswd"] = False
     safe_config["rbac_role"] = "assistant"
     safe_config["autonomy_mode"] = "SUPERVISED_TOOL_USE"
+    if "avatar" in safe_config:
+        safe_config["avatar"] = sanitize_agent_avatar(safe_config["avatar"])
     scopes = safe_config.get("allowed_scopes")
     if isinstance(scopes, list):
         safe_config["allowed_scopes"] = [
@@ -424,7 +471,6 @@ def _agent_worker_process_loop(
             current_task_id = None
 
 
-
 def _execute_codex_agent_task(task: dict[str, Any]) -> str:
     """Execute a TEXT-ONLY inference using the already signed-in Codex CLI.
 
@@ -438,18 +484,17 @@ def _execute_codex_agent_task(task: dict[str, Any]) -> str:
     allowed_env = (
         "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL",
         "TERM", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
-        "CODEX_HOME", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+        "CODEX_HOME", "SVL_OPERATOR_TOKEN", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
         "SSL_CERT_FILE", "SSL_CERT_DIR",
     )
     env = {key: os.environ[key] for key in allowed_env if os.environ.get(key)}
-    title = str(task.get("title") or "")[:MAX_AGENT_TASK_TITLE_CHARS]
-    payload = str(task.get("payload") or "")[:MAX_AGENT_TASK_PAYLOAD_CHARS]
-    system_prompt = str(task.get("system_prompt") or "")[:2500]
+    title, payload, system_prompt, allowed_github_tools = _prepare_agent_task_prompt(task)
     agent = str(task.get("target_agent") or task.get("agent") or "SVL Agent")[:80]
     prompt = (
         f"Jesteś agentem {agent} w SVL Python OS. Odpowiedz po polsku.\n"
         "Zadanie polega wyłącznie na przygotowaniu analizy lub odpowiedzi.\n"
-        "Nie wykonuj poleceń powłoki, nie modyfikuj plików ani nie deklaruj "
+        "Nie wykonuj poleceń powłoki ani nie modyfikuj lokalnych plików. Używaj wyłącznie "
+        "narzędzi MCP jawnie dozwolonych dla tego zadania. Nie deklaruj "
         "zakończenia misji lub operacji bez potwierdzonych danych.\n"
         f"Konfiguracja roli: {system_prompt}\n"
         f"Tytuł: {title}\nSzczegóły:\n{payload}"
@@ -478,21 +523,44 @@ def _execute_codex_agent_task(task: dict[str, Any]) -> str:
             raise RuntimeError(
                 "Codex CLI must be signed in with ChatGPT OAuth as the worker Linux user"
             )
+        command = [
+            codex,
+            "exec",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--skip-git-repo-check",
+            "--ephemeral",
+            "--json",
+        ]
+        if allowed_github_tools:
+            mcp_url = _validated_github_mcp_url()
+            if not env.get("SVL_OPERATOR_TOKEN"):
+                raise RuntimeError("SVL_OPERATOR_TOKEN is required for GitHub MCP access.")
+            command.extend([
+                "-c",
+                f"mcp_servers.svl-github.url={json.dumps(mcp_url)}",
+                "-c",
+                "mcp_servers.svl-github.enabled=true",
+                "-c",
+                f"mcp_servers.svl-github.enabled_tools={json.dumps(allowed_github_tools)}",
+                "-c",
+                'mcp_servers.svl-github.bearer_token_env_var="SVL_OPERATOR_TOKEN"',
+            ])
+        command.extend(["--sandbox", "read-only", "-"])
         with tempfile.TemporaryDirectory(prefix="svl-agent-codex-") as root:
-            finished = subprocess.run(
-                [
-                    codex, "exec", "--ignore-user-config", "--ignore-rules",
-                    "--skip-git-repo-check", "--ephemeral", "--json",
-                    "--sandbox", "read-only", "-",
-                ],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                cwd=root,
-                env=env,
-                timeout=85,
-                check=False,
-            )
+            try:
+                finished = subprocess.run(
+                    command,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    cwd=root,
+                    env=env,
+                    timeout=85,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError("Codex CLI task timed out after 85 seconds.") from exc
         if finished.returncode != 0:
             raise RuntimeError("Codex CLI failed or usage allowance exhausted")
 
@@ -518,10 +586,182 @@ def _execute_codex_agent_task(task: dict[str, Any]) -> str:
             os.close(fd)
 
 
+def _agent_github_tool_names(task: dict[str, Any]) -> list[str]:
+    execution_config = task.get("execution_config")
+    config = execution_config if isinstance(execution_config, dict) else task
+    raw_scopes = config.get("allowed_scopes")
+    scopes = (
+        {str(scope).strip().lower() for scope in raw_scopes if str(scope).strip()}
+        if isinstance(raw_scopes, list)
+        else set()
+    )
+    task_text = f"{task.get('title', '')}\n{task.get('payload', '')}"
+    if "github.read" not in scopes or not re.search(r"github(?:\.com)?|mmitek515-netizen/SVL_open", task_text, re.IGNORECASE):
+        return []
+
+    tools = ["github_read_file"]
+    write_requested = re.search(
+        r"\b(?:edit|update|change|create|add|fix|commit|push|write|modify|"
+        r"zmień|zmodyfikuj|utwórz|dodaj|napraw|zapisz|zaktualizuj|popraw)\b",
+        task_text,
+        re.IGNORECASE,
+    )
+    if "github.write_sync" in scopes and write_requested:
+        tools.append("github_update_file")
+    return tools
+
+
+def _validated_github_mcp_url() -> str:
+    mcp_url = os.environ.get("SVL_GITHUB_MCP_URL", GITHUB_MCP_DEFAULT_URL).strip()
+    parsed_mcp_url = urllib.parse.urlsplit(mcp_url)
+    if (
+        parsed_mcp_url.scheme != "http"
+        or parsed_mcp_url.hostname != "127.0.0.1"
+        or parsed_mcp_url.port not in {None, 3000}
+        or parsed_mcp_url.username
+        or parsed_mcp_url.password
+        or parsed_mcp_url.query
+        or parsed_mcp_url.fragment
+    ):
+        raise ValueError("GitHub MCP endpoint must use loopback HTTP on 127.0.0.1:3000.")
+    return mcp_url
+
+
+def _ollama_mcp_tool_declarations(mcp_tools: list[Any], allowed_names: set[str]) -> list[dict[str, Any]]:
+    declarations: list[dict[str, Any]] = []
+    for tool in mcp_tools:
+        name = str(getattr(tool, "name", ""))
+        schema = getattr(tool, "inputSchema", None)
+        if name not in allowed_names or not isinstance(schema, dict):
+            continue
+        declarations.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": str(getattr(tool, "description", "") or ""),
+                "parameters": schema,
+            },
+        })
+    return declarations
+
+
+async def _run_ollama_with_github_mcp(
+    host: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    timeout_sec: int,
+    allowed_names: set[str],
+) -> str:
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    mcp_url = _validated_github_mcp_url()
+
+    async with streamable_http_client(mcp_url, timeout=10.0) as (read_stream, write_stream, _):
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            mcp_tool_list = await session.list_tools()
+            ollama_tools = _ollama_mcp_tool_declarations(mcp_tool_list.tools, allowed_names)
+            available_names = {
+                str(getattr(tool, "name", ""))
+                for tool in mcp_tool_list.tools
+                if str(getattr(tool, "name", "")) in allowed_names
+            }
+            if not ollama_tools or available_names != allowed_names:
+                raise RuntimeError("GitHub MCP did not provide all tools allowed for this agent.")
+
+            call_count = 0
+            for _ in range(MAX_AGENT_GITHUB_TOOL_CALLS + 1):
+                request_body = json.dumps({
+                    "model": model,
+                    "stream": False,
+                    "options": {"temperature": temperature},
+                    "messages": messages,
+                    "tools": ollama_tools,
+                }).encode("utf-8")
+                chat_request = urllib.request.Request(
+                    f"{host}/api/chat",
+                    data=request_body,
+                    headers={"Accept": "application/json", "Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(chat_request, timeout=timeout_sec) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                assistant_message = result.get("message") or {}
+                tool_calls = assistant_message.get("tool_calls") or []
+                if not tool_calls:
+                    answer = str(assistant_message.get("content") or result.get("response") or "").strip()
+                    if not answer:
+                        raise RuntimeError("Ollama returned an empty response for the queued task.")
+                    return answer
+                if call_count + len(tool_calls) > MAX_AGENT_GITHUB_TOOL_CALLS:
+                    raise RuntimeError("Ollama exceeded the GitHub MCP tool-call limit for one task.")
+
+                messages.append(assistant_message)
+                for tool_call in tool_calls:
+                    function = tool_call.get("function") if isinstance(tool_call, dict) else None
+                    tool_name = str((function or {}).get("name") or "")
+                    arguments = (function or {}).get("arguments") or {}
+                    if tool_name not in allowed_names or not isinstance(arguments, dict):
+                        raise RuntimeError("Ollama requested a GitHub MCP tool that is not allowed for this task.")
+                    tool_result = await session.call_tool(tool_name, arguments)
+                    result_text = "\n".join(
+                        str(getattr(item, "text", ""))
+                        for item in tool_result.content
+                        if getattr(item, "text", None)
+                    )
+                    if not result_text:
+                        result_text = "MCP tool returned no text."
+                    if tool_result.isError:
+                        result_text = f"MCP tool error: {result_text}"
+                    messages.append({
+                        "role": "tool",
+                        "tool_name": tool_name,
+                        "content": result_text,
+                    })
+                    call_count += 1
+
+            raise RuntimeError("Ollama did not complete after using GitHub MCP tools.")
+
+
+def _prepare_agent_task_prompt(task: dict[str, Any]) -> tuple[str, str, str, list[str]]:
+    title = str(task.get("title") or "").strip()[:MAX_AGENT_TASK_TITLE_CHARS]
+    payload = str(task.get("payload") or "").strip()[:MAX_AGENT_TASK_PAYLOAD_CHARS]
+    system_prompt = str(task.get("system_prompt") or "").strip()[:4000]
+    if not system_prompt:
+        system_prompt = (
+            "You are a supervised text-only assistant. Do not claim to have executed actions. "
+            "Use only tools explicitly allowed for this task; never use shell commands or request additional privileges."
+        )
+    system_prompt += (
+        "\n\nMission verification policy: This application has no mission registry or tool that "
+        "verifies mission steps. Never claim a mission, procedure, or operation is complete unless "
+        "every required step has explicit trusted evidence. A completed text response is not mission "
+        "completion. If asked for status, say it is UNVERIFIED and do not invent progress or timing."
+    )
+    allowed_github_tools = _agent_github_tool_names(task)
+    if allowed_github_tools:
+        system_prompt += (
+            "\n\nGitHub policy: Use only the GitHub MCP tools provided for this task. "
+            "The server-side token is secret and is never available to you. Reads and writes are "
+            "restricted to allowed source files on branch svl-sync; never claim or attempt a write to main."
+        )
+    return title, payload, system_prompt, allowed_github_tools
+
+
 def execute_agent_task(task: dict[str, Any]) -> str:
-    """Run text inference through a configured LOCAL engine (Codex OAuth or Ollama)."""
-    if os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true":
+    """Run a queued task using its selected, locally available provider."""
+    provider = str(task.get("ai_provider") or "ollama").strip().lower()
+    if provider not in {"ollama", "codex"}:
+        raise ValueError("Unsupported agent AI provider.")
+    if provider == "codex":
+        if os.environ.get("SVL_CODEX_AGENTS_ENABLED") != "true":
+            raise RuntimeError("Codex agent tasks are disabled by server configuration.")
         return _execute_codex_agent_task(task)
+
+    title, payload, system_prompt, allowed_github_tools = _prepare_agent_task_prompt(task)
+    user_content = f"Task: {title}\n\nDetails:\n{payload}"
     host = str(task.get("ollama_host") or "").strip().rstrip("/")
     parsed_host = urllib.parse.urlsplit(host)
     if (
@@ -552,20 +792,23 @@ def execute_agent_task(task: dict[str, Any]) -> str:
     if model not in installed_models:
         raise RuntimeError(f"Configured model '{model}' is not installed on the Ollama server.")
 
-    title = str(task.get("title") or "").strip()[:MAX_AGENT_TASK_TITLE_CHARS]
-    payload = str(task.get("payload") or "").strip()[:MAX_AGENT_TASK_PAYLOAD_CHARS]
-    system_prompt = str(task.get("system_prompt") or "").strip()[:4000]
-    if not system_prompt:
-        system_prompt = (
-            "You are a supervised text-only assistant. Do not claim to have executed actions. "
-            "Do not use tools, shell commands, or request additional privileges."
+    if allowed_github_tools:
+        timeout_sec = max(10, min(int(task.get("timeout_sec", 90)), MAX_AGENT_TASK_TIMEOUT_SEC))
+        answer = asyncio.run(
+            _run_ollama_with_github_mcp(
+                host,
+                model,
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content},
+                ],
+                max(0.0, min(1.5, float(task.get("temperature", 0.7)))),
+                timeout_sec,
+                set(allowed_github_tools),
+            )
         )
-    system_prompt += (
-        "\n\nMission verification: A generated text response cannot confirm a mission, "
-        "procedure, or operation has been completed. If no trusted step-by-step "
-        "evidence is available, describe the status as UNVERIFIED."
-    )
-    user_content = f"Task: {title}\n\nDetails:\n{payload}"
+        return guard_unverified_mission_completion(f"{title}\n{payload}", answer)
+
     request_body = json.dumps({
         "model": model,
         "stream": False,
@@ -835,7 +1078,7 @@ class SVLAgentOrchestrator:
                         github_scope_version = int(loaded.get("github_agent_scope_version", 0))
                     except (TypeError, ValueError):
                         github_scope_version = 0
-                    changed = False
+                    config_changed = False
                     if github_scope_version < GITHUB_AGENT_SCOPE_VERSION:
                         existing_scopes = loaded.get("allowed_scopes")
                         if not isinstance(existing_scopes, list):
@@ -845,15 +1088,17 @@ class SVLAgentOrchestrator:
                             + list(GITHUB_AGENT_SCOPES)
                         ))
                         loaded["github_agent_scope_version"] = GITHUB_AGENT_SCOPE_VERSION
-                        changed = True
+                        config_changed = True
                     if "system_prompt" not in loaded:
                         loaded["system_prompt"] = meta["system_prompt"]
-                        changed = True
+                        config_changed = True
                     if loaded.get("display_name") != meta["display_name"]:
                         loaded["display_name"] = meta["display_name"]
-                        changed = True
+                        config_changed = True
                     sanitized = sanitize_agent_config(loaded)
-                    if changed or sanitized != loaded:
+                    if sanitized != loaded:
+                        config_changed = True
+                    if config_changed:
                         conn.execute(
                             "UPDATE agent_configs SET config_json = ?, updated_at = ? WHERE canonical_name = ?",
                             (json.dumps(sanitized, ensure_ascii=False), now_iso, name),
@@ -923,6 +1168,7 @@ class SVLAgentOrchestrator:
             "bus_topics",
             "auto_connect_on_boot",
             "system_prompt",
+            "avatar",
         }
         for k, v in patch.items():
             if k in allowed_keys:
@@ -1167,9 +1413,11 @@ class SVLAgentOrchestrator:
             "target_agent": str(task.get("target_agent") or ""),
             "title": task["title"],
             "payload": task["payload"],
+            "ai_provider": str(execution_config.get("ai_provider") or "ollama").strip().lower(),
             "model": str(execution_config.get("ollama_model") or ""),
             "temperature": execution_config.get("temperature", 0.7),
             "system_prompt": execution_config.get("system_prompt") or "",
+            "allowed_scopes": list(execution_config.get("allowed_scopes") or []),
             "ollama_host": self.ollama_host,
             "timeout_sec": 90,
         }
@@ -1665,6 +1913,7 @@ class SVLAgentOrchestrator:
         correlation_id: str = "",
         event_id: Optional[str] = None,
         ollama_host: Optional[str] = None,
+        ai_provider: str = "ollama",
     ) -> dict[str, Any]:
         """Persist a bounded text-inference task and enqueue it for a live worker."""
         target_agent = normalize_agent_canonical_name(target_agent)
@@ -1684,10 +1933,16 @@ class SVLAgentOrchestrator:
             raise RuntimeError(f"Task queue for {target_agent} is full; remove pending tasks before dispatching more.")
 
         config = self.get_agent_config(target_agent)
+        provider = str(ai_provider or "ollama").strip().lower()
+        if provider not in {"ollama", "codex"}:
+            raise ValueError("Unsupported agent AI provider.")
         if ollama_host:
             self.ollama_host = str(ollama_host).strip().rstrip("/")
-        use_codex = os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true"
-        if not self.ollama_host and not use_codex:
+        use_codex = provider == "codex"
+        if use_codex:
+            if os.environ.get("SVL_CODEX_AGENTS_ENABLED") != "true":
+                raise RuntimeError("Codex agent tasks are disabled by server configuration.")
+        elif not self.ollama_host:
             raise RuntimeError("No Ollama endpoint is configured for worker task execution.")
 
         if use_codex:
@@ -1723,9 +1978,11 @@ class SVLAgentOrchestrator:
             "title": clean_title,
             "payload": clean_payload,
             "execution_config": {
+                "ai_provider": provider,
                 "ollama_model": str(config.get("ollama_model") or "").strip(),
                 "temperature": config.get("temperature", 0.7),
                 "system_prompt": str(config.get("system_prompt") or ""),
+                "allowed_scopes": list(config.get("allowed_scopes") or []),
             },
             "status": "QUEUED",
             "created_at": datetime.now(timezone.utc).isoformat(),

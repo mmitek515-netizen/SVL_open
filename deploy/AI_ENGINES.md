@@ -42,6 +42,16 @@ ollama list
 
 Test generowania obrazu wykonuje instalator. Można go powtórzyć przyciskiem **Generuj obraz** w czacie. Generowanie wymaga działającego ComfyUI oraz pobranych modeli; sama odpowiedź `/system_stats` potwierdza tylko dostępność API, nie zakończone wnioskowanie.
 
+## Silnik obrazu na CPU
+
+Opcjonalny silnik `stable-diffusion.cpp` używa SD-Turbo Q4 z Hugging Face zamiast ComfyUI/Qwen Image. Instalator pobiera oficjalne binaria CPU z wersji Ubuntu 24.04 przypiętej do rewizji użytej do konwersji GGUF oraz weryfikuje sumy SHA-256 silnika i modelu.
+
+```bash
+./deploy/install-sd-turbo-cpu.sh
+```
+
+W `.env` ustaw `SVL_IMAGE_ENGINE="stable-diffusion.cpp"` i uruchom ponownie gateway/backend. Domyślna rozdzielczość to 512×512; można wybrać wymiary od 256 do 512, będące wielokrotnością 64. Czat blokuje uruchomienie, gdy dostępna RAM spada poniżej 4 GiB. Model waży ok. 1,85 GB, a jego karta zaleca co najmniej 4 GB RAM; na CPU generowanie może być powolne. SD-Turbo nie jest na karcie oznaczony jako jawnie uncensored i podlega Stability AI Community License oraz Acceptable Use Policy.
+
 ## Trwałość promptów, pamięci i konfiguracji
 
 Konfiguracje agentów (w tym edytowane prompty systemowe), wpisy pamięci i historia rozmów są przechowywane w bazie SQLite. Instalacja natywna używa `/var/lib/svl-os/svl_os.sqlite3`; Docker Compose zapisuje bazę w wolumenie `svl-os-data`. Nie usuwaj tego katalogu ani wolumenu podczas aktualizacji. Ścieżki względne `SVL_SQLITE_PATH` są rozwiązywane względem katalogu repozytorium, a nie bieżącego katalogu procesu.

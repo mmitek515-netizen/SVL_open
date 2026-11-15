@@ -38,7 +38,15 @@ if str(BACKEND_DIR) not in sys.path:
 
 from agents_runtime import CANONICAL_SVL_AGENTS, SVLAgentOrchestrator, normalize_agent_canonical_name
 from hyperspace_engine import BinaryHyperspaceKernel, WithoutNlpHarmonicEngine
-from image_generation import ComfyUIError, generate_qwen_image, probe_comfyui
+from image_generation import (
+    CPU_IMAGE_ENGINE,
+    ImageEngineUnavailableError,
+    ImageGenerationError,
+    configured_image_engine,
+    generate_image,
+    image_engine_model,
+    probe_image_engine,
+)
 from spherical_bus import SphericalEventBus
 from svl_core import (
     SYNC_SCHEMA_VERSION,
@@ -636,7 +644,7 @@ async def handle_api_request(
             "system_modules": runtime.kernel.list_system_modules(),
             "host": runtime.probe_host_environment(),
             "ollama": runtime.probe_ollama_status(),
-            "image_engine": probe_comfyui(
+            "image_engine": probe_image_engine(
                 os.environ.get("COMFYUI_HOST", "http://127.0.0.1:8188")
             ),
             "codex": runtime.probe_codex_status(),
@@ -741,15 +749,20 @@ async def handle_api_request(
 
     if method == "POST" and path == "/api/py/images/generate":
         prompt = str(body.get("prompt") or "")
-        width = body.get("width", 1024)
-        height = body.get("height", 1024)
+        try:
+            engine = configured_image_engine()
+        except ImageGenerationError as exc:
+            return 503, {"ok": False, "error": str(exc)}
+        default_size = 512 if engine == CPU_IMAGE_ENGINE else 1024
+        width = body.get("width", default_size)
+        height = body.get("height", default_size)
         if type(width) is not int or type(height) is not int:
             return 400, {"ok": False, "error": "Wymiary obrazu muszą być liczbami całkowitymi."}
         if not runtime._image_generation_lock.acquire(blocking=False):
             return 429, {"ok": False, "error": "Trwa już generowanie obrazu. Spróbuj ponownie za chwilę."}
         try:
             image = await asyncio.to_thread(
-                generate_qwen_image,
+                generate_image,
                 os.environ.get("COMFYUI_HOST", "http://127.0.0.1:8188"),
                 prompt,
                 width=width,
@@ -757,14 +770,16 @@ async def handle_api_request(
             )
             return 200, {
                 "ok": True,
-                "model": "Qwen-Image-2.1",
+                "model": image_engine_model(),
                 **image,
             }
         except ValueError as exc:
             return 400, {"ok": False, "error": str(exc)}
+        except ImageEngineUnavailableError as exc:
+            return 503, {"ok": False, "error": str(exc)}
         except TimeoutError as exc:
             return 504, {"ok": False, "error": str(exc)}
-        except ComfyUIError as exc:
+        except ImageGenerationError as exc:
             return 502, {"ok": False, "error": str(exc)}
         finally:
             runtime._image_generation_lock.release()
@@ -865,6 +880,7 @@ async def handle_api_request(
         target_agent = normalize_agent_canonical_name(str(body.get("target_agent", "Alex")))
         title = str(body.get("title", "")).strip()
         payload = str(body.get("payload", "")).strip()
+        ai_provider = str(body.get("ai_provider", "ollama")).strip().lower()
         if not title:
             return 400, {"ok": False, "error": "Tytuł zadania jest wymagany."}
         try:
@@ -877,6 +893,7 @@ async def handle_api_request(
                 correlation_id=corr,
                 event_id=event_id,
                 ollama_host=runtime.ollama_host,
+                ai_provider=ai_provider,
             )
             return 200, {"ok": True, **res}
         except Exception as exc:
@@ -1117,12 +1134,82 @@ async def handle_api_request(
                 expected_revision=expected_rev,
             )
             module_warning = None
+            chat_mutations = None
             if not saved.get("deduplicated") and msg.get("role") == "user":
                 try:
-                    runtime.kernel.sync_chat_state_mutations(origin=origin, correlation_id=corr)
+                    chat_mutations = runtime.kernel.sync_chat_state_mutations(
+                        origin=origin,
+                        correlation_id=corr,
+                    )
                     runtime.apply_active_module_settings()
                 except Exception as exc:
                     module_warning = f"Zmiany modułów z czatu nie zostały zastosowane: {exc}"
+
+            if chat_mutations and chat_mutations.get("appliedCount", 0) > 0:
+                modules_by_id = {
+                    str(module.get("id")): module
+                    for module in chat_mutations.get("modules", [])
+                    if isinstance(module, dict) and module.get("id")
+                }
+                changed_module_ids = list(dict.fromkeys(
+                    str(module_id)
+                    for module_id in chat_mutations.get("materializedModules", [])
+                    if module_id
+                ))
+                applied_actions = []
+                for module_id in changed_module_ids:
+                    module = modules_by_id.get(module_id, {})
+                    module_name = str(module.get("name") or module_id)
+                    applied_actions.append({
+                        "tool": "sync_chat_state_mutations",
+                        "entity": "module",
+                        "entityId": module_id,
+                        "revision": module.get("revision"),
+                        "serverRevision": chat_mutations.get("serverRevision"),
+                        "summary": f"Zapisano zmianę w module {module_name} na podstawie polecenia czatu.",
+                        "ok": True,
+                    })
+
+                if applied_actions:
+                    source_message_id = str(msg.get("id") or uuid.uuid4().hex)[:80]
+                    report_message = {
+                        "id": f"chat-mutation-{source_message_id}",
+                        "role": "system",
+                        "sender": "SVL System",
+                        "modelUsed": "SVL Chat Sync",
+                        "timestamp": datetime.now(timezone.utc).strftime("%H:%M"),
+                        "content": (
+                            "Zastosowano zmiany wynikające z polecenia czatu."
+                            + (f"\n\nOstrzeżenie: {module_warning}" if module_warning else "")
+                        ),
+                        "appliedActions": applied_actions,
+                    }
+                    runtime.kernel.save_chat_message(
+                        cid,
+                        title,
+                        model,
+                        report_message,
+                        origin=origin,
+                        correlation_id=corr,
+                        event_id=f"chat-mutation-{source_message_id}",
+                    )
+            elif module_warning:
+                warning_message = {
+                    "id": f"chat-mutation-warning-{str(msg.get('id') or uuid.uuid4().hex)[:64]}",
+                    "role": "system",
+                    "sender": "SVL System",
+                    "modelUsed": "SVL Chat Sync",
+                    "timestamp": datetime.now(timezone.utc).strftime("%H:%M"),
+                    "content": module_warning,
+                }
+                runtime.kernel.save_chat_message(
+                    cid,
+                    title,
+                    model,
+                    warning_message,
+                    origin=origin,
+                    correlation_id=corr,
+                )
             return 200, {
                 **saved,
                 "conversations": runtime.kernel.list_conversations_with_messages(),

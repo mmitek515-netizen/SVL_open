@@ -1,4 +1,12 @@
 @import "tailwindcss";
+@import "@vector-im/compound-design-tokens/assets/web/css/cpd-common-base.css";
+@import "@vector-im/compound-design-tokens/assets/web/css/cpd-common-semantic.css";
+@import "@vector-im/compound-design-tokens/assets/web/css/cpd-theme-dark-base.css";
+@import "@vector-im/compound-design-tokens/assets/web/css/cpd-theme-dark-semantic.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inconsolata/400.css";
+@import "@vector-im/compound-web/dist/style.css";
 @custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {

@@ -5,7 +5,7 @@
 # - Python 3.12+ & venv (FastAPI, Pydantic, SQLAlchemy, WebSockets)
 # - Local Ollama service + auto-detection of RAM/VRAM for ~14B Vision model
 # - Official OpenAI Codex CLI (@openai/codex) with `codex login --device-auth` support
-# - Dedicated Linux accounts & systemd unit for SVLSystemKernel & 4 Agents
+# - Dedicated Linux accounts & systemd unit for SVLSystemKernel & 5 Agents
 # ============================================================================
 set -euo pipefail
 
@@ -25,13 +25,22 @@ apt-get install -y python3 python3-venv python3-pip sqlite3 curl git jq polkitd 
 
 echo "=== [2/6] Tworzenie uzytkownikow systemowych dla SVL OS i 4 Agentow ==="
 getent group svlos >/dev/null 2>&1 || addgroup --system svlos
-for acct in svlos svl-aria svl-alex svl-astyria svl-aurelius; do
+for acct in svlos svl-aria svl-alex svl-astyria svl-aurelius svl-agata; do
   if ! getent passwd "$acct" >/dev/null 2>&1; then
     adduser --system --ingroup svlos --home "/var/lib/svl-os/$acct" --shell /bin/bash "$acct"
   fi
 done
 
 install -d -o svlos -g svlos -m 0750 /var/lib/svl-os /var/log/svl-os /etc/svl-os /opt/svl-python-os
+install -d -o root -g root -m 0700 /etc/svl-os/desktop-secrets
+for acct in aria alex astyria aurelius agata; do
+  secret_file="/etc/svl-os/desktop-secrets/${acct}.password"
+  if [ ! -f "$secret_file" ]; then
+    python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$secret_file"
+  fi
+  chown root:root "$secret_file"
+  chmod 0600 "$secret_file"
+done
 cp -r . /opt/svl-python-os/
 chown -R svlos:svlos /opt/svl-python-os
 
@@ -53,6 +62,16 @@ EOF
   chmod 0640 /etc/svl-os/svl.env
   echo "Wygenerowano nowy 64-znakowy SVL_OPERATOR_TOKEN w /etc/svl-os/svl.env"
 fi
+
+for acct in aria alex astyria aurelius agata; do
+key="SVL_DESKTOP_$(printf '%s' "$acct" | tr '[:lower:]' '[:upper:]')_PASSWORD_FILE"
+value="/etc/svl-os/desktop-secrets/${acct}.password"
+if ! grep -q "^${key}=" /etc/svl-os/svl.env; then
+  printf '%s=%s\n' "$key" "$value" >> /etc/svl-os/svl.env
+fi
+done
+chown root:svlos /etc/svl-os/svl.env
+chmod 0640 /etc/svl-os/svl.env
 
 echo "=== [4/6] Instalacja i konfiguracja lokalnego silnika Ollama ==="
 if ! command -v ollama >/dev/null 2>&1; then

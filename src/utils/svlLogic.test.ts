@@ -7,14 +7,76 @@ import {
   classifyCommandRisk,
   compactifyValue,
   extractExplicitChatModuleDirective,
+  getGitHubAgentPermissions,
+  guardUnverifiedMissionCompletion,
   isConnectMyAiCommand,
   isGitHubWorkspaceSyncRequest,
+  isUnsafeChatInteractiveAction,
   mergeConversationThreads,
+  parseChatInteractiveToken,
   safeParseJsonResponse,
   selectOllamaModelName,
   validateOllamaHostUrl,
   validateOperatorTokenFormat,
 } from './svlLogic';
+
+test('GitHub agent scopes distinguish read access from sync-branch writes', () => {
+  assert.deepEqual(getGitHubAgentPermissions(['github.read']), {
+    read: true,
+    writeSync: false,
+  });
+  assert.deepEqual(getGitHubAgentPermissions(['github.read', 'github.write_sync']), {
+    read: true,
+    writeSync: true,
+  });
+  assert.deepEqual(getGitHubAgentPermissions(undefined), {
+    read: false,
+    writeSync: false,
+  });
+});
+
+test('mission completion claims are blocked when no mission status can be verified', () => {
+  const context = 'Prowadzę misję, sprawdź czy cała procedura się zakończyła.';
+  assert.match(
+    guardUnverifiedMissionCompletion(context, 'Cała procedura misji dobiegła już końca.'),
+    /Status misji: NIEZWERYFIKOWANY/,
+  );
+  assert.match(
+    guardUnverifiedMissionCompletion(context, 'The mission has been completed.'),
+    /Status misji: NIEZWERYFIKOWANY/,
+  );
+});
+
+test('mission completion guard leaves plans and unrelated answers unchanged', () => {
+  const context = 'Opisz procedurę misji.';
+  const planned = 'Procedurę można uznać za zakończoną dopiero po weryfikacji każdego kroku.';
+  assert.equal(guardUnverifiedMissionCompletion(context, planned), planned);
+  assert.equal(
+    guardUnverifiedMissionCompletion('Napisz zdanie gramatyczne.', 'Misja została zakończona.'),
+    'Misja została zakończona.',
+  );
+});
+
+test('chat interactive tokens preserve action text and tolerate aliases', () => {
+  assert.deepEqual(parseChatInteractiveToken('[btn: Otwórz panel|tab:agents]'), {
+    label: 'Otwórz panel',
+    action: 'tab:agents',
+  });
+  assert.deepEqual(parseChatInteractiveToken('[button: Więcej|text:a|b]'), {
+    label: 'Więcej',
+    action: 'text:a|b',
+  });
+  assert.equal(parseChatInteractiveToken('[btn: |tab:chat]'), null);
+});
+
+test('chat interactive actions cannot execute shell commands', () => {
+  assert.equal(isUnsafeChatInteractiveAction('/exec rm -rf /'), true);
+  assert.equal(isUnsafeChatInteractiveAction('run:uname -a'), true);
+  assert.equal(isUnsafeChatInteractiveAction('send:/exec id'), true);
+  assert.equal(isUnsafeChatInteractiveAction('text:/exec id'), true);
+  assert.equal(isUnsafeChatInteractiveAction('tab:agents'), false);
+  assert.equal(isUnsafeChatInteractiveAction('action:sync'), false);
+});
 
 test('TopologicalInfinityEngine compactifies [-Infinity, +Infinity] to [-1, 1] with c = 2.5', () => {
   assert.equal(compactifyValue(Number.NEGATIVE_INFINITY), -1.0);

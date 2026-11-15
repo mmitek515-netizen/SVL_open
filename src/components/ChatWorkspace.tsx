@@ -4,7 +4,6 @@ import {
   Paperclip,
   Plus,
   Terminal,
-  Cpu,
   Image as ImageIcon,
   FileText,
   X,
@@ -19,11 +18,10 @@ import {
   SlidersHorizontal,
   Copy,
   Check,
-  Zap,
-  CornerDownRight,
   Sparkles,
   Radio,
 } from 'lucide-react';
+import { ChatInteractiveButton } from './ChatInteractiveButton';
 import {
   CANONICAL_AGENTS,
   SyncableMessage,
@@ -81,38 +79,6 @@ const InteractiveCodeBlock: React.FC<{
   );
 };
 
-const InteractiveActionButton: React.FC<{
-  label: string;
-  action: string;
-  onAction?: (actionValue: string, label?: string) => void;
-  disabled?: boolean;
-}> = ({ label, action, onAction, disabled = false }) => {
-  const getIcon = () => {
-    const act = action.trim().toLowerCase();
-    if (act.startsWith('tab:terminals')) return <Terminal className="w-3.5 h-3.5 text-violet-400" />;
-    if (act.startsWith('tab:agents')) return <Users className="w-3.5 h-3.5 text-emerald-400" />;
-    if (act.startsWith('tab:kernel')) return <Cpu className="w-3.5 h-3.5 text-cyan-400" />;
-    if (act.startsWith('tab:linux')) return <Terminal className="w-3.5 h-3.5 text-amber-400" />;
-    if (act === 'action:connect_ai' || act === 'connect_ai') return <Zap className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />;
-    if (act === 'action:sync' || act === 'sync') return <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />;
-    if (isUnsafeChatInteractiveAction(action)) return <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />;
-    return <CornerDownRight className="w-3.5 h-3.5 text-slate-400" />;
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={() => onAction?.(action, label)}
-      disabled={disabled}
-      title={disabled ? 'Przyciski czatu nie mogą uruchamiać poleceń powłoki.' : undefined}
-      className="inline-flex items-center gap-1.5 px-3 py-1.5 my-1 mr-2 rounded-lg bg-violet-950/60 hover:bg-violet-900/80 active:bg-violet-800 text-violet-200 border border-violet-500/40 hover:border-violet-400 text-xs font-medium transition-all shadow-sm active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-    >
-      {getIcon()}
-      <span>{label}</span>
-    </button>
-  );
-};
-
 function renderFormattedLine(
   line: string,
   keyPrefix: string,
@@ -123,7 +89,7 @@ function renderFormattedLine(
     const button = parseChatInteractiveToken(tok);
     if (button) {
       return (
-        <InteractiveActionButton
+        <ChatInteractiveButton
           key={`${keyPrefix}-${i}`}
           label={button.label}
           action={button.action}
@@ -867,9 +833,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         id: createUniqueId('assistant-image'),
         role: 'assistant',
         sender: 'SVL Image Engine',
-        modelUsed: 'ComfyUI · Qwen Image 2.1',
+        modelUsed: result.data.model || 'Qwen Image 2.1',
         timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-        content: 'Wygenerowano obraz przez Qwen Image 2.1.',
+        content: `Wygenerowano obraz przez ${result.data.model || 'Qwen Image 2.1'}.`,
         imagePreview: result.data.image,
       };
       const savedImage = await appendAndPersistChatMessage(
@@ -941,7 +907,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const wsBadgeClass = 'text-emerald-400';
 
   return (
-    <div className="relative flex h-full w-full overflow-hidden bg-[#0B0D13]">
+    <div className="relative flex h-full w-full overflow-hidden bg-[#0B0D13] cpd-theme-dark">
       {/* Left Open WebUI Sidebar: Conversation History & Agent Status Summary */}
       <aside
         className={`${
@@ -1521,6 +1487,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                 a.displayName === formattedSender ||
                 a.id === msg.agentId,
             );
+            const agentAvatar =
+              !isUser && agentMeta
+                ? agentsStatus.find((agent: any) => agent.canonical_name === agentMeta.canonicalName)?.config?.avatar
+                : undefined;
 
             return (
               <div
@@ -1528,6 +1498,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                 className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
               >
                 <div className="flex items-center gap-2 text-xs text-slate-400 mb-1.5 px-1">
+                  {agentAvatar?.image_url && (
+                    <img
+                      src={agentAvatar.image_url}
+                      alt={`Avatar ${formattedSender}`}
+                      referrerPolicy="no-referrer"
+                      className="h-6 w-6 rounded-full border border-slate-700 object-cover"
+                    />
+                  )}
                   <span className={`font-semibold ${agentMeta ? agentMeta.textClass : isUser ? 'text-violet-300' : 'text-slate-200'}`}>
                     {formattedSender}
                   </span>
@@ -1726,8 +1704,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                 disabled={isSending || !input.trim()}
                 aria-label="Wygeneruj obraz z wpisanego promptu"
                 title={healthData?.image_engine?.reachable
-                  ? 'Generuj obraz za pomocą Qwen Image 2.1'
-                  : `ComfyUI offline: ${healthData?.image_engine?.error || 'uruchom silnik graficzny na hoście'}`}
+                  ? `Generuj obraz za pomocą ${healthData.image_engine.model || 'silnika grafiki'}`
+                  : `${healthData?.image_engine?.engine || 'Silnik grafiki'} offline: ${healthData?.image_engine?.error || 'uruchom silnik graficzny na hoście'}`}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 active:scale-95 border border-cyan-500/40 text-cyan-200 text-xs font-semibold transition-all disabled:opacity-50 cursor-pointer whitespace-nowrap"
               >
                 <ImageIcon className={`w-3.5 h-3.5 ${isSending ? 'animate-pulse' : ''}`} />

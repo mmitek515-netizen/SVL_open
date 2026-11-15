@@ -176,6 +176,32 @@ test('GitHub sync refuses secret-bearing files before making API requests', asyn
   assert.equal(requests, 0);
 });
 
+test('GitHub file reads do not merge branches or perform writes', async () => {
+  const requests: Array<{ url: string; method: string }> = [];
+  const content = 'export const value = 42;';
+  const fetcher: typeof fetch = async (input, init = {}) => {
+    requests.push({ url: String(input), method: init.method || 'GET' });
+    return Response.json({
+      size: Buffer.byteLength(content),
+      encoding: 'base64',
+      content: Buffer.from(content).toString('base64'),
+    });
+  };
+  const service = new GitHubSyncService({ token: 'test-token', fetcher });
+
+  const result = await service.readFile('src/utils/sample.ts');
+
+  assert.deepEqual(result, {
+    path: 'src/utils/sample.ts',
+    branch: 'svl-sync',
+    content,
+  });
+  assert.deepEqual(requests, [{
+    url: 'https://api.github.com/repos/mmitek515-netizen/SVL_open/contents/src/utils/sample.ts?ref=svl-sync',
+    method: 'GET',
+  }]);
+});
+
 test('GitHub sync does not pass secret-bearing file content into chat', async () => {
   const fetcher: typeof fetch = async (input) => {
     const url = String(input);
@@ -200,7 +226,8 @@ test('GitHub sync does not pass secret-bearing file content into chat', async ()
   await assert.rejects(service.readFile('src/config.ts'), /appears to contain a secret/);
 });
 
-test('GitHub update rejects merge conflicts without attempting a file write', async () => {
+test('GitHub file updates do not merge branches and stop when reading the target file fails', async () => {
+  let mergeAttempted = false;
   let writeAttempted = false;
   const fetcher: typeof fetch = async (input, init = {}) => {
     const url = String(input);
@@ -211,6 +238,7 @@ test('GitHub update rejects merge conflicts without attempting a file write', as
       return Response.json({ commit: { sha: 'branch-sha' } });
     }
     if (url.endsWith('/merges')) {
+      mergeAttempted = true;
       return Response.json({ message: 'Conflict' }, { status: 409 });
     }
     if (init.method === 'PUT') writeAttempted = true;
@@ -218,7 +246,11 @@ test('GitHub update rejects merge conflicts without attempting a file write', as
   };
   const service = new GitHubSyncService({ token: 'test-token', fetcher });
 
-  await assert.rejects(service.updateFile('src/utils/sample.ts', 'export const value = 1;'), /Merge conflict/);
+  await assert.rejects(
+    service.updateFile('src/utils/sample.ts', 'export const value = 1;'),
+    /Cannot check existing file/,
+  );
+  assert.equal(mergeAttempted, false);
   assert.equal(writeAttempted, false);
 });
 
@@ -234,7 +266,7 @@ test('automatic sync downloads remote-only changes into clean local files', asyn
       }),
     });
 
-    const result = await service.syncWorkspace(root);
+    const result = await service.syncWorkspace(root, { applyRemoteChanges: true });
 
     assert.deepEqual(result.downloaded, ['src/sample.ts']);
     assert.deepEqual(result.conflicts, []);
@@ -264,7 +296,7 @@ test('automatic sync pulls default-branch updates instead of uploading a stale c
     };
     const service = new GitHubSyncService({ token: 'test-token', fetcher: aheadFetcher });
 
-    const result = await service.syncWorkspace(root);
+    const result = await service.syncWorkspace(root, { applyRemoteChanges: true });
 
     assert.deepEqual(result.downloaded, ['src/sample.ts']);
     assert.equal(requests.some((request) => request.method === 'PUT'), false);

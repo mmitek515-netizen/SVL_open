@@ -9,5 +9,7 @@ data/*.sqlite3
 data/*.sqlite3-wal
 data/*.sqlite3-shm
 data/runtime_agents/
+data/models/
+data/tools/
 .env*
 !.env.example

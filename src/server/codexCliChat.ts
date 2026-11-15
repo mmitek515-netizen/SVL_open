@@ -77,6 +77,14 @@ async function runCodex(
       child.kill('SIGKILL');
       complete(124);
     }, timeoutMs);
+    const childStdout = child.stdout;
+    const childStderr = child.stderr;
+    const childStdin = child.stdin;
+    if (!childStdout || !childStderr || !childStdin) {
+      child.kill('SIGKILL');
+      complete(127);
+      return;
+    }
     const consume = (buf: Buffer, stream: 'stdout' | 'stderr') => {
       bytes += buf.length;
       if (bytes > MAX_OUTPUT_BYTES) {
@@ -88,12 +96,12 @@ async function runCodex(
       if (stream === 'stdout') stdout += buf.toString('utf8');
       else stderr += buf.toString('utf8');
     };
-    child.stdout.on('data', (b: Buffer) => consume(b, 'stdout'));
-    child.stderr.on('data', (b: Buffer) => consume(b, 'stderr'));
+    childStdout.on('data', (b: Buffer) => consume(b, 'stdout'));
+    childStderr.on('data', (b: Buffer) => consume(b, 'stderr'));
     child.on('error', () => complete(127));
     child.on('close', code => complete(code ?? 1));
-    child.stdin.on('error', () => {});
-    child.stdin.end(stdin);
+    childStdin.on('error', () => {});
+    childStdin.end(stdin);
   });
 }
 

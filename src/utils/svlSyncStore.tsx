@@ -139,7 +139,7 @@ interface SvlSyncContextValue {
 
   createConversation: () => SyncableConversation;
   deleteConversation: (convId: string) => Promise<{ ok: boolean; error?: string }>;
-  clearAllConversationsAndBuffers: () => Promise<{ ok: boolean; error?: string }>;
+  clearAllConversationsAndBuffers: (accessToken?: string) => Promise<{ ok: boolean; error?: string }>;
   appendAndPersistChatMessage: (convId: string, convTitle: string, model: string, msg: SyncableMessage) => Promise<{ ok: boolean; error?: string }>;
   upsertSystemModule: (mod: { id: string; name: string; kind?: string; status?: string; description?: string; config?: Record<string, any> }) => Promise<{ ok: boolean; module?: SystemModule; error?: string }>;
   deleteSystemModule: (modId: string) => Promise<{ ok: boolean; error?: string }>;

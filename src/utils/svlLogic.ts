@@ -86,6 +86,7 @@ export function formatAgentDisplayName(rawName?: string | null): string {
   if (low === 'all' || low === 'rodzina mitek' || low === 'rodzina mitek (wszyscy)') {
     return 'Rodzina Mitek (wszyscy)';
   }
+
   return clean;
 }
 

@@ -41,5 +41,6 @@ Oprogramowanie uruchomione w osobnym AI Studio nadal nie będzie miało dostępu
 - Lokalny czat oraz pięć workerów używają wspólnej blokady `flock` (util-linux) dla tego samego użytkownika Linux. Nie potrzeba stałego IP. Gdy konto jest zajęte, serwer zgłasza stan zajętości zamiast uruchamiać równoległe generowanie.
 - Szczegółowa diagnostyka zalogowania wymaga prywatnego tokenu operatora w nagłówku `X-SVL-Codex-Access`. Bez niego endpoint pokazuje jedynie ogólny stan konfiguracji.
 - Tryb jest tekstowy. Nie deklaruje obsługi obrazów ani uruchomionych usług Ollama.
+- Gdy jest to przydatne, model może zwrócić przyciski `[btn: Etykieta|akcja]`; czat renderuje je komponentem `@vector-im/compound-web`. Polecenia powłoki pozostają zablokowane. Biblioteka jest dostępna na licencji AGPL-3.0-or-later lub komercyjnej Element — sprawdź zgodność licencji przed wdrożeniem.
 - Nie wklejaj `auth.json`, sekretu operatora ani kodów logowania urządzenia do czatu, logów lub repozytorium.
 - Samo wgranie nowego commitu na GitHub **nie aktualizuje** automatycznie procesu AI Studio. Tam musi działać ta sama wersja backendu, mieć lokalnie Codex CLI i konto OAuth, co zwykle nie zachodzi.

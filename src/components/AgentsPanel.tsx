@@ -15,6 +15,14 @@ interface AgentsPanelProps {
   onNavigateToChat?: () => void;
 }
 
+type AgentAvatar = {
+  title: string;
+  image_url: string;
+  source_url: string;
+  license: string;
+  author: string;
+};
+
 export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) => {
   const {
     tabOrigin,
@@ -35,12 +43,18 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
   const [taskTitle, setTaskTitle] = useState('');
   const [taskPayload, setTaskPayload] = useState('');
   const [agentOperatorToken, setAgentOperatorToken] = useState('');
+  const [taskProvider, setTaskProvider] = useState<'ollama' | 'codex'>('ollama');
   const [memoryContent, setMemoryContent] = useState('');
   const [memoryKind, setMemoryKind] = useState<'fact' | 'decision' | 'task' | 'episode'>('fact');
   const [dispatchStatus, setDispatchStatus] = useState<string | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<string | null>(null);
   const [configStatus, setConfigStatus] = useState<{ ok: boolean; msg: string; conflict?: boolean } | null>(null);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [avatarQuery, setAvatarQuery] = useState('');
+  const [avatarCandidates, setAvatarCandidates] = useState<AgentAvatar[]>([]);
+  const [avatarStatus, setAvatarStatus] = useState<string | null>(null);
+  const [isSearchingAvatars, setIsSearchingAvatars] = useState(false);
+  const [savingAvatar, setSavingAvatar] = useState(false);
 
   const agentsList: any[] = agentsData?.agents || [];
   const agentLogs: Record<string, any[]> = agentsData?.agent_logs || {};
@@ -146,15 +160,17 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
         target_agent: selectedAgent,
         title: taskTitle.trim(),
         payload: taskPayload.trim() || taskTitle.trim(),
+        ai_provider: taskProvider,
         origin: tabOrigin,
         eventId: createUniqueId('evt-task'),
       }),
     });
     const data = res.data;
     if (res.ok && data?.ok) {
+      const providerLabel = taskProvider === 'codex' ? 'Codex CLI' : 'Ollama';
       const workerAccepted = data.resilience?.workerAccepted === true;
       setDispatchStatus(
-        `Zadanie zapisano dla ${selectedAgent} (ID: ${String(data.task?.id || '').slice(0, 8)}). ` +
+        `Zadanie zapisano dla ${selectedAgent} (${providerLabel}, ID: ${String(data.task?.id || '').slice(0, 8)}). ` +
         (workerAccepted
           ? `Przekazano do workera (${data.resilience?.engine || 'nieznany silnik'}). Oczekiwanie na odpowiedź AI.`
           : 'Worker nie przejął jeszcze zadania; pozostaje w kolejce SQLite.'),
@@ -291,6 +307,61 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     }
   };
 
+  const handleSearchAvatars = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setIsSearchingAvatars(true);
+    setAvatarStatus(null);
+    setAvatarCandidates([]);
+    try {
+      const result = await safeFetchJson<{ ok: boolean; candidates?: AgentAvatar[]; error?: string }>(
+        '/api/agents/avatar-search',
+        {
+          method: 'POST',
+          timeoutMs: 30000,
+          body: JSON.stringify({ agent: selectedAgent, query: avatarQuery.trim() }),
+        },
+      );
+      if (!result.ok || !result.data?.ok) {
+        setAvatarStatus(result.error || result.data?.error || 'Nie udało się wyszukać avatarów.');
+        return;
+      }
+      setAvatarCandidates(result.data.candidates || []);
+      if (!result.data.candidates?.length) {
+        setAvatarStatus('Nie znaleziono pasujących obrazów z dozwoloną licencją.');
+      }
+    } finally {
+      setIsSearchingAvatars(false);
+    }
+  };
+
+  const handleChooseAvatar = async (avatar: AgentAvatar) => {
+    setSavingAvatar(true);
+    setAvatarStatus(null);
+    try {
+      const res = await safeFetchJson<any>('/api/py/agents/config', {
+        method: 'POST',
+        timeoutMs: 12000,
+        body: JSON.stringify({
+          agent: selectedAgent,
+          expectedRevision: currentConfigRevision,
+          origin: tabOrigin,
+          eventId: createUniqueId('evt-avatar'),
+          config: { avatar },
+        }),
+      });
+      if (!res.ok || !res.data?.ok) {
+        setAvatarStatus(res.error || res.data?.error || 'Nie udało się zapisać avatara.');
+        return;
+      }
+      setAvatarCandidates([]);
+      setAvatarStatus(`Zapisano avatar ${selectedAgent}: ${avatar.title} (${avatar.license}).`);
+      notifyLocalMutation('agent_config', selectedAgent, res.data.serverRevision, res.data.event);
+      await refreshDomainModules(['agents']);
+    } finally {
+      setSavingAvatar(false);
+    }
+  };
+
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 space-y-6 bg-[#0B0D13]">
       {/* Header Banner */}
@@ -374,9 +445,19 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
             >
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className={`text-base font-bold ${meta.textClass}`}>
-                    {meta.displayName}
-                  </span>
+                  <div className="flex min-w-0 items-center gap-2">
+                    {live.config?.avatar?.image_url && (
+                      <img
+                        src={live.config.avatar.image_url}
+                        alt={`Avatar ${meta.displayName}`}
+                        referrerPolicy="no-referrer"
+                        className="h-10 w-10 shrink-0 rounded-full border border-slate-700 object-cover"
+                      />
+                    )}
+                    <span className={`truncate text-base font-bold ${meta.textClass}`}>
+                      {meta.displayName}
+                    </span>
+                  </div>
                   <span className="text-xs font-mono text-slate-400">
                     id: {meta.id}
                   </span>
@@ -397,6 +478,16 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
               </div>
 
               <div className="pt-3 border-t border-slate-800/80 space-y-1.5 text-[11px] font-mono tabular-nums text-slate-400">
+                <a
+                  href={`http://${window.location.hostname}:${6080 + CANONICAL_AGENTS.findIndex((agent) => agent.slug === meta.slug) + 1}/vnc.html?autoconnect=1&resize=scale`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(event) => event.stopPropagation()}
+                  className="block rounded-lg border border-slate-700 bg-slate-800/60 px-2.5 py-1.5 text-center font-sans text-xs text-slate-200 hover:bg-slate-700"
+                  title="Wymaga uruchomionego profilu desktops i hasła pulpitu."
+                >
+                  Otwórz lokalny pulpit · svl-{meta.slug}
+                </a>
                 <div className="flex justify-between">
                   <span>Silnik / Ollama:</span>
                   <span className="text-emerald-300 truncate max-w-[170px]">
@@ -435,6 +526,67 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
             </div>
           );
         })}
+      </div>
+
+      <div className="rounded-xl border border-slate-800 bg-[#111520] p-5 space-y-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-100">Avatar agenta: {selectedAgent}</h2>
+          <p className="mt-1 text-[11px] text-slate-400">
+            Google Search znajduje strony Wikimedia Commons; zapis jest dozwolony wyłącznie dla Public Domain, CC0, CC BY i CC BY-SA.
+          </p>
+        </div>
+        <form onSubmit={(event) => void handleSearchAvatars(event)} className="flex flex-wrap gap-2">
+          <input
+            value={avatarQuery}
+            onChange={(event) => setAvatarQuery(event.target.value)}
+            maxLength={120}
+            placeholder={`Motyw avatara dla ${selectedAgent}...`}
+            aria-label={`Wyszukaj avatar ${selectedAgent}`}
+            className="min-w-[220px] flex-1 rounded-lg border border-slate-700 bg-[#0B0D13] px-3 py-2 text-xs text-slate-100"
+          />
+          <button
+            type="submit"
+            disabled={isSearchingAvatars || avatarQuery.trim().length < 2}
+            className="rounded-lg bg-violet-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+          >
+            {isSearchingAvatars ? 'Wyszukiwanie...' : 'Szukaj w Google'}
+          </button>
+        </form>
+        {avatarStatus && <p role="status" className="text-xs text-slate-300">{avatarStatus}</p>}
+        {avatarCandidates.length > 0 && (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {avatarCandidates.map((avatar) => (
+              <div key={avatar.source_url} className="flex gap-3 rounded-lg border border-slate-800 bg-[#0B0D13] p-3">
+                <img
+                  src={avatar.image_url}
+                  alt={avatar.title}
+                  referrerPolicy="no-referrer"
+                  className="h-16 w-16 shrink-0 rounded-full border border-slate-700 object-cover"
+                />
+                <div className="min-w-0 space-y-1">
+                  <p className="truncate text-xs font-semibold text-slate-100">{avatar.title}</p>
+                  <p className="text-[11px] text-slate-400">{avatar.license} · {avatar.author || 'autor niepodany'}</p>
+                  <a
+                    href={avatar.source_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block truncate text-[11px] text-violet-300 underline"
+                  >
+                    Oryginalna strona i warunki licencji
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => void handleChooseAvatar(avatar)}
+                    disabled={savingAvatar}
+                    className="mt-1 rounded bg-emerald-700 px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+                  >
+                    {savingAvatar ? 'Zapisywanie...' : 'Ustaw avatar'}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Interactive Agent-to-Agent Task Queue & Memory Workspace */}
@@ -480,6 +632,21 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   <option value="Agata">Agata Mitek (id: Agata)</option>
                 </select>
               </div>
+            </div>
+
+            <div>
+              <label htmlFor="task-ai-provider" className="block text-xs text-slate-400 mb-1">
+                Silnik AI dla tego zadania:
+              </label>
+              <select
+                id="task-ai-provider"
+                value={taskProvider}
+                onChange={(e) => setTaskProvider(e.target.value as 'ollama' | 'codex')}
+                className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
+              >
+                <option value="ollama">Ollama (domyślnie)</option>
+                <option value="codex">Codex CLI (konto ChatGPT)</option>
+              </select>
             </div>
 
             <div>
@@ -562,7 +729,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
               Zadania trwałe: {selectedAgentTasks.length}
             </div>
             <p className="text-[11px] text-amber-300/80">
-              „Odpowiedź gotowa” oznacza tylko wygenerowanie tekstu; nie potwierdza wykonania misji.
+              „Odpowiedź gotowa” oznacza, że model zwrócił tekst; nie potwierdza wykonania misji ani działań poza aplikacją.
             </p>
             <div className="max-h-56 overflow-y-auto space-y-2">
               {selectedAgentTasks.length === 0 ? (

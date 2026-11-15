@@ -1,11 +1,25 @@
 # ============================================================================
 # SVL PYTHON OS — DEBIAN 13 TRIXIE PRODUCTION STACK (DOCKER COMPOSE)
 # Includes:
-# 1. svl-python-backend (FastAPI + SVLSystemKernel + 4 Spherical Agent Workers)
+# 1. svl-python-backend (FastAPI + SVLSystemKernel + 5 Spherical Agent Workers)
 # 2. ollama (Local LLM & Native Vision Engine with GPU passthrough if available)
 # 3. ollama-model-init (pulls the configured OLLAMA_PREFERRED_MODEL)
 # 4. open-webui (Official Open WebUI connected to Ollama + SVL Python OS Pipelines)
 # ============================================================================
+
+x-agent-desktop: &agent-desktop
+  profiles: ["desktops"]
+  build:
+    context: ./agent-desktop
+  restart: unless-stopped
+  init: true
+  user: "10001:10001"
+  environment:
+    DESKTOP_PASSWORD_FILE: /run/secrets/desktop_password
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
 
 services:
   svl-python-backend:
@@ -114,7 +128,101 @@ services:
     volumes:
       - open-webui-data:/app/backend/data
 
+  svl-desktop-aria:
+    <<: *agent-desktop
+    container_name: svl-desktop-aria
+    networks:
+      - svl-desktop-aria-net
+    ports:
+      - "127.0.0.1:6081:6080"
+    volumes:
+      - svl-desktop-aria:/home/agent
+    secrets:
+      - source: desktop_aria_password
+        target: desktop_password
+
+  svl-desktop-alex:
+    <<: *agent-desktop
+    container_name: svl-desktop-alex
+    networks:
+      - svl-desktop-alex-net
+    ports:
+      - "127.0.0.1:6082:6080"
+    volumes:
+      - svl-desktop-alex:/home/agent
+    secrets:
+      - source: desktop_alex_password
+        target: desktop_password
+
+  svl-desktop-astyria:
+    <<: *agent-desktop
+    container_name: svl-desktop-astyria
+    networks:
+      - svl-desktop-astyria-net
+    ports:
+      - "127.0.0.1:6083:6080"
+    volumes:
+      - svl-desktop-astyria:/home/agent
+    secrets:
+      - source: desktop_astyria_password
+        target: desktop_password
+
+  svl-desktop-aurelius:
+    <<: *agent-desktop
+    container_name: svl-desktop-aurelius
+    networks:
+      - svl-desktop-aurelius-net
+    ports:
+      - "127.0.0.1:6084:6080"
+    volumes:
+      - svl-desktop-aurelius:/home/agent
+    secrets:
+      - source: desktop_aurelius_password
+        target: desktop_password
+
+  svl-desktop-agata:
+    <<: *agent-desktop
+    container_name: svl-desktop-agata
+    networks:
+      - svl-desktop-agata-net
+    ports:
+      - "127.0.0.1:6085:6080"
+    volumes:
+      - svl-desktop-agata:/home/agent
+    secrets:
+      - source: desktop_agata_password
+        target: desktop_password
+
 volumes:
   svl-os-data:
   ollama-models:
   open-webui-data:
+  svl-desktop-aria:
+  svl-desktop-alex:
+  svl-desktop-astyria:
+  svl-desktop-aurelius:
+  svl-desktop-agata:
+
+secrets:
+  desktop_aria_password:
+    file: ${SVL_DESKTOP_ARIA_PASSWORD_FILE:-/etc/svl-os/desktop-secrets/aria.password}
+  desktop_alex_password:
+    file: ${SVL_DESKTOP_ALEX_PASSWORD_FILE:-/etc/svl-os/desktop-secrets/alex.password}
+  desktop_astyria_password:
+    file: ${SVL_DESKTOP_ASTYRIA_PASSWORD_FILE:-/etc/svl-os/desktop-secrets/astyria.password}
+  desktop_aurelius_password:
+    file: ${SVL_DESKTOP_AURELIUS_PASSWORD_FILE:-/etc/svl-os/desktop-secrets/aurelius.password}
+  desktop_agata_password:
+    file: ${SVL_DESKTOP_AGATA_PASSWORD_FILE:-/etc/svl-os/desktop-secrets/agata.password}
+
+networks:
+  svl-desktop-aria-net:
+    internal: true
+  svl-desktop-alex-net:
+    internal: true
+  svl-desktop-astyria-net:
+    internal: true
+  svl-desktop-aurelius-net:
+    internal: true
+  svl-desktop-agata-net:
+    internal: true

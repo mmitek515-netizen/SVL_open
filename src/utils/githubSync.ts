@@ -738,7 +738,6 @@ export class GitHubSyncService {
     if (!isAllowedGithubSyncPath(filePath)) {
       throw new GitHubSyncError('File path is not allowed for GitHub sync.');
     }
-    await this.ensureBranch();
 
     const file = await this.request(
       `/repos/${this.repository}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(this.branch)}`,
