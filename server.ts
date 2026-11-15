@@ -15,6 +15,7 @@ import {
   classifyCommandRisk,
   extractExplicitChatModuleDirective,
   formatAgentDisplayName,
+  isGitHubWorkspaceSyncRequest,
   normalizeAgentCanonicalName,
   selectOllamaModelName,
   type ChatAppliedAction,
@@ -31,10 +32,64 @@ const PYTHON_PORT = Number(process.env.SVL_PYTHON_PORT || 8085);
 const PYTHON_BASE_URL = `http://127.0.0.1:${PYTHON_PORT}`;
 const SYNC_SCHEMA_VERSION = '2026.11.sync.v1';
 
+type GitHubWorkspaceSyncResult = Awaited<ReturnType<GitHubSyncService['syncWorkspace']>>;
+
+type GitHubSyncRuntimeStatus = {
+  running: boolean;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastTrigger: 'automatic' | 'chat' | 'dashboard' | null;
+  lastError: string | null;
+  lastResult: GitHubWorkspaceSyncResult | null;
+};
+
+const githubSyncRuntimeStatus: GitHubSyncRuntimeStatus = {
+  running: false,
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastTrigger: null,
+  lastError: null,
+  lastResult: null,
+};
+
+function createGitHubSyncService(): GitHubSyncService {
+  return new GitHubSyncService({
+    token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '',
+    branch: process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH,
+  });
+}
+
+async function syncGitHubWorkspace(
+  trigger: NonNullable<GitHubSyncRuntimeStatus['lastTrigger']>,
+): Promise<GitHubWorkspaceSyncResult> {
+  if (githubSyncRuntimeStatus.running) {
+    throw new Error('Synchronizacja GitHub jest już w toku.');
+  }
+  githubSyncRuntimeStatus.running = true;
+  githubSyncRuntimeStatus.lastAttemptAt = new Date().toISOString();
+  githubSyncRuntimeStatus.lastTrigger = trigger;
+  githubSyncRuntimeStatus.lastError = null;
+  try {
+    const result = await createGitHubSyncService().syncWorkspace(__dirname);
+    githubSyncRuntimeStatus.lastResult = result;
+    githubSyncRuntimeStatus.lastSuccessAt = new Date().toISOString();
+    return result;
+  } catch (error) {
+    githubSyncRuntimeStatus.lastError = error instanceof Error ? error.message : String(error);
+    throw error;
+  } finally {
+    githubSyncRuntimeStatus.running = false;
+  }
+}
+
 function startAutomaticGitHubSync(): NodeJS.Timeout | null {
   const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
-  if (!token || process.env.SVL_GITHUB_AUTO_SYNC === 'false') {
+  if (!token) {
     console.log('[GitHubSync] Automatic sync is disabled; configure GITHUB_TOKEN and restart to enable it.');
+    return null;
+  }
+  if (process.env.SVL_GITHUB_AUTO_SYNC === 'false') {
+    console.log('[GitHubSync] Automatic sync is disabled by SVL_GITHUB_AUTO_SYNC=false.');
     return null;
   }
 
@@ -43,16 +98,11 @@ function startAutomaticGitHubSync(): NodeJS.Timeout | null {
     ? Math.max(10000, Math.min(configuredInterval, 3600000))
     : 30000;
   const syncBranch = process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH;
-  let running = false;
 
   const syncWorkspace = async () => {
-    if (running) return;
-    running = true;
+    if (githubSyncRuntimeStatus.running) return;
     try {
-      const result = await new GitHubSyncService({
-        token,
-        branch: syncBranch,
-      }).syncWorkspace(__dirname);
+      const result = await syncGitHubWorkspace('automatic');
       console.log(
         `[GitHubSync] ${result.branch}: uploaded=${result.uploaded.length}, downloaded=${result.downloaded.length}, ` +
         `deletedLocal=${result.deletedLocally.length}, deletedRemote=${result.deletedRemotely.length}, ` +
@@ -67,8 +117,6 @@ function startAutomaticGitHubSync(): NodeJS.Timeout | null {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[GitHubSync] Automatic sync failed: ${message}`);
-    } finally {
-      running = false;
     }
   };
 
@@ -903,6 +951,37 @@ async function startServer() {
     next();
   });
 
+  app.get('/api/github/sync-status', (_req, res) => {
+    const tokenConfigured = Boolean(process.env.GITHUB_TOKEN || process.env.GH_TOKEN);
+    const branch = process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH;
+    res.json({
+      ok: true,
+      repository: 'mmitek515-netizen/SVL_open',
+      branch,
+      branchUrl: `https://github.com/mmitek515-netizen/SVL_open/tree/${encodeURIComponent(branch)}`,
+      defaultBranch: 'main',
+      tokenConfigured,
+      automaticEnabled: tokenConfigured && process.env.SVL_GITHUB_AUTO_SYNC !== 'false',
+      intervalMs: Number(process.env.SVL_GITHUB_SYNC_INTERVAL_MS || 30000),
+      ...githubSyncRuntimeStatus,
+    });
+  });
+
+  app.post('/api/github/sync-workspace', asyncRoute(async (_req, res) => {
+    try {
+      const result = await syncGitHubWorkspace('dashboard');
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = /już w toku/i.test(message)
+        ? 409
+        : /GITHUB_TOKEN is not configured/i.test(message)
+          ? 424
+          : 502;
+      res.status(status).json({ ok: false, error: message });
+    }
+  }));
+
   // Read-only build provenance: a GitHub commit is not proof of deployed code.
   app.get('/api/deployment-info', (_req, res) => {
     let commit = process.env.GITHUB_SHA || process.env.VITE_GIT_SHA || '';
@@ -1369,11 +1448,13 @@ async function startServer() {
 
     const cleanMsg = String(message || '').trim();
     const lowerClean = cleanMsg.toLowerCase();
+    const wantsGitHubWorkspaceSync = isGitHubWorkspaceSyncRequest(cleanMsg);
     const wantsGitHubTools =
-      /\bgithub\b|github\.com/i.test(cleanMsg) &&
-      /synchroniz|odczytaj|sprawdź|pobierz|zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|commit|push/i.test(
-        cleanMsg,
-      );
+      wantsGitHubWorkspaceSync ||
+      (/github(?:\.com)?/i.test(cleanMsg) &&
+        /odczytaj|sprawdź|pobierz|zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|commit|push/i.test(
+          cleanMsg,
+        ));
     const wantsGitHubWrite =
       wantsGitHubTools && /zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|zapisz|commit|push/i.test(cleanMsg);
     const isProhibitedMinorSafetyRisk =
@@ -1597,23 +1678,21 @@ async function startServer() {
       return { ok, ...pyRes.data };
     };
 
-    const createGitHubSyncService = () =>
-      new GitHubSyncService({
-        token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '',
-        branch: process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH,
-      });
-
     const runGitHubTool = async (
       toolName: string,
       action: () => Promise<Record<string, unknown>>,
     ): Promise<Record<string, unknown>> => {
       try {
         const result = await action();
+        const branch = typeof result.branch === 'string' ? result.branch : DEFAULT_GITHUB_SYNC_BRANCH;
+        const summary = Array.isArray(result.uploaded)
+          ? `Wysłano ${result.uploaded.length}, pobrano ${Array.isArray(result.downloaded) ? result.downloaded.length : 0}; gałąź ${branch}.`
+          : `${toolName} zakończone na gałęzi ${branch}`;
         appliedActions.push({
           tool: toolName,
           entity: 'github',
-          entityId: DEFAULT_GITHUB_SYNC_BRANCH,
-          summary: `${toolName} zakończone na gałęzi ${DEFAULT_GITHUB_SYNC_BRANCH}`,
+          entityId: branch,
+          summary,
           ok: true,
         });
         return { ok: true, ...result };
@@ -1632,6 +1711,9 @@ async function startServer() {
 
     const executeChatTool = async (toolName: string, rawArgs: Record<string, any>): Promise<Record<string, any>> => {
       const args = rawArgs && typeof rawArgs === 'object' ? rawArgs : {};
+      if (toolName === 'github_sync_workspace') {
+        return runGitHubTool(toolName, () => syncGitHubWorkspace('chat'));
+      }
       if (toolName === 'github_sync_branch') {
         return runGitHubTool(toolName, () => createGitHubSyncService().syncDefaultBranch());
       }
@@ -1858,24 +1940,32 @@ async function startServer() {
     ];
 
     if (wantsGitHubTools) {
-      chatToolDeclarations.push(
-        {
+      if (!wantsGitHubWorkspaceSync) {
+        chatToolDeclarations.push({
           name: 'github_sync_branch',
           description:
-            'Synchronizuje wyłącznie dedykowaną gałąź svl-sync z domyślną gałęzią repo mmitek515-netizen/SVL_open. Nie zapisuje na main.',
+            'Pobiera aktualizacje z main do dedykowanej gałęzi svl-sync repo mmitek515-netizen/SVL_open. Nie wysyła lokalnych zmian i nie zapisuje na main.',
           parameters: { type: Type.OBJECT, properties: {} },
+        });
+      }
+      chatToolDeclarations.push({
+        name: 'github_read_file',
+        description:
+          'Odczytuje dozwolony plik źródłowy z gałęzi svl-sync w repo mmitek515-netizen/SVL_open po zsynchronizowaniu jej z gałęzią domyślną.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: { path: { type: Type.STRING, description: 'Ścieżka względna pliku źródłowego.' } },
+          required: ['path'],
         },
-        {
-          name: 'github_read_file',
-          description:
-            'Odczytuje dozwolony plik źródłowy z gałęzi svl-sync w repo mmitek515-netizen/SVL_open po zsynchronizowaniu jej z gałęzią domyślną.',
-          parameters: {
-            type: Type.OBJECT,
-            properties: { path: { type: Type.STRING, description: 'Ścieżka względna pliku źródłowego.' } },
-            required: ['path'],
-          },
-        },
-      );
+      });
+    }
+    if (wantsGitHubWorkspaceSync) {
+      chatToolDeclarations.push({
+        name: 'github_sync_workspace',
+        description:
+          'Synchronizuje pliki roboczego checkoutu z dedykowaną gałęzią svl-sync repo mmitek515-netizen/SVL_open. Wysyła lokalne zmiany i pobiera zdalne, ale nie zapisuje bezpośrednio na main.',
+        parameters: { type: Type.OBJECT, properties: {} },
+      });
     }
     if (wantsGitHubWrite) {
       chatToolDeclarations.push({

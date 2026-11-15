@@ -36,15 +36,6 @@ type BranchSnapshot = {
 
 export class GitHubSyncError extends Error {}
 
-const BLOCKED_FILE_NAMES = new Set([
-  'bun.lock',
-  'bun.lockb',
-  'package-lock.json',
-  'pnpm-lock.yaml',
-  'yarn.lock',
-  'package.json',
-]);
-
 export function isAllowedGithubSyncPath(rawPath: string): boolean {
   const filePath = String(rawPath || '').trim();
   if (!filePath || filePath.startsWith('/') || filePath.includes('\\')) return false;
@@ -61,21 +52,34 @@ export function isAllowedGithubSyncPath(rawPath: string): boolean {
   const basename = parts[parts.length - 1].toLowerCase();
   if (
     basename === '.env' ||
-    basename.startsWith('.env.') ||
-    BLOCKED_FILE_NAMES.has(basename) ||
+    (basename.startsWith('.env.') && basename !== '.env.example') ||
+    basename === 'bun.lockb' ||
     /(?:secret|credential|private.?key|password|token)/i.test(basename)
   ) {
     return false;
   }
 
-  return /\.(?:ts|tsx|js|jsx|mjs|cjs|py|json|css|html|md|ya?ml|toml|sh)$/i.test(lowerPath);
+  return (
+    basename === '.env.example' ||
+    /^dockerfile(?:\.[a-z0-9._-]+)?$/i.test(basename) ||
+    /\.(?:ts|tsx|js|jsx|mjs|cjs|py|json|css|html|md|ya?ml|toml|sh|service|lock)$/i.test(lowerPath)
+  );
 }
 
 export function containsLikelySecret(content: string): boolean {
+  const credentialAssignments = content.matchAll(
+    /(?:api[_-]?key|client[_-]?secret|password|access[_-]?token)\s*[:=]\s*(['"])(?!\$\{)([^'"\r\n]{8,})\1/gi,
+  );
+  const hasNonPlaceholderCredential = Array.from(credentialAssignments).some((match) => {
+    const value = match[2].trim();
+    return !/^(?:<[^>]+>|\$\{[^}]+\}|(?:your|my|change|replace|example|placeholder|redacted)(?:[_-]|$))/i.test(
+      value,
+    );
+  });
   return (
     /-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----/i.test(content) ||
     /\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/.test(content) ||
-    /(?:api[_-]?key|client[_-]?secret|password|access[_-]?token)\s*[:=]\s*(['"])(?!\$\{)[^'"\r\n]{8,}\1/i.test(content)
+    hasNonPlaceholderCredential
   );
 }
 

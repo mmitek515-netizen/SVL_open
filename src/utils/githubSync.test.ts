@@ -5,7 +5,12 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { GitHubSyncError, GitHubSyncService, isAllowedGithubSyncPath } from './githubSync';
+import {
+  containsLikelySecret,
+  GitHubSyncError,
+  GitHubSyncService,
+  isAllowedGithubSyncPath,
+} from './githubSync';
 
 function blobSha(content: string): string {
   const bytes = Buffer.from(content, 'utf8');
@@ -92,10 +97,17 @@ function automaticSyncFetcher(options: {
 test('GitHub sync only accepts repository source paths and rejects secrets/automation files', () => {
   assert.equal(isAllowedGithubSyncPath('src/utils/svlLogic.ts'), true);
   assert.equal(isAllowedGithubSyncPath('../.env'), false);
-  assert.equal(isAllowedGithubSyncPath('backend/.env.example'), false);
+  assert.equal(isAllowedGithubSyncPath('.env.example'), true);
+  assert.equal(isAllowedGithubSyncPath('backend/.env.example'), true);
+  assert.equal(isAllowedGithubSyncPath('Dockerfile'), true);
+  assert.equal(isAllowedGithubSyncPath('deploy/systemd/svl-python-os.service'), true);
   assert.equal(isAllowedGithubSyncPath('.github/workflows/release.yml'), false);
-  assert.equal(isAllowedGithubSyncPath('package.json'), false);
+  assert.equal(isAllowedGithubSyncPath('package.json'), true);
+  assert.equal(isAllowedGithubSyncPath('bun.lock'), true);
+  assert.equal(isAllowedGithubSyncPath('bun.lockb'), false);
   assert.equal(isAllowedGithubSyncPath('data/agent-memory.json'), false);
+  assert.equal(containsLikelySecret('GEMINI_API_KEY="MY_GEMINI_API_KEY"'), false);
+  assert.equal(containsLikelySecret('GEMINI_API_KEY="actual-secret-value-123"'), true);
   assert.throws(() => new GitHubSyncService({ token: 'test-token', branch: 'main' }), GitHubSyncError);
 });
 

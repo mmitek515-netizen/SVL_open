@@ -8,6 +8,7 @@ import {
   compactifyValue,
   extractExplicitChatModuleDirective,
   isConnectMyAiCommand,
+  isGitHubWorkspaceSyncRequest,
   mergeConversationThreads,
   safeParseJsonResponse,
   selectOllamaModelName,
@@ -33,6 +34,13 @@ test('isConnectMyAiCommand recognizes Polish diacritics and case variations', ()
   assert.equal(isConnectMyAiCommand('PODŁĄCZ MOJE AI'), true);
   assert.equal(isConnectMyAiCommand('  podlacz   moje ai '), true);
   assert.equal(isConnectMyAiCommand('status systemu'), false);
+});
+
+test('isGitHubWorkspaceSyncRequest recognizes Polish inflections used in chat', () => {
+  assert.equal(isGitHubWorkspaceSyncRequest('synchronizuj z GitHubem'), true);
+  assert.equal(isGitHubWorkspaceSyncRequest('sync workspace GitHub.com'), true);
+  assert.equal(isGitHubWorkspaceSyncRequest('sprawdź GitHub'), false);
+  assert.equal(isGitHubWorkspaceSyncRequest('synchronizuj pliki lokalnie'), false);
 });
 
 test('validateOperatorTokenFormat blocks hardcoded 364_OMNIKLUCZ_ROOT and short tokens', () => {

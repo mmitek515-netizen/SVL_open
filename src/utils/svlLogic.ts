@@ -142,6 +142,10 @@ export function isConnectMyAiCommand(input: string): boolean {
   return normalized === 'podlacz moje ai';
 }
 
+export function isGitHubWorkspaceSyncRequest(input: string): boolean {
+  return /github(?:\.com)?/i.test(input) && /synchroniz|sync/i.test(input);
+}
+
 export function classifyCommandRisk(cmd: string): {
   highRisk: boolean;
   reason: string | null;

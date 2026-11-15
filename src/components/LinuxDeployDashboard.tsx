@@ -20,6 +20,28 @@ const QUICK_INSPECT_FILES = [
   '.env.example',
 ];
 
+type GitHubSyncStatus = {
+  ok: boolean;
+  error?: string;
+  repository: string;
+  branch: string;
+  branchUrl: string;
+  tokenConfigured: boolean;
+  automaticEnabled: boolean;
+  running: boolean;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  lastResult: {
+    uploaded: string[];
+    downloaded: string[];
+    deletedLocally: string[];
+    deletedRemotely: string[];
+    conflicts: string[];
+    skipped: string[];
+  } | null;
+};
+
 export const LinuxDeployDashboard: React.FC = () => {
   const {
     tabOrigin,
@@ -49,6 +71,30 @@ export const LinuxDeployDashboard: React.FC = () => {
   const [ollamaActionMsg, setOllamaActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [isUpdatingOllama, setIsUpdatingOllama] = useState(false);
   const [pullState, setPullState] = useState<any>(ollama.pull_state || null);
+  const [githubSyncStatus, setGithubSyncStatus] = useState<GitHubSyncStatus | null>(null);
+  const [githubSyncMessage, setGithubSyncMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [isSyncingGithub, setIsSyncingGithub] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const refreshStatus = async () => {
+      const res = await safeFetchJson<GitHubSyncStatus>('/api/github/sync-status', { timeoutMs: 10000 });
+      if (active && res.ok && res.data?.ok) {
+        setGithubSyncStatus(res.data);
+      } else if (active) {
+        setGithubSyncMessage({
+          ok: false,
+          text: res.error || res.data?.error || 'Nie można pobrać statusu synchronizacji GitHub.',
+        });
+      }
+    };
+    void refreshStatus();
+    const timer = setInterval(() => void refreshStatus(), 15000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     if (ollama.ollama_host && !ollamaHostDirtyRef.current) {
@@ -140,6 +186,34 @@ export const LinuxDeployDashboard: React.FC = () => {
       });
     } finally {
       setIsUpdatingOllama(false);
+    }
+  };
+
+  const handleGitHubWorkspaceSync = async () => {
+    setIsSyncingGithub(true);
+    setGithubSyncMessage(null);
+    try {
+      const res = await safeFetchJson<any>('/api/github/sync-workspace', {
+        method: 'POST',
+        timeoutMs: 120000,
+        body: JSON.stringify({}),
+      });
+      const data = res.data;
+      if (res.ok && data?.ok) {
+        setGithubSyncMessage({
+          ok: true,
+          text: `Wysłano: ${data.uploaded?.length || 0}, pobrano: ${data.downloaded?.length || 0}, konflikty: ${data.conflicts?.length || 0}, pominięto: ${data.skipped?.length || 0}.`,
+        });
+      } else {
+        setGithubSyncMessage({
+          ok: false,
+          text: res.error || data?.error || 'Synchronizacja GitHub nie powiodła się.',
+        });
+      }
+      const status = await safeFetchJson<GitHubSyncStatus>('/api/github/sync-status', { timeoutMs: 10000 });
+      if (status.ok && status.data?.ok) setGithubSyncStatus(status.data);
+    } finally {
+      setIsSyncingGithub(false);
     }
   };
 
@@ -405,6 +479,70 @@ export const LinuxDeployDashboard: React.FC = () => {
 
           <div className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 text-xs text-slate-400 leading-relaxed">
             {codex.chatgpt_oauth_note}
+          </div>
+
+          <div className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className={githubSyncStatus?.tokenConfigured ? 'text-emerald-300' : 'text-amber-300'}>
+                {!githubSyncStatus
+                  ? 'Sprawdzam status GitHub…'
+                  : githubSyncStatus.tokenConfigured
+                    ? githubSyncStatus.automaticEnabled
+                      ? 'Auto-sync aktywny'
+                      : 'Token ustawiony; auto-sync wyłączony'
+                    : 'Brak GITHUB_TOKEN — synchronizacja wyłączona'}
+              </span>
+              <a
+                href={githubSyncStatus?.branchUrl || 'https://github.com/mmitek515-netizen/SVL_open/tree/svl-sync'}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-violet-300 hover:text-violet-200 underline"
+              >
+                Gałąź: {githubSyncStatus?.branch || 'svl-sync'}
+              </a>
+            </div>
+            <p className="text-[11px] leading-relaxed text-slate-400">
+              Zmiany lokalne są publikowane na tej gałęzi, nie na <code>main</code>. Ustaw serwerowy token z uprawnieniem Contents (read/write) w <code>.env</code>.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void handleGitHubWorkspaceSync()}
+                disabled={!githubSyncStatus?.tokenConfigured || isSyncingGithub || githubSyncStatus.running}
+                className="min-h-[34px] px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium text-white flex items-center gap-2"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGithub || githubSyncStatus?.running ? 'animate-spin' : ''}`} />
+                {isSyncingGithub || githubSyncStatus?.running ? 'Synchronizuję…' : 'Synchronizuj workspace'}
+              </button>
+              {githubSyncStatus?.lastSuccessAt && (
+                <span className="text-[11px] text-slate-500">
+                  Ostatnio: {new Date(githubSyncStatus.lastSuccessAt).toLocaleString('pl-PL')}
+                </span>
+              )}
+            </div>
+            {githubSyncStatus?.lastResult && (
+              <p className="text-[11px] text-slate-400">
+                Ostatni wynik: wysłano {githubSyncStatus.lastResult.uploaded.length}, pobrano {githubSyncStatus.lastResult.downloaded.length}, konflikty {githubSyncStatus.lastResult.conflicts.length}, pominięto {githubSyncStatus.lastResult.skipped.length}.
+              </p>
+            )}
+            {githubSyncStatus?.lastResult?.conflicts.length ? (
+              <p className="text-[11px] text-amber-300">
+                Konflikty: {githubSyncStatus.lastResult.conflicts.slice(0, 3).join(', ')}
+              </p>
+            ) : null}
+            {githubSyncStatus?.lastResult?.skipped.length ? (
+              <p className="text-[11px] text-amber-300">
+                Pominięte pliki: {githubSyncStatus.lastResult.skipped.slice(0, 3).join(', ')}
+              </p>
+            ) : null}
+            {githubSyncMessage && (
+              <p className={`text-xs ${githubSyncMessage.ok ? 'text-emerald-300' : 'text-rose-300'}`}>
+                {githubSyncMessage.text}
+              </p>
+            )}
+            {githubSyncStatus?.lastError && (
+              <p className="text-xs text-rose-300">Ostatni błąd syncu: {githubSyncStatus.lastError}</p>
+            )}
           </div>
         </div>
       </div>
