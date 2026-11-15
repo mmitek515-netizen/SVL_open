@@ -28,6 +28,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
+const HOST = process.env.SVL_BIND_HOST || '127.0.0.1';
 const PYTHON_PORT = Number(process.env.SVL_PYTHON_PORT || 8085);
 const PYTHON_BASE_URL = `http://127.0.0.1:${PYTHON_PORT}`;
 const SYNC_SCHEMA_VERSION = '2026.11.sync.v1';
@@ -2796,8 +2797,8 @@ async function startServer() {
     if (githubSyncTimer) clearInterval(githubSyncTimer);
   });
 
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`[SVL Python OS] Open WebUI & Gateway running on http://0.0.0.0:${PORT}`);
+  httpServer.listen(PORT, HOST, () => {
+    console.log(`[SVL Python OS] Open WebUI & Gateway running on http://${HOST}:${PORT}`);
     githubSyncTimer = startAutomaticGitHubSync();
   });
 }
