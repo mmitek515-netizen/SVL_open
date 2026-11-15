@@ -54,7 +54,13 @@ export SVL_GITHUB_AUTO_SYNC=false
 export SVL_GITHUB_APPLY_REMOTE_CHANGES=false
 
 if [[ ! -d node_modules ]]; then
-  npm ci
+  if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
+    npm ci --no-audit --no-fund
+  else
+    # This repository currently tracks no npm lockfile on main.
+    # npm ci fails unconditionally without one, so use normal install.
+    npm install --no-audit --no-fund
+  fi
 fi
 
 echo "SVL_open ready to start with Codex CLI OAuth (same Linux runtime)."
