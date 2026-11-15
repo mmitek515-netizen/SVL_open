@@ -22,6 +22,14 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const [runningCommit, setRunningCommit] = useState<string | null>(null);
   const [codexState, setCodexState] = useState<{
     enabled: boolean; accessConfigured: boolean; loggedIn: boolean; reason: string;
+    authenticated?: boolean;
+    activity?: {
+      running: boolean;
+      outcome: string;
+      lastAttemptAt: string | null;
+      lastSuccessAt: string | null;
+      lastFailureAt: string | null;
+    };
   } | null>(null);
   const [diagnosticsCheckedAt, setDiagnosticsCheckedAt] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -93,6 +101,13 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
       const result = await safeFetchJson<{
         ok: boolean; enabled: boolean; accessConfigured: boolean;
         authenticated: boolean; loggedIn: boolean; reason: string;
+        activity?: {
+          running: boolean;
+          outcome: string;
+          lastAttemptAt: string | null;
+          lastSuccessAt: string | null;
+          lastFailureAt: string | null;
+        };
       }>('/api/codex-chat/status', {
         timeoutMs: 10000,
         headers: codexOperatorAccess ? {'X-SVL-Codex-Access': codexOperatorAccess} : {},
@@ -286,6 +301,17 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
               Czat Codex: {codexState?.enabled ? 'Włączony' : 'Wyłączony lub jeszcze nie sprawdzony'}
               {' · Ochrona dostępu: ' + (codexState?.accessConfigured ? 'skonfigurowana' : 'niepotwierdzona')}
             </p>
+            {codexState?.authenticated && codexState.activity && (
+              <div className="rounded-md border border-slate-800 bg-[#0B0D13] p-2 text-xs text-slate-300 space-y-1">
+                <p>Status wywołania CLI: <strong>{codexState.activity.running
+                  ? 'Generowanie odpowiedzi…'
+                  : codexState.activity.outcome}</strong></p>
+                <p>Ostatnia próba: {codexState.activity.lastAttemptAt || 'brak w tym procesie'}</p>
+                <p>Ostatnia odpowiedź: {codexState.activity.lastSuccessAt || 'brak w tym procesie'}</p>
+                <p>Ostatni błąd: {codexState.activity.lastFailureAt || 'brak w tym procesie'}</p>
+                <p className="text-slate-500">Te dane pochodzą z bieżącego procesu backendu; bez treści wiadomości i tokenów.</p>
+              </div>
+            )}
             <div className="flex flex-wrap items-center gap-2">
               <input
                 type="password" autoComplete="off" spellCheck={false}
