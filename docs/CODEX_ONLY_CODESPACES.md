@@ -21,4 +21,4 @@ Wszystkie zadania tekstowe używają `--sandbox read-only`; odpowiedź AI ma sta
 
 Ten projekt ma też inne endpointy niż czat i terminal. Utrzymuj port prywatny; tokeny chronią określone wrażliwe operacje, a nie zastępują pełnego logowania do całej aplikacji.
 
-**Instalacja pakietów:** jeśli repozytorium ma `package-lock.json`, skrypt używa `npm ci`. Na gałęzi bez lockfile używa `npm install --no-audit --no-fund`, ponieważ samo `npm ci` w takim stanie kończyłoby uruchomienie błędem.
+**Instalacja pakietów:** skrypt sprawdza skrót `package.json` i obecnego pliku blokady zależności. Gdy pakiety zmienią się po `git pull` lub brakuje `tsx`/`vite`, zainstaluje zależności przed załadowaniem tokenów. Dla lockfile korzysta z `npm ci`, a bez niego z `npm install --no-audit --no-fund`. Nie uruchamia testów.
