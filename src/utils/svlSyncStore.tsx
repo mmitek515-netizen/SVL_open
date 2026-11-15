@@ -1324,16 +1324,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const clearAllConversationsAndBuffers = useCallback(async (accessToken = '') => {
-    const previousConversations = conversationsRef.current;
-    const previousActiveConvId = activeConvIdState;
-    const previousTargetAgent = targetAgentState;
-    deletedConvIdsRef.current.clear();
-    pendingMsgIdsRef.current.clear();
-    pendingConvIdsRef.current.clear();
-    setConversations(INITIAL_WELCOME_CONVERSATIONS.map((c) => ({ ...c, messages: [] })));
-    setActiveConvIdState('conv-rodzina-mitek-wszyscy');
-    setTargetAgentState('Rodzina Mitek');
-
+    // SQLite is authoritative. Until the server confirms the destructive action
+    // do NOT erase messages or the pending-write tracking sets.
     const eventId = createUniqueId('evt-clear-all');
     const res = await safeFetchJson<{
       ok: boolean;
@@ -1348,18 +1340,20 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     });
 
     if (res.ok && res.data?.ok && Array.isArray(res.data.conversations)) {
+      pendingConvIdsRef.current.clear();
+      pendingMsgIdsRef.current.clear();
+      deletedConvIdsRef.current.clear();
       const hydrated = normalizeConversationsFromServer(res.data.conversations);
       setConversations(hydrated);
+      setActiveConvIdState('conv-rodzina-mitek-wszyscy');
+      setTargetAgentState('Rodzina Mitek');
       try { localStorage.removeItem(CONVERSATIONS_CACHE_KEY); } catch { /* unavailable */ }
       notifyLocalMutation('chat', 'all', res.data.serverRevision);
       return { ok: true };
     }
-    // Roll back optimistic clearing when Python/SQLite fails.
-    setConversations(previousConversations);
-    setActiveConvIdState(previousActiveConvId);
-    setTargetAgentState(previousTargetAgent);
+    // On transport failure / 401, preserve the untouched local state.
     return { ok: false, error: res.data?.error || res.error || 'Nie udało się wyczyścić rozmów w SQLite.' };
-  }, [activeConvIdState, notifyLocalMutation, tabOrigin, targetAgentState]);
+  }, [notifyLocalMutation, tabOrigin]);
 
   const clearTerminalTab = useCallback(
     async (tab: TerminalTabId) => {
