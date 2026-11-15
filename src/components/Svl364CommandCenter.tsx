@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, Bot, Cpu, Database, HardDrive, RefreshCw, RadioTower, Satellite, Server, Terminal, Wifi, WifiOff } from 'lucide-react';
 import { useSvlSync } from '../utils/svlSyncStore';
 import { safeFetchJson } from '../utils/svlLogic';
@@ -25,10 +25,14 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   } | null>(null);
   const [diagnosticsCheckedAt, setDiagnosticsCheckedAt] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [codexOperatorAccess, setCodexOperatorAccess] = useState('');
+  const [isCheckingCodex, setIsCheckingCodex] = useState(false);
+  const currentRevisionRef = useRef(serverRevision);
+  useEffect(() => { currentRevisionRef.current = serverRevision; }, [serverRevision]);
 
   const refreshObservability = useCallback(async () => {
     await refreshDomainModules(['modules', 'kernel', 'agents', 'health', 'chat']);
-    const currentRevision = Math.max(0, serverRevision - 35);
+    const currentRevision = Math.max(0, currentRevisionRef.current - 35);
     const response = await safeFetchJson<{ ok: boolean; events?: any[]; error?: string }>(
       '/api/py/sync/events?sinceRevision=' + currentRevision + '&limit=50',
       { timeoutMs: 12000 },
@@ -42,12 +46,6 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
       ),
     ]);
     setDiagnosticsCheckedAt(new Date().toISOString());
-    const codexStatus = await safeFetchJson<{
-      ok: boolean; enabled: boolean; accessConfigured: boolean; loggedIn: boolean; reason: string;
-    }>('/api/codex-chat/status', {timeoutMs: 9000});
-    if (codexStatus.ok && codexStatus.data?.ok) {
-      setCodexState(codexStatus.data);
-    }
     if (chatDiag.ok && chatDiag.data?.ok) setChatStats(chatDiag.data);
     if (deployDiag.ok && deployDiag.data?.ok) setRunningCommit(deployDiag.data.commit || null);
     if (response.ok && response.data?.ok && Array.isArray(response.data.events)) {
@@ -56,13 +54,35 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
     } else {
       setEventsError(response.data?.error || response.error || 'Nie udało się pobrać historii zdarzeń');
     }
-  }, [refreshDomainModules, serverRevision]);
+  }, [refreshDomainModules]);
 
   useEffect(() => {
     void refreshObservability();
     const timer = setInterval(() => { void refreshObservability(); }, 15000);
     return () => clearInterval(timer);
   }, [refreshObservability]);
+
+  const checkCodexSession = async () => {
+    if (isCheckingCodex) return;
+    setIsCheckingCodex(true);
+    try {
+      const result = await safeFetchJson<{
+        ok: boolean; enabled: boolean; accessConfigured: boolean;
+        authenticated: boolean; loggedIn: boolean; reason: string;
+      }>('/api/codex-chat/status', {
+        timeoutMs: 10000,
+        headers: codexOperatorAccess ? {'X-SVL-Codex-Access': codexOperatorAccess} : {},
+      });
+      if (result.ok && result.data?.ok) {
+        setCodexState(result.data);
+      } else {
+        setCodexState({enabled:false,accessConfigured:false,loggedIn:false,
+          reason:result.error || 'Nie można odczytać stanu Codexa.'});
+      }
+    } finally {
+      setIsCheckingCodex(false);
+    }
+  };
 
   const refreshNow = async () => {
     if (isRefreshing) return;
@@ -207,9 +227,25 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
                 : 'Niepotwierdzony'}
             </p>
             <p className="text-xs text-slate-400">
-              Czat Codex: {codexState?.enabled ? 'Włączony' : 'Wyłączony'}
+              Czat Codex: {codexState?.enabled ? 'Włączony' : 'Wyłączony lub jeszcze nie sprawdzony'}
               {' · Ochrona dostępu: ' + (codexState?.accessConfigured ? 'skonfigurowana' : 'niepotwierdzona')}
             </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="password" autoComplete="off" spellCheck={false}
+                aria-label="Prywatny token do sprawdzenia logowania Codex CLI"
+                value={codexOperatorAccess}
+                onChange={(event) => setCodexOperatorAccess(event.target.value)}
+                placeholder="Token dostępu Codex CLI"
+                className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#0B0D13] px-2 py-1.5 text-xs"
+              />
+              <button type="button" disabled={isCheckingCodex}
+                onClick={() => void checkCodexSession()}
+                className="rounded-md border border-violet-600/50 px-2 py-1.5 text-xs text-violet-200 disabled:opacity-50"
+              >
+                {isCheckingCodex ? 'Sprawdzanie…' : 'Sprawdź logowanie'}
+              </button>
+            </div>
             <div className="max-h-48 overflow-auto space-y-1">
               {systemModules.slice(0, 16).map((mod: any) => (
                 <div key={mod.id} className="flex justify-between gap-2 border-b border-slate-800/70 py-1 text-xs">

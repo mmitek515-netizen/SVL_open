@@ -16,6 +16,7 @@ import io
 import json
 import math
 import os
+import re
 import platform
 import shutil
 import subprocess
@@ -501,6 +502,11 @@ class SVLBackendRuntime:
         }
 
     def probe_codex_status(self) -> dict[str, Any]:
+        # Cache short-lived CLI status; polling the health endpoint must not
+        # spawn a new Codex process for every browser tab.
+        cached = getattr(self, "_codex_probe_cache", None)
+        if isinstance(cached, dict) and time.monotonic() - cached.get("_cached_at", 0) < 25:
+            return {key: value for key, value in cached.items() if key != "_cached_at"}
         codex_bin = shutil.which("codex")
         git_bin = shutil.which("git")
         git_branch = "main"
@@ -522,7 +528,7 @@ class SVLBackendRuntime:
                 login_env = dict(os.environ)
                 login_env.pop("OPENAI_API_KEY", None)
                 login_env.pop("CODEX_API_KEY", None)
-                login_env.setdefault("CODEX_HOME", "/var/lib/svl-os/codex")
+                login_env.setdefault("CODEX_HOME", str(Path.home() / ".codex"))
                 login_result = subprocess.run(
                     [codex_bin, "login", "status"],
                     cwd=os.getcwd(),
@@ -537,11 +543,13 @@ class SVLBackendRuntime:
                     login_result.stdout.decode("utf-8", "replace")
                     + login_result.stderr.decode("utf-8", "replace")
                 ).lower()
-                codex_logged_in = login_result.returncode == 0 and "chatgpt" in login_mode
+                codex_logged_in = login_result.returncode == 0 and bool(
+                    re.search(r"logged in (?:using|with) chatgpt\b", login_mode)
+                )
             except (OSError, subprocess.TimeoutExpired):
                 pass
 
-        return {
+        report = {
             "codex_cli_installed": codex_bin is not None,
             "codex_cli_logged_in": codex_logged_in,
             "codex_binary_path": codex_bin,
@@ -555,6 +563,8 @@ class SVLBackendRuntime:
             "active_branch": git_branch,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
+        self._codex_probe_cache = {"_cached_at": time.monotonic(), **report}
+        return report
 
     def execute_python_repl(self, code: str) -> dict[str, Any]:
         """Executes real Python 3 code in the kernel's interactive session and returns stdout/stderr/result."""
