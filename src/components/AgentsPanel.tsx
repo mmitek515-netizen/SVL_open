@@ -8,7 +8,7 @@ import {
   Sliders,
   AlertTriangle,
 } from 'lucide-react';
-import { CANONICAL_AGENTS, createUniqueId, formatAgentDisplayName, safeFetchJson } from '../utils/svlLogic';
+import { CANONICAL_AGENTS, createUniqueId, formatAgentDisplayName, getSvlOperatorAccessToken, safeFetchJson } from '../utils/svlLogic';
 import { useSvlSync } from '../utils/svlSyncStore';
 
 interface AgentsPanelProps {
@@ -42,7 +42,19 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
   const [configStatus, setConfigStatus] = useState<{ ok: boolean; msg: string; conflict?: boolean } | null>(null);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
+  const isCodexOnly = agentsData?.execution_engine === 'codex-cli-oauth';
   const agentsList: any[] = agentsData?.agents || [];
+
+  // A disconnected WebSocket should not freeze mission progress indefinitely.
+  // Poll only when this panel is visible AND the user has an operator token.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (!getSvlOperatorAccessToken()) return;
+      void refreshDomainModules(['agents']);
+    }, 12000);
+    return () => clearInterval(timer);
+  }, [refreshDomainModules]);
   const agentLogs: Record<string, any[]> = agentsData?.agent_logs || {};
   const agentQueues: Record<string, any[]> = agentsData?.agent_queues || {};
   const agentMemories: Record<string, any[]> = agentsData?.agent_memories || {};
@@ -85,12 +97,14 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
   const loadedRevisionRef = useRef<{ agent: string; rev?: number }>({ agent: selectedAgent, rev: undefined });
 
   const hydrateConfigFormFromServer = () => {
-    setCfgPreferredModel(activeAgentCfg.preferred_model || 'svl-hybrid-router');
-    setCfgOllamaModel(activeAgentCfg.ollama_model || 'llama3.2-vision:11b');
-    setCfgFallbackModel(activeAgentCfg.fallback_model || 'gemini-3.1-flash-lite');
+    setCfgPreferredModel(activeAgentCfg.preferred_model || (isCodexOnly ? 'codex-cli' : 'svl-hybrid-router'));
+    setCfgOllamaModel(activeAgentCfg.ollama_model || (isCodexOnly ? '' : 'llama3.2-vision:11b'));
+    setCfgFallbackModel(activeAgentCfg.fallback_model || (isCodexOnly ? '' : 'gemini-3.1-flash-lite'));
     setCfgTemperature(String(activeAgentCfg.temperature ?? 0.7));
     setCfgRbacRole(activeAgentCfg.rbac_role || '');
-    setCfgVisionEnabled(activeAgentCfg.vision_enabled !== false);
+    setCfgVisionEnabled(activeAgentCfg.vision_enabled !== undefined
+      ? activeAgentCfg.vision_enabled !== false
+      : !isCodexOnly);
     setCfgSystemPrompt(activeAgentCfg.system_prompt || '');
     setIsConfigDirty(false);
     setRemoteConfigChangedWhileDirty(false);
@@ -262,7 +276,13 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
         timeoutMs: 25000,
         body: JSON.stringify({
           origin: tabOrigin,
-          config: {
+          config: isCodexOnly ? {
+            preferred_model: 'codex-cli',
+            ollama_model: '',
+            fallback_model: '',
+            vision_enabled: false,
+            auto_connect_on_boot: true,
+          } : {
             preferred_model: 'svl-hybrid-router',
             ollama_model: 'llama3.2-vision:11b',
             fallback_model: 'gemini-3.1-flash-lite',
@@ -272,13 +292,15 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
         }),
       });
       const data = res.data;
-      setIsConfigDirty(false);
       await refreshDomainModules(['agents', 'health']);
       if (res.ok && data?.ok) {
+        setIsConfigDirty(false);
         notifyLocalMutation('agent_config', 'all', data.serverRevision);
         setConfigStatus({
           ok: true,
-          msg: 'Skonfigurowano i podłączono wszystkich 5 agentów (Ollama llama3.2-vision:11b + Gemini 3.1 + Magistrala Sferyczna).',
+          msg: isCodexOnly
+            ? 'Zapisano konfigurację 5 lokalnych workerów Codex CLI. Dostępność zalogowanego modelu wymaga osobnej weryfikacji.'
+            : 'Zapisano ustawienia 5 agentów Ollama/Gemini. Dostępność modeli nie jest potwierdzona samym zapisem konfiguracji.',
         });
       } else {
         setConfigStatus({
@@ -300,7 +322,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
             01. Panel Pięciu Agentów AI — Rodzina Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek)
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Zachowane identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, lokalne procesy workerów o rzeczywistym PID/UID, trwała kolejka SQLite, tekstowe zadania Ollama i magistrala zdarzeń (rev {serverRevision}).
+            Zachowane identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, lokalne procesy workerów o rzeczywistym PID/UID, trwała kolejka SQLite, silnik: {isCodexOnly ? 'Codex CLI / ChatGPT OAuth' : 'Ollama (jeżeli dostępna)'} i magistrala zdarzeń (rev {serverRevision}).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
@@ -579,7 +601,14 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                       }`}>{task.status === 'ANSWER_READY' || task.status === 'COMPLETED' ? 'ODPOWIEDŹ GOTOWA' : task.status}</span>
                     </div>
                     {task.result && <p className="text-slate-300 whitespace-pre-wrap break-words">{task.result}</p>}
-                    {task.error && <p className="text-rose-300 whitespace-pre-wrap break-words">{task.error}</p>}
+                    {task.error && (
+                      <p className={`whitespace-pre-wrap break-words ${task.status === 'QUEUED'
+                        ? 'text-amber-300' : 'text-rose-300'}`}>
+                        {task.status === 'QUEUED' && String(task.error).startsWith('Codex CLI busy')
+                          ? 'Codex CLI zajęty — zadanie pozostało w kolejce i zostanie ponowione.'
+                          : task.error}
+                      </p>
+                    )}
                     <div className="text-[10px] font-mono text-slate-500">
                       {task.completed_at || task.started_at || task.created_at || ''}
                     </div>

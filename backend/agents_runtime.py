@@ -996,12 +996,22 @@ class SVLAgentOrchestrator:
         origin: str = "client",
         correlation_id: str = "",
     ) -> dict[str, Any]:
-        applied = patch or {
-            "ollama_model": "llama3.2-vision:11b",
-            "fallback_model": "gemini-3.1-flash-lite",
-            "vision_enabled": True,
-            "auto_connect_on_boot": True,
-        }
+        applied = patch or (
+            {
+                "preferred_model": "codex-cli",
+                "ollama_model": "",
+                "fallback_model": "",
+                "vision_enabled": False,
+                "auto_connect_on_boot": True,
+            }
+            if os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true"
+            else {
+                "ollama_model": "llama3.2-vision:11b",
+                "fallback_model": "gemini-3.1-flash-lite",
+                "vision_enabled": True,
+                "auto_connect_on_boot": True,
+            }
+        )
         updated: dict[str, dict[str, Any]] = {}
         for name in CANONICAL_SVL_AGENTS:
             updated[name] = self.update_agent_config_synced(

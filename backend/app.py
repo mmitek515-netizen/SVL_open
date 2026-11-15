@@ -854,6 +854,10 @@ async def handle_api_request(
         return 200, {
             "serverRevision": meta["serverRevision"],
             "schemaVersion": meta["schemaVersion"],
+            "execution_engine": (
+                "codex-cli-oauth" if os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true"
+                else "ollama"
+            ),
             "connected_at": runtime.orchestrator.connected_at,
             "last_sync_report": runtime.orchestrator.last_Sync_report,
             "agents": agents,
