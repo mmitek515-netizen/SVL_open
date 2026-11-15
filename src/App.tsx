@@ -11,22 +11,13 @@ import { KernelDiagnosticsView } from './components/KernelDiagnosticsView';
 import { LinuxDeployDashboard } from './components/LinuxDeployDashboard';
 import { Svl364CommandCenter } from './components/Svl364CommandCenter';
 import { SvlSyncProvider, useSvlSync } from './utils/svlSyncStore';
-import { CANONICAL_AGENTS, DEFAULT_DEV_OPERATOR_TOKEN, getSvlOperatorAccessToken, safeFetchJson, setSvlOperatorAccessToken } from './utils/svlLogic';
+import { CANONICAL_AGENTS, getSvlOperatorAccessToken, safeFetchJson, setSvlOperatorAccessToken } from './utils/svlLogic';
 
 type ActiveWorkspaceTab = 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux';
 
 function SVLWorkspaceShell() {
   const [activeTab, setActiveTab] = useState<ActiveWorkspaceTab>('chat');
-  const [operatorToken, setOperatorToken] = useState(() => {
-    try {
-      const initial = localStorage.getItem('svl_operator_token') || DEFAULT_DEV_OPERATOR_TOKEN;
-      setSvlOperatorAccessToken(initial);
-      return initial;
-    } catch {
-      setSvlOperatorAccessToken(DEFAULT_DEV_OPERATOR_TOKEN);
-      return DEFAULT_DEV_OPERATOR_TOKEN;
-    }
-  });
+  const [operatorToken, setOperatorToken] = useState(() => getSvlOperatorAccessToken());
   const [operatorAuthVisible, setOperatorAuthVisible] = useState(false);
   const [operatorAuthStatus, setOperatorAuthStatus] = useState<'none' | 'checking' | 'authorized' | 'denied'>('checking');
   const firstAuthCheckRef = React.useRef(true);
@@ -36,10 +27,9 @@ function SVLWorkspaceShell() {
   }
 
   useEffect(() => {
-    try {
-      localStorage.setItem('svl_operator_token', operatorToken);
-      setSvlOperatorAccessToken(operatorToken);
-    } catch {}
+    setSvlOperatorAccessToken(operatorToken);
+    // Remove credentials left by earlier SVL releases; keep new ones in memory only.
+    try { window.localStorage.removeItem('svl_operator_token'); } catch {}
   }, [operatorToken]);
   const {
     agentsData,
