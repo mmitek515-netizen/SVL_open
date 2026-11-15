@@ -55,7 +55,7 @@ const TERMINAL_TABS: Array<{
     subtitle: 'Integracja Codex CLI, status logowania device OAuth i gałęzi main GitHub',
     defaultPrompt: 'codex@main$',
     welcomeText:
-      'Terminal OpenAI Codex CLI Bridge. Wpisz "status", aby sprawdzić binarkę codex, autoryzację ChatGPT OAuth (codex login --device) oraz stan gałęzi main.',
+      'Terminal OpenAI Codex CLI Bridge. Wpisz "status", aby sprawdzić binarkę codex, autoryzację ChatGPT OAuth (codex login --device-auth) oraz stan gałęzi main.',
     quickCommands: [
       'status',
       'git status -s && git branch -v',
