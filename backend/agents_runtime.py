@@ -1752,8 +1752,14 @@ class SVLAgentOrchestrator:
             "task": task_record,
             "resilience": {
                 "ok": True,
-                "status": "QUEUED",
-                "message": "Task was persisted and queued. Completion is reported by the worker status stream.",
+                "status": "SUBMITTED_TO_WORKER" if submitted else "WAITING_FOR_WORKER",
+                "engine": "codex-cli-oauth" if use_codex else "ollama",
+                "workerAccepted": submitted,
+                "message": (
+                    "Task persisted and handed off to a live worker."
+                    if submitted else
+                    "Task persisted, but no live worker accepted it yet. It remains queued."
+                ),
             },
             "revision": sync_res["revision"],
             "serverRevision": sync_res["serverRevision"],

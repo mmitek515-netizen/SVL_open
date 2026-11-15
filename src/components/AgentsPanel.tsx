@@ -152,7 +152,13 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     });
     const data = res.data;
     if (res.ok && data?.ok) {
-      setDispatchStatus(`Zadanie dodane do trwałej kolejki ${selectedAgent} (ID: ${String(data.task?.id || '').slice(0, 8)}). Wynik pojawi się po zakończeniu.`);
+      const workerAccepted = data.resilience?.workerAccepted === true;
+      setDispatchStatus(
+        `Zadanie zapisano dla ${selectedAgent} (ID: ${String(data.task?.id || '').slice(0, 8)}). ` +
+        (workerAccepted
+          ? `Przekazano do workera (${data.resilience?.engine || 'nieznany silnik'}). Oczekiwanie na odpowiedź AI.`
+          : 'Worker nie przejął jeszcze zadania; pozostaje w kolejce SQLite.'),
+      );
       setTaskTitle('');
       setTaskPayload('');
       notifyLocalMutation('agent_task', selectedAgent, data.serverRevision, data.event);
