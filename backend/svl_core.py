@@ -722,7 +722,7 @@ class SVLSystemKernel:
                     "Orchestration & Command Center",
                     "ACTIVE",
                     "Stały moduł programowy Centrum Dowodzenia; nie potwierdza fizycznej łączności ze statkiem.",
-                    json.dumps({"module_alias": "svl-364-ebon-apex", "connection_verified": False, "local_command_center": True, "async_event_bus_buffer": 500}, ensure_ascii=False),
+                    json.dumps({"module_alias": "svl-364-ebon-apex", "connection_verified": False, "local_command_center": True, "async_event_bus_buffer": 2000}, ensure_ascii=False),
                     "kernel",
                     "init-svl-364-command",
                     1,
@@ -2118,7 +2118,7 @@ class SVLSystemKernel:
                 mod_name = "SVL-364 Ebon Apex" if svl364_has_apex_name else "SVL-364 Ebon Apex"
                 desired_patch: dict[str, Any] = {
                     "module_alias": "svl-364-ebon-apex",
-                    "async_event_bus_buffer": 500,
+                    "async_event_bus_buffer": 2000,
                     "agent_max_context_turns": 24,
                     "worker_heartbeat_interval_sec": 2.0,
                     "priority_routing": "svl-hybrid-router",
@@ -2138,7 +2138,7 @@ class SVLSystemKernel:
                 if "svl-364" not in existing_mods:
                     desc = (
                         "Moduł orkiestracji i optymalizacji backendu zsynchronizowany z poleceń czatu Operatora "
-                        "(rozszerzony bufor SphericalEventBus 500 zdarzeń, lokalny model Ollama zgodny z OLLAMA_PREFERRED_MODEL, czat Rodzina Mitek)."
+                        "(maksymalny bufor SphericalEventBus 2000 zdarzeń, lokalny model Ollama zgodny z OLLAMA_PREFERRED_MODEL, czat Rodzina Mitek)."
                     )
                     sync_res = self.commit_entity_event_tx(
                         conn,

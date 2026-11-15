@@ -193,7 +193,7 @@ test('extractExplicitChatModuleDirective detects svl-364 and explicit module com
   assert.ok(apex);
   assert.equal(apex.id, 'svl-364');
   assert.equal(apex.name, 'SVL-364 Ebon Apex');
-  assert.equal(apex.config.async_event_bus_buffer, 500);
+  assert.equal(apex.config.async_event_bus_buffer, 2000);
 
   const custom = extractExplicitChatModuleDirective('Dodaj moduł telemetry-bridge-v2 do backendu');
   assert.ok(custom);

@@ -422,7 +422,7 @@ class TestSVLKernelSuite(unittest.TestCase):
             self.assertEqual(svl364["name"], "SVL-364 Ebon Apex — Centrum Dowodzenia")
             self.assertEqual(svl364["source"], "chat")
             self.assertEqual(svl364["sourceMessageId"], "m-svl364-1")
-            self.assertEqual(svl364["config"].get("async_event_bus_buffer"), 500)
+            self.assertEqual(svl364["config"].get("async_event_bus_buffer"), 2000)
             svl364_event = next(event for event in first_sync["events"] if event["entityId"] == "svl-364")
             self.assertEqual(svl364_event["payload"]["name"], svl364["name"])
             self.assertEqual(svl364_event["payload"]["source"], svl364["source"])
