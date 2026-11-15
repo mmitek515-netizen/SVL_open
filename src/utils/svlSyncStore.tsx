@@ -200,6 +200,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Alex');
 
   const pendingMsgIdsRef = useRef<Set<string>>(new Set());
+  // Keep a newly-created EMPTY thread visible while SQLite create is in-flight.
+  const pendingConvIdsRef = useRef<Set<string>>(new Set());
   const deletedConvIdsRef = useRef<Set<string>>(new Set());
   const seenEventIdsRef = useRef<Set<string>>(new Set());
   const seenEventOrderRef = useRef<string[]>([]);
@@ -310,7 +312,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (Array.isArray(snap.conversations)) {
         const hydrated = normalizeConversationsFromServer(snap.conversations);
         setConversations((prev) =>
-          mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+          mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current, pendingConvIdsRef.current),
         );
       }
 
@@ -504,7 +506,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 deletedConvIdsRef.current.delete(conversation.id);
               }
               setConversations((prev) =>
-                mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+                mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current, pendingConvIdsRef.current),
               );
             }
           }),
@@ -607,6 +609,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (evt.entity === 'chat') {
         if (evt.type === 'chat.all_cleared') {
           pendingMsgIdsRef.current.clear();
+          pendingConvIdsRef.current.clear();
           deletedConvIdsRef.current.clear();
           setConversations(INITIAL_WELCOME_CONVERSATIONS);
           try { localStorage.removeItem(CONVERSATIONS_CACHE_KEY); } catch { /* unavailable */ }
@@ -1194,9 +1197,10 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
               deletedConvIdsRef.current.delete(conversation.id);
             }
             setConversations((prev) =>
-              mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+              mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current, pendingConvIdsRef.current),
             );
           }
+          pendingConvIdsRef.current.delete(convId);
           notifyLocalMutation('chat', convId, res.data.serverRevision, res.data.event);
           return { ok: true };
         }
@@ -1229,6 +1233,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       revision: 1,
       messages: [],
     };
+    pendingConvIdsRef.current.add(newId);
     setConversations((prev) => [newThread, ...prev]);
     setActiveConvId(newId);
     void safeFetchJson<{ok: boolean; serverRevision?: number; event?: SvlSyncEvent}>(
@@ -1246,9 +1251,12 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       },
     ).then((response) => {
       if (response.ok && response.data?.ok) {
+        pendingConvIdsRef.current.delete(newId);
         notifyLocalMutation('chat', newId, response.data.serverRevision, response.data.event);
       } else {
-        console.warn('[SVL] Nie udało się zapisać pustej sesji; kolejna wiadomość ponowi zapis.');
+        // The operator can still type and the next message can create the thread.
+        // Do not silently discard the selected conversation on a stale snapshot.
+        console.warn('[SVL] Zapis pustej sesji nie powiódł się; zachowuję lokalną sesję do pierwszej wiadomości.');
       }
     });
     return newThread;
@@ -1259,6 +1267,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (conversationsRef.current.length <= 1) {
         return { ok: false, error: 'Nie można usunąć ostatniej aktywnej sesji.' };
       }
+      pendingConvIdsRef.current.delete(convId);
       deletedConvIdsRef.current.add(convId);
       const remaining = conversationsRef.current.filter((c) => c.id !== convId);
       setConversations(remaining);
@@ -1290,7 +1299,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
             deletedConvIdsRef.current.delete(conversation.id);
           }
           setConversations((prev) =>
-            mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+            mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current, pendingConvIdsRef.current),
           );
         }
         notifyLocalMutation('chat', convId, res.data.serverRevision, res.data.event);
@@ -1307,6 +1316,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const previousTargetAgent = targetAgentState;
     deletedConvIdsRef.current.clear();
     pendingMsgIdsRef.current.clear();
+    pendingConvIdsRef.current.clear();
     setConversations(INITIAL_WELCOME_CONVERSATIONS.map((c) => ({ ...c, messages: [] })));
     setActiveConvIdState('conv-rodzina-mitek-wszyscy');
     setTargetAgentState('Rodzina Mitek');

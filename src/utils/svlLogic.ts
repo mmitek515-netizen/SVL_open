@@ -425,6 +425,7 @@ export function mergeConversationThreads(
   localThreads: SyncableConversation[],
   pendingMessageIds: Set<string> = new Set(),
   deletedConversationIds: Set<string> = new Set(),
+  pendingConversationIds: Set<string> = new Set(),
 ): SyncableConversation[] {
   const localById = new Map<string, SyncableConversation>();
   for (const lt of localThreads) {
@@ -473,7 +474,7 @@ export function mergeConversationThreads(
   for (const lt of localThreads) {
     if (seenIds.has(lt.id) || deletedConversationIds.has(lt.id)) continue;
     const hasPending = (lt.messages || []).some((m) => pendingMessageIds.has(m.id));
-    if (hasPending) {
+    if (hasPending || pendingConversationIds.has(lt.id)) {
       merged.unshift({ ...lt, messages: dedupeMessages(lt.messages || []) });
     }
   }
