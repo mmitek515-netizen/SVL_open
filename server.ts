@@ -2384,7 +2384,7 @@ async function startServer() {
   });
   const stopGateway = () => {
     stopPythonBackend();
-    for (const client of wsServer.clients) client.terminate();
+    for (const client of wss.clients) client.terminate();
     httpServer.close();
   };
   process.once('SIGTERM', stopGateway);
