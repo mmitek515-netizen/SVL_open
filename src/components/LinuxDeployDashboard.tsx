@@ -74,6 +74,7 @@ export const LinuxDeployDashboard: React.FC = () => {
   const [githubSyncStatus, setGithubSyncStatus] = useState<GitHubSyncStatus | null>(null);
   const [githubSyncMessage, setGithubSyncMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [isSyncingGithub, setIsSyncingGithub] = useState(false);
+  const [githubOperatorToken, setGithubOperatorToken] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -196,6 +197,7 @@ export const LinuxDeployDashboard: React.FC = () => {
       const res = await safeFetchJson<any>('/api/github/sync-workspace', {
         method: 'POST',
         timeoutMs: 120000,
+        headers: githubOperatorToken ? {'X-SVL-Operator-Token': githubOperatorToken} : {},
         body: JSON.stringify({}),
       });
       const data = res.data;
@@ -511,6 +513,13 @@ export const LinuxDeployDashboard: React.FC = () => {
               Zmiany lokalne są publikowane na tej gałęzi, nie na <code>main</code>. Ustaw serwerowy token z uprawnieniem Contents (read/write) w <code>.env</code>.
             </p>
             <div className="flex flex-wrap items-center gap-3">
+              <input type="password" autoComplete="off" spellCheck={false}
+                aria-label="Token operatora SVL do synchronizacji GitHub"
+                value={githubOperatorToken}
+                onChange={(event) => setGithubOperatorToken(event.target.value)}
+                placeholder="SVL_OPERATOR_TOKEN"
+                className="min-w-0 w-44 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+              />
               <button
                 type="button"
                 onClick={() => void handleGitHubWorkspaceSync()}

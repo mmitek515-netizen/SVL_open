@@ -184,7 +184,6 @@ export const TerminalsWorkspace: React.FC = () => {
     setTerminalActionError(null);
     setPendingPolkitCmd(null);
 
-    setCommandInput('');
     setIsExecuting(true);
 
     try {
@@ -201,10 +200,11 @@ export const TerminalsWorkspace: React.FC = () => {
       });
       const data = res.data;
 
-      if (!res.ok || !data) {
+      if (!res.ok || !data || data.ok === false) {
         appendLocalOnlyLog(activeTab, 'stderr', res.error || data?.error || `Błąd HTTP ${res.status}`);
         return;
       }
+      setCommandInput('');
 
       // Sync persisted terminal logs, agents, modules & chat state immediately from SQLite
       setLocalFallbackLogs((prev) => ({ ...prev, [activeTab]: [] }));
@@ -226,10 +226,9 @@ export const TerminalsWorkspace: React.FC = () => {
     }
   };
 
-  const wsLabel =
-    wsState === 'online'
-      ? `ROOT UID 0 NOPASSWD · /exec Aktywne · rev ${serverRevision}`
-      : `ROOT UID 0 NOPASSWD · Sync HTTP Aktywny · rev ${serverRevision}`;
+  const wsLabel = wsState === 'online'
+    ? `WebSocket online · Terminal chroniony tokenem · rev ${serverRevision}`
+    : `Sync HTTP · Terminal chroniony tokenem · rev ${serverRevision}`;
 
   const wsClass = 'text-emerald-400';
 
@@ -365,6 +364,19 @@ export const TerminalsWorkspace: React.FC = () => {
         </div>
       )}
 
+      <div className="px-3 py-2 border-t border-slate-800 bg-[#111520]">
+        <label className="text-[11px] text-slate-400 flex flex-wrap items-center gap-2">
+          <span>Autoryzacja terminala</span>
+          <input type="password" autoComplete="off" spellCheck={false}
+            aria-label="Prywatny token operatora SVL"
+            value={polkitTokenInput}
+            onChange={(event) => setPolkitTokenInput(event.target.value)}
+            placeholder="SVL_OPERATOR_TOKEN"
+            className="min-w-0 w-48 max-w-full rounded-md border border-slate-700 bg-[#0B0D13] px-2 py-1 text-xs text-slate-100"
+          />
+          <span>Token pozostaje tylko w bieżącej karcie.</span>
+        </label>
+      </div>
       {/* Command Input Bar */}
       <form
         onSubmit={(e) => {

@@ -1,6 +1,6 @@
 import express from 'express';
 import { createServer as createHttpServer, IncomingMessage } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { spawn, ChildProcess, execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -907,6 +907,14 @@ async function executeLinuxShellCommand(cmd: string, cwd = __dirname): Promise<{
   });
 }
 
+function hasOperatorAuthorization(candidate: unknown): boolean {
+  const secret = process.env.SVL_OPERATOR_TOKEN || '';
+  if (secret.length < 32 || typeof candidate !== 'string' || candidate.length > 512) return false;
+  const actual = Buffer.from(candidate, 'utf8');
+  const expected = Buffer.from(secret, 'utf8');
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 async function startServer() {
   // Never start a synthetic Ollama daemon: an unavailable real model must stay offline.
   startPythonBackend();
@@ -974,7 +982,11 @@ async function startServer() {
     });
   });
 
-  app.post('/api/github/sync-workspace', asyncRoute(async (_req, res) => {
+  app.post('/api/github/sync-workspace', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ok: false, error: 'Synchronizacja kodu wymaga poprawnego SVL_OPERATOR_TOKEN.'});
+      return;
+    }
     try {
       const result = await syncGitHubWorkspace('dashboard');
       res.json({ ok: true, ...result });
@@ -1127,6 +1139,11 @@ async function startServer() {
     const fullEndpoint = queryStr ? `${req.path}?${queryStr}` : req.path;
     const method = req.method === 'POST' ? 'POST' : 'GET';
     const timeoutMs = req.path === '/api/py/images/generate' ? 900000 : 20000;
+    if (method === 'POST' && req.path === '/api/py/python-repl' &&
+        !hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ok: false, error: 'Python REPL wymaga SVL_OPERATOR_TOKEN.'});
+      return;
+    }
     const result = await callPythonBackend(
       method,
       fullEndpoint,
@@ -1186,6 +1203,10 @@ async function startServer() {
     } = req.body || {};
 
     const trimmed = String(command || '').trim();
+    if (!hasOperatorAuthorization(operatorToken)) {
+      res.status(401).json({ok: false, error: 'Terminal Linux/Python wymaga prawidłowego SVL_OPERATOR_TOKEN.'});
+      return;
+    }
     if (!trimmed) {
       res.status(400).json({ ok: false, error: 'Puste polecenie.' });
       return;
@@ -1501,6 +1522,13 @@ async function startServer() {
     }
 
     if (/^\/exec(?:\s|$)/i.test(cleanMsg)) {
+      if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+        res.status(401).json({
+          ok: false,
+          error: 'Wykonywanie /exec wymaga uwierzytelnienia operatora. Skorzystaj z zakładki Terminale.',
+        });
+        return;
+      }
       const rawCmd = cleanMsg.replace(/^\/exec\s*/i, '').trim();
       const commandToRun = rawCmd || 'id';
       const execResult = await executeLinuxShellCommand(commandToRun, __dirname);
