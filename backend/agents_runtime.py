@@ -17,6 +17,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import fcntl
+import shutil
+import subprocess
+import tempfile
 import multiprocessing
 import os
 import queue
@@ -420,8 +424,104 @@ def _agent_worker_process_loop(
             current_task_id = None
 
 
+
+def _execute_codex_agent_task(task: dict[str, Any]) -> str:
+    """Execute a TEXT-ONLY inference using the already signed-in Codex CLI.
+
+    A shared file lock prevents five workers from simultaneously exhausting one
+    ChatGPT Codex account. No static IP, API key or HTTP MCP endpoint is needed.
+    """
+    codex = shutil.which("codex")
+    if not codex:
+        raise RuntimeError("Codex CLI not found in the worker's PATH")
+
+    allowed_env = (
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL",
+        "TERM", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+        "CODEX_HOME", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+        "SSL_CERT_FILE", "SSL_CERT_DIR",
+    )
+    env = {key: os.environ[key] for key in allowed_env if os.environ.get(key)}
+    title = str(task.get("title") or "")[:MAX_AGENT_TASK_TITLE_CHARS]
+    payload = str(task.get("payload") or "")[:MAX_AGENT_TASK_PAYLOAD_CHARS]
+    system_prompt = str(task.get("system_prompt") or "")[:2500]
+    agent = str(task.get("target_agent") or task.get("agent") or "SVL Agent")[:80]
+    prompt = (
+        f"Jesteś agentem {agent} w SVL Python OS. Odpowiedz po polsku.\n"
+        "Zadanie polega wyłącznie na przygotowaniu analizy lub odpowiedzi.\n"
+        "Nie wykonuj poleceń powłoki, nie modyfikuj plików ani nie deklaruj "
+        "zakończenia misji lub operacji bez potwierdzonych danych.\n"
+        f"Konfiguracja roli: {system_prompt}\n"
+        f"Tytuł: {title}\nSzczegóły:\n{payload}"
+    )[:8000]
+
+    lock_path = os.path.join(
+        tempfile.gettempdir(), f"svl-codex-oauth-worker-{os.getuid()}.lock"
+    )
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        deadline = time.monotonic() + 35
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Codex CLI busy; another SVL agent is using this ChatGPT account")
+                time.sleep(0.3)
+
+        auth = subprocess.run(
+            [codex, "login", "status"],
+            capture_output=True, text=True, timeout=8, env=env, check=False,
+        )
+        if auth.returncode != 0 or "chatgpt" not in (auth.stdout + auth.stderr).lower():
+            raise RuntimeError(
+                "Codex CLI must be signed in with ChatGPT OAuth as the worker Linux user"
+            )
+        with tempfile.TemporaryDirectory(prefix="svl-agent-codex-") as root:
+            finished = subprocess.run(
+                [
+                    codex, "exec", "--ignore-user-config", "--ignore-rules",
+                    "--skip-git-repo-check", "--ephemeral", "--json",
+                    "--sandbox", "read-only", "-",
+                ],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                cwd=root,
+                env=env,
+                timeout=95,
+                check=False,
+            )
+        if finished.returncode != 0:
+            raise RuntimeError("Codex CLI failed or usage allowance exhausted")
+
+        answer = ""
+        for line in finished.stdout.splitlines():
+            try:
+                event = json.loads(line)
+                if event.get("type") == "item.completed":
+                    item = event.get("item") or {}
+                    if item.get("type") == "agent_message":
+                        answer = str(item.get("text") or "")
+            except (TypeError, ValueError, AttributeError):
+                continue
+        if not answer.strip():
+            raise RuntimeError("Codex CLI returned no final agent message")
+        return guard_unverified_mission_completion(
+            title + "\n" + payload, answer[:MAX_AGENT_TASK_RESULT_CHARS]
+        )
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def execute_agent_task(task: dict[str, Any]) -> str:
-    """Run a bounded text-only inference request through the configured Ollama API."""
+    """Run text inference through a configured LOCAL engine (Codex OAuth or Ollama)."""
+    if os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true":
+        return _execute_codex_agent_task(task)
     host = str(task.get("ollama_host") or "").strip().rstrip("/")
     parsed_host = urllib.parse.urlsplit(host)
     if (

@@ -1139,9 +1139,14 @@ async function startServer() {
     const fullEndpoint = queryStr ? `${req.path}?${queryStr}` : req.path;
     const method = req.method === 'POST' ? 'POST' : 'GET';
     const timeoutMs = req.path === '/api/py/images/generate' ? 900000 : 20000;
-    if (method === 'POST' && req.path === '/api/py/python-repl' &&
+    if (method === 'POST' &&
+        (req.path === '/api/py/python-repl' ||
+         (req.path === '/api/py/agents/task' && process.env.SVL_CODEX_AGENTS_ENABLED === 'true')) &&
         !hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
-      res.status(401).json({ok: false, error: 'Python REPL wymaga SVL_OPERATOR_TOKEN.'});
+      res.status(401).json({
+        ok: false,
+        error: 'Ta operacja wymaga SVL_OPERATOR_TOKEN (prywatny dostęp operatora).',
+      });
       return;
     }
     const result = await callPythonBackend(

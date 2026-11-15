@@ -34,6 +34,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
   const [senderActor, setSenderActor] = useState<'operator' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('operator');
   const [taskTitle, setTaskTitle] = useState('');
   const [taskPayload, setTaskPayload] = useState('');
+  const [agentOperatorToken, setAgentOperatorToken] = useState('');
   const [memoryContent, setMemoryContent] = useState('');
   const [memoryKind, setMemoryKind] = useState<'fact' | 'decision' | 'task' | 'episode'>('fact');
   const [dispatchStatus, setDispatchStatus] = useState<string | null>(null);
@@ -139,6 +140,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     const res = await safeFetchJson<any>('/api/py/agents/task', {
       method: 'POST',
       timeoutMs: 15000,
+      headers: agentOperatorToken ? {'X-SVL-Operator-Token': agentOperatorToken} : {},
       body: JSON.stringify({
         sender: senderActor,
         target_agent: selectedAgent,
@@ -502,6 +504,16 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
               />
             </div>
 
+            <label className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+              Token operatora (dla zadań uruchamianych przez Codex CLI)
+              <input type="password" autoComplete="off" spellCheck={false}
+                value={agentOperatorToken}
+                onChange={(event) => setAgentOperatorToken(event.target.value)}
+                placeholder="SVL_OPERATOR_TOKEN"
+                aria-label="Token operatora dla zadań agentów"
+                className="min-w-0 w-48 max-w-full rounded-md border border-slate-700 bg-[#0B0D13] px-2 py-1 text-xs text-slate-100"
+              />
+            </label>
             {dispatchStatus && (
               <div className="p-2.5 rounded bg-[#0B0D13] border border-slate-800 text-xs font-mono text-violet-300">
                 {dispatchStatus}

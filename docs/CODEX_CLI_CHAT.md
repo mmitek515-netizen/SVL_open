@@ -26,6 +26,14 @@ Uruchom lokalny gateway z dotychczasową konfiguracją. W czacie wybierz `Codex 
 
 Stan procesu i logowania pokazuje `GET /api/codex-chat/status`, a po wdrożeniu również Centrum Dowodzenia SVL-364. Wskazanie `ZALOGOWANY W RUNTIME` dotyczy wyłącznie procesu Codex CLI dostępnego dla działającego backendu.
 
+## Zadania pięciu agentów przez Codex CLI
+
+Jeżeli Ollama jest niedostępna, ustaw na **tym samym serwerze / Codespace** `SVL_CODEX_AGENTS_ENABLED=true` (oprócz `SVL_CODEX_CHAT_ENABLED=true`). Wypełnij prywatny `SVL_OPERATOR_TOKEN` o długości minimum 32 znaków. Zrestartuj backend. Następnie w Panelu Agentów wpisz token operatora i wyślij zadanie.
+
+W tym trybie pięć procesów Aria, Alex, Astyria, Aurelius, Agata korzysta ze wspólnego zalogowania Codex CLI. Przed uruchomieniem sprawdzają `codex login status`; blokada plikowa nie dopuszcza do pięciu równoczesnych wywołań. Wynik zadania ma status `ANSWER_READY`: oznacza przygotowaną odpowiedź, **nie** potwierdza wykonania misji, modyfikacji systemu ani wdrożenia kodu.
+
+Oprogramowanie uruchomione w osobnym AI Studio nadal nie będzie miało dostępu do lokalnego OAuth Codexa. Zmienne środowiskowe i dane logowania nie są kopiowane przez GitHub.
+
 ## Bezpieczeństwo i ograniczenia
 
 - `SVL_CODEX_CHAT_ENABLED` jest domyślnie `false`. Włączenie wymaga prywatnego tokenu operatora długości minimum 32 znaków.
