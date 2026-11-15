@@ -287,6 +287,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       advanceServerRevision(snap.serverRevision);
 
       if (Array.isArray(snap.deletedEntities)) {
+        deletedConvIdsRef.current.clear();
         for (const ent of snap.deletedEntities) {
           if (ent.startsWith('chat:')) {
             deletedConvIdsRef.current.add(ent.slice('chat:'.length));
@@ -309,7 +310,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (Array.isArray(snap.conversations)) {
         const hydrated = normalizeConversationsFromServer(snap.conversations);
         setConversations((prev) =>
-          mergeConversationThreads(hydrated.length ? hydrated : INITIAL_WELCOME_CONVERSATIONS, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+          mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
         );
       }
 
@@ -499,8 +500,11 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
             if (r.ok && r.data?.ok && Array.isArray(r.data.conversations)) {
               advanceServerRevision(r.data.serverRevision);
               const hydrated = normalizeConversationsFromServer(r.data.conversations);
+              for (const conversation of hydrated) {
+                deletedConvIdsRef.current.delete(conversation.id);
+              }
               setConversations((prev) =>
-                mergeConversationThreads(hydrated.length ? hydrated : INITIAL_WELCOME_CONVERSATIONS, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
+                mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
               );
             }
           }),
@@ -609,7 +613,10 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           scheduleDomainRefresh(['chat']);
           return;
         }
-        if (evt.type === 'chat.conversation_deleted' && evt.entityId) {
+        if (
+          (evt.type === 'chat.thread_deleted' || evt.type === 'chat.conversation_deleted') &&
+          evt.entityId
+        ) {
           deletedConvIdsRef.current.add(evt.entityId);
           setConversations((prev) => prev.filter((c) => c.id !== evt.entityId));
         }
@@ -668,7 +675,10 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       if (evt.entity === 'system' && evt.origin !== tabOrigin && evt.type !== 'system.snapshot_synced') {
         void triggerFullSync('remote_system_mutation');
+        return;
       }
+
+      scheduleDomainRefresh(['health', 'kernel', 'agents', 'chat', 'terminals', 'workspace', 'modules']);
     },
     [advanceServerRevision, recordSeenEventId, scheduleDomainRefresh, tabOrigin, triggerFullSync],
   );
@@ -678,23 +688,54 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (inflightCatchupRef.current) return inflightCatchupRef.current;
       const run = (async () => {
         try {
-          const since = serverRevisionRef.current;
-          const res = await safeFetchJson<{
+          let res = await safeFetchJson<{
             ok: boolean;
             serverRevision: number;
             events: SvlSyncEvent[];
             gapDetected?: boolean;
-          }>(`/api/py/sync/events?sinceRevision=${since}&limit=100`, { timeoutMs: 12000 });
+            hasMore?: boolean;
+          }>(`/api/py/sync/events?sinceRevision=${serverRevisionRef.current}&limit=100`, { timeoutMs: 12000 });
+          let hasMore = Boolean(res.data?.hasMore);
           if (res.ok && res.data?.ok) {
-            if (res.data.gapDetected) {
-              await triggerFullSync(`${sourceReason}_gap`);
-              return;
+            let pages = 0;
+            while (true) {
+              if (res.data.gapDetected) {
+                await triggerFullSync(`${sourceReason}_gap`);
+                return;
+              }
+              const evts = Array.isArray(res.data.events) ? res.data.events : [];
+              const beforeRevision = serverRevisionRef.current;
+              for (const ev of evts) applySyncEvent(ev);
+              hasMore = Boolean(res.data.hasMore);
+
+              if (!hasMore) {
+                advanceServerRevision(res.data.serverRevision);
+                return;
+              }
+
+              if (serverRevisionRef.current <= beforeRevision || evts.length === 0) {
+                await triggerFullSync(`${sourceReason}_pagination_stalled`);
+                return;
+              }
+
+              pages += 1;
+              if (pages >= 20) break;
+              res = await safeFetchJson<{
+                ok: boolean;
+                serverRevision: number;
+                events: SvlSyncEvent[];
+                gapDetected?: boolean;
+                hasMore?: boolean;
+              }>(
+                `/api/py/sync/events?sinceRevision=${serverRevisionRef.current}&limit=100`,
+                { timeoutMs: 12000 },
+              );
+              if (!res.ok || !res.data?.ok) return;
             }
-            const evts = Array.isArray(res.data.events) ? res.data.events : [];
-            for (const ev of evts) {
-              applySyncEvent(ev);
+
+            if (hasMore) {
+              setTimeout(() => void catchUpFromEvents(`${sourceReason}_pagination`), 0);
             }
-            advanceServerRevision(res.data.serverRevision);
           }
         } finally {
           inflightCatchupRef.current = null;
@@ -878,7 +919,11 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           for (const ev of evts) {
             applySyncEvent(ev);
           }
-          advanceServerRevision(frame.serverRevision);
+          if (frame.hasMore) {
+            void catchUpFromEvents('ws_catchup_pagination');
+          } else {
+            advanceServerRevision(frame.serverRevision);
+          }
           return;
         }
 
@@ -1143,8 +1188,11 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         });
 
         if (res.ok && res.data?.ok) {
-          if (Array.isArray(res.data.conversations) && res.data.conversations.length > 0) {
+          if (Array.isArray(res.data.conversations)) {
             const hydrated = normalizeConversationsFromServer(res.data.conversations);
+            for (const conversation of hydrated) {
+              deletedConvIdsRef.current.delete(conversation.id);
+            }
             setConversations((prev) =>
               mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
             );
@@ -1227,8 +1275,11 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       });
 
       if (res.ok && res.data?.ok) {
-        if (Array.isArray(res.data.conversations) && res.data.conversations.length > 0) {
+        if (Array.isArray(res.data.conversations)) {
           const hydrated = normalizeConversationsFromServer(res.data.conversations);
+          for (const conversation of hydrated) {
+            deletedConvIdsRef.current.delete(conversation.id);
+          }
           setConversations((prev) =>
             mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current),
           );
@@ -1265,7 +1316,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     if (res.ok && res.data?.ok && Array.isArray(res.data.conversations)) {
       const hydrated = normalizeConversationsFromServer(res.data.conversations);
-      setConversations(hydrated.length > 0 ? hydrated : INITIAL_WELCOME_CONVERSATIONS);
+      setConversations(hydrated);
       try { localStorage.removeItem(CONVERSATIONS_CACHE_KEY); } catch { /* unavailable */ }
       notifyLocalMutation('chat', 'all', res.data.serverRevision);
       return { ok: true };

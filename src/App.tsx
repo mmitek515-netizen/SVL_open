@@ -41,7 +41,9 @@ function SVLWorkspaceShell() {
   }, [activeTab, refreshDomainModules]);
 
   const agentsList: any[] = agentsData?.agents || [];
-  const activeWorkersCount = agentsList.filter((a) => a.status === 'ONLINE_LOCAL_WORKER').length;
+  const activeWorkersCount = agentsList.filter((a) =>
+    ['ONLINE_LOCAL_WORKER', 'BUSY_LOCAL_WORKER'].includes(a.status),
+  ).length;
 
   return (
     <div className="flex flex-col h-[100dvh] w-screen overflow-hidden bg-[#0B0D13] text-[#F1F5F9]">

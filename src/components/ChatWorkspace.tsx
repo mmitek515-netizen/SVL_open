@@ -944,7 +944,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           <div className="space-y-1.5">
             {CANONICAL_AGENTS.map((meta) => {
               const live = agentsStatus.find((a) => a.canonical_name === meta.canonicalName);
-              const isOnline = live?.status === 'ONLINE_LOCAL_WORKER';
+              const isOnline = ['ONLINE_LOCAL_WORKER', 'BUSY_LOCAL_WORKER'].includes(live?.status);
               return (
                 <button
                   type="button"
@@ -1188,7 +1188,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               </button>
               {CANONICAL_AGENTS.map((meta) => {
                 const live = agentsStatus.find((a) => a.canonical_name === meta.canonicalName);
-                const isOnline = live?.status === 'ONLINE_LOCAL_WORKER';
+                const isOnline = ['ONLINE_LOCAL_WORKER', 'BUSY_LOCAL_WORKER'].includes(live?.status);
                 const isTargeted = targetAgent === meta.canonicalName;
                 return (
                   <button

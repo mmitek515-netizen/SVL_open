@@ -3,7 +3,7 @@
 # Includes:
 # 1. svl-python-backend (FastAPI + SVLSystemKernel + 4 Spherical Agent Workers)
 # 2. ollama (Local LLM & Native Vision Engine with GPU passthrough if available)
-# 3. ollama-model-init (Auto-pulls ~14B native Vision model qwen2.5vl:14b or llama3.2-vision:11b)
+# 3. ollama-model-init (pulls the configured OLLAMA_PREFERRED_MODEL)
 # 4. open-webui (Official Open WebUI connected to Ollama + SVL Python OS Pipelines)
 # ============================================================================
 
@@ -29,11 +29,15 @@ services:
       interval: 15s
       timeout: 5s
       retries: 3
+    depends_on:
+      ollama:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
 
   ollama:
-    image: ollama/ollama:latest
+    # Keep aligned with the installer: the newer runtime rejects this model's mllama architecture.
+    image: ollama/ollama:0.24.0
     container_name: svl-ollama
     restart: unless-stopped
     volumes:
@@ -49,7 +53,7 @@ services:
       retries: 5
 
   ollama-model-init:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.24.0
     container_name: svl-ollama-init
     restart: "no"
     depends_on:
@@ -57,9 +61,8 @@ services:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-ec"]
     command: |
-      echo "[SVL Ollama Init] Pobieranie modelu Vision Llama 3.2 11B (llama3.2-vision:11b)..."
-      OLLAMA_HOST=http://ollama:11434 ollama pull "${OLLAMA_PREFERRED_MODEL:-llama3.2-vision:11b}" || \
-      OLLAMA_HOST=http://ollama:11434 ollama pull "qwen2.5vl:14b"
+      echo "[SVL Ollama Init] Pobieranie skonfigurowanego modelu: ${OLLAMA_PREFERRED_MODEL:-llama3.2-vision:11b}"
+      OLLAMA_HOST=http://ollama:11434 ollama pull "${OLLAMA_PREFERRED_MODEL:-llama3.2-vision:11b}"
     environment:
       OLLAMA_PREFERRED_MODEL: "${OLLAMA_PREFERRED_MODEL:-llama3.2-vision:11b}"
 

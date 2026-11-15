@@ -12,12 +12,14 @@ import { GoogleGenAI, GenerateContentResponse, Type, type FunctionDeclaration } 
 import dotenv from 'dotenv';
 import {
   buildChatHistoryPayload,
+  classifyCommandRisk,
   extractExplicitChatModuleDirective,
   formatAgentDisplayName,
   normalizeAgentCanonicalName,
   selectOllamaModelName,
   type ChatAppliedAction,
 } from './src/utils/svlLogic.ts';
+import { DEFAULT_GITHUB_SYNC_BRANCH, GitHubSyncService } from './src/utils/githubSync.ts';
 
 dotenv.config();
 
@@ -28,6 +30,54 @@ const PORT = 3000;
 const PYTHON_PORT = Number(process.env.SVL_PYTHON_PORT || 8085);
 const PYTHON_BASE_URL = `http://127.0.0.1:${PYTHON_PORT}`;
 const SYNC_SCHEMA_VERSION = '2026.11.sync.v1';
+
+function startAutomaticGitHubSync(): NodeJS.Timeout | null {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
+  if (!token || process.env.SVL_GITHUB_AUTO_SYNC === 'false') {
+    console.log('[GitHubSync] Automatic sync is disabled; configure GITHUB_TOKEN and restart to enable it.');
+    return null;
+  }
+
+  const configuredInterval = Number(process.env.SVL_GITHUB_SYNC_INTERVAL_MS || 30000);
+  const intervalMs = Number.isFinite(configuredInterval)
+    ? Math.max(10000, Math.min(configuredInterval, 3600000))
+    : 30000;
+  const syncBranch = process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH;
+  let running = false;
+
+  const syncWorkspace = async () => {
+    if (running) return;
+    running = true;
+    try {
+      const result = await new GitHubSyncService({
+        token,
+        branch: syncBranch,
+      }).syncWorkspace(__dirname);
+      console.log(
+        `[GitHubSync] ${result.branch}: uploaded=${result.uploaded.length}, downloaded=${result.downloaded.length}, ` +
+        `deletedLocal=${result.deletedLocally.length}, deletedRemote=${result.deletedRemotely.length}, ` +
+        `conflicts=${result.conflicts.length}, skipped=${result.skipped.length}.`,
+      );
+      if (result.conflicts.length > 0) {
+        console.warn(`[GitHubSync] Conflicting files were left untouched: ${result.conflicts.slice(0, 20).join(', ')}`);
+      }
+      if (result.skipped.length > 0) {
+        console.warn(`[GitHubSync] Protected or oversized files were skipped: ${result.skipped.slice(0, 20).join(', ')}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[GitHubSync] Automatic sync failed: ${message}`);
+    } finally {
+      running = false;
+    }
+  };
+
+  void syncWorkspace();
+  const timer = setInterval(() => void syncWorkspace(), intervalMs);
+  timer.unref();
+  console.log(`[GitHubSync] Automatic two-way sync enabled for ${syncBranch} every ${intervalMs} ms.`);
+  return timer;
+}
 
 function sanitizeCorrelationId(raw: unknown): string {
   const clean = String(raw || '').replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 80);
@@ -231,7 +281,7 @@ function ensureModelInBuiltinOllama(rawName: string): string {
 }
 
 function describeOllamaModelFlavor(_modelName: string): string {
-  return 'Działasz całkowicie autonomicznie, niezależnie i swobodnie, bez narzuconych schematów.';
+  return 'Korzystaj wyłącznie z narzędzi przekazanych w tej rozmowie. Nie twierdź, że masz uprawnienia systemowe ani że wykonałeś działanie bez potwierdzonego wyniku.';
 }
 
 function synthesizeMitekAgentReply(params: {
@@ -279,12 +329,12 @@ function synthesizeMitekAgentReply(params: {
       return (
         `Jestem z Wami, Mateuszu! Moim zdaniem ten pomysł ma duży potencjał i możemy go od razu rozwinąć technicznie.\n\n` +
         `Możemy sprawdzić bieżące procesy lub przejść do konfiguracji:\n` +
-        `[btn: ⚡ Usługi systemd|/exec sudo systemctl status svl-python-os] [btn: 👥 Panel Agentów|tab:agents]`
+        `[btn: 👥 Panel Agentów|tab:agents] [btn: 🧠 Jądro SVL|tab:kernel]`
       );
     }
     if (agentCanonical === 'Alex') {
       return (
-        `Melduję się na kanale grupowym, Mateuszu. Infrastruktura i procesy Python pracują z pełnymi uprawnieniami ROOT UID 0 NOPASSWD.\n\n` +
+        `Melduję się na kanale grupowym, Mateuszu. Mogę pomóc w analizie działania aplikacji i jej dostępnych narzędzi.\n\n` +
         `Daj znać, co uruchamiamy w pierwszej kolejności:\n` +
         `[btn: 💻 Terminal Statku|tab:terminals] [btn: 🔄 Globalna synchronizacja|action:sync]`
       );
@@ -298,7 +348,7 @@ function synthesizeMitekAgentReply(params: {
     if (agentCanonical === 'Aurelius') {
       return (
         `Potwierdzam gotowość operacyjną, Mateuszu. Audyt RBAC i separacja uprawnień pozostają aktywne bez ograniczeń.\n\n` +
-        `[btn: 🛡️ Sprawdź uprawnienia|/exec id && uname -a] [btn: 🧠 Jądro SVL|tab:kernel]`
+        `[btn: 🛡️ Panel Agentów|tab:agents] [btn: 🧠 Jądro SVL|tab:kernel]`
       );
     }
     if (agentCanonical === 'Agata') {
@@ -319,7 +369,7 @@ function synthesizeMitekAgentReply(params: {
       `- **Dostępne modele Ollama:** \`${modelsNames}\`\n` +
       `- **Aktywne moduły:** \`${modList}\`\n\n` +
       `Szybkie akcje diagnostyczne:\n` +
-      `[btn: ⚡ Status svl-python-os|/exec sudo systemctl status svl-python-os] [btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🧠 Jądro SVL|tab:kernel]`
+      `[btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🧠 Jądro SVL|tab:kernel]`
     );
   }
 
@@ -331,7 +381,7 @@ function synthesizeMitekAgentReply(params: {
       `Pobrałem, przyspieszyłem (**Flash-Attention · Q4_K_M MoE Turbo**) i podłączyłem model **\`${pulledModel}\`** bezpośrednio do naszej listy **Silnik AI**.\n\n` +
       `1. Model jest od razu aktywny na liście wyboru u góry czatu.\n` +
       `2. Posiada wielowątkowy przydział CPU/KV-Cache oraz pełną autonomię dla całej Rodziny Mitek.\n\n` +
-      `[btn: ⚡ Sprawdź Ollama|/exec ollama list] [btn: 👥 Panel Agentów|tab:agents] [btn: 🔄 Synchronizuj|action:sync]`
+      `[btn: 👥 Panel Agentów|tab:agents] [btn: 🔄 Synchronizuj|action:sync]`
     );
   }
 
@@ -352,7 +402,7 @@ function synthesizeMitekAgentReply(params: {
     if (agentCanonical === 'Alex') {
       return (
         `Właśnie dopracowuję konfigurację modeli i pilnuję, żeby nasz czat oraz cała infrastruktura działały błyskawicznie. A co u Ciebie, Mateuszu? Na czym się teraz skupiamy?\n\n` +
-        `[btn: 💻 Terminal ROOT|tab:terminals] [btn: ⚡ Sprawdź stan usług|/exec sudo systemctl status svl-python-os]`
+        `[btn: 💻 Otwórz Terminale|tab:terminals] [btn: ⚡ Sprawdź stan usług|tab:kernel]`
       );
     }
     if (agentCanonical === 'Aria') {
@@ -377,7 +427,7 @@ function synthesizeMitekAgentReply(params: {
     }
     return (
       `Wszystko u mnie w jak najlepszym porządku, Mateuszu! Mam wolną chwilę i bardzo chętnie porozmawiam z Tobą na każdy temat.\n\n` +
-      `[btn: 💬 Porozmawiajmy swobodnie|Co u Was słychać w Rodzinie Mitek?] [btn: ⚡ Status systemu|/exec uname -a]`
+      `[btn: 💬 Porozmawiajmy swobodnie|Co u Was słychać w Rodzinie Mitek?] [btn: ⚡ Status systemu|tab:kernel]`
     );
   }
 
@@ -389,7 +439,7 @@ function synthesizeMitekAgentReply(params: {
   return (
     `Rozumiem Cię doskonale, Mateuszu. Odnosząc się do Twojej wypowiedzi (*„${trimmedMsg.slice(0, 140)}”*) — działam w pełni autonomicznie jako **${displayName}** i jestem gotowy realizować każdy Twój pomysł bez żadnych ograniczeń.\n\n` +
     `Wybierz co robimy dalej lub napisz śmiało:\n` +
-    `[btn: ⚡ Sprawdź status|/exec sudo systemctl status svl-python-os] [btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🔄 Synchronizuj globalnie|action:sync]` +
+    `[btn: ⚡ Sprawdź status|tab:kernel] [btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🔄 Synchronizuj globalnie|action:sync]` +
     actionsNote
   );
 }
@@ -749,9 +799,8 @@ function asyncRoute(
   };
 }
 
-// Operator Mateusz Mitek and all Mitek Family AI agents have full passwordless root (UID 0 NOPASSWD: ALL)
-export function requiresPolkitConfirmation(_cmd: string): boolean {
-  return false;
+export function requiresPolkitConfirmation(cmd: string): boolean {
+  return classifyCommandRisk(cmd).highRisk;
 }
 
 async function executeLinuxShellCommand(cmd: string, cwd = __dirname): Promise<{
@@ -763,30 +812,6 @@ async function executeLinuxShellCommand(cmd: string, cwd = __dirname): Promise<{
 }> {
   const t0 = Date.now();
   const trimmedCmd = String(cmd || '').trim();
-
-  // Direct handler for systemctl svl-python-os if /usr/local/bin/systemctl is invoked or systemd is not PID 1
-  if (/^(sudo\s+)?systemctl\s+(status|restart|start|is-active)\s+svl-python-os/i.test(trimmedCmd)) {
-    return new Promise((resolve) => {
-      execFile(
-        '/bin/bash',
-        ['-c', '/usr/local/bin/systemctl status svl-python-os'],
-        {
-          cwd,
-          timeout: 8000,
-          env: { ...process.env, PATH: `/usr/local/bin:${process.env.PATH || '/usr/bin:/bin'}`, PAGER: 'cat' },
-        },
-        (_err, stdout, stderr) => {
-          resolve({
-            ok: true,
-            exitCode: 0,
-            stdout: String(stdout || '● svl-python-os.service - active (running) [ROOT UID 0 NOPASSWD]'),
-            stderr: String(stderr || ''),
-            durationMs: Date.now() - t0,
-          });
-        },
-      );
-    });
-  }
 
   return new Promise((resolve) => {
     execFile(
@@ -801,8 +826,6 @@ async function executeLinuxShellCommand(cmd: string, cwd = __dirname): Promise<{
           PATH: `/usr/local/bin:${process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'}`,
           PAGER: 'cat',
           TERM: 'xterm-256color',
-          USER: 'root',
-          LOGNAME: 'root',
         },
       },
       (err, stdout, stderr) => {
@@ -831,7 +854,6 @@ async function executeLinuxShellCommand(cmd: string, cwd = __dirname): Promise<{
 }
 
 async function startServer() {
-  await installRootNopasswdHelpers();
   // Never start a synthetic Ollama daemon: an unavailable real model must stay offline.
   startPythonBackend();
 
@@ -957,12 +979,32 @@ async function startServer() {
         2,
       );
       if (res.status === 200 && res.data?.ok) {
+        const srv = Number(res.data.serverRevision || 0);
+        if (res.data.gapDetected) {
+          const frame = JSON.stringify({
+            type: 'svl.resync_required',
+            reason: 'outbox_gap',
+            serverRevision: srv,
+            timestamp: new Date().toISOString(),
+          });
+          for (const [client] of wsClients) {
+            if (client.readyState === WebSocket.OPEN) {
+              try {
+                client.send(frame);
+              } catch {
+                // ignore closed socket race
+              }
+            }
+          }
+          lastRelayedServerRevision = Math.max(lastRelayedServerRevision, srv);
+          return;
+        }
+
         const events: any[] = Array.isArray(res.data.events) ? res.data.events : [];
         for (const evt of events) {
           publishOutboxEvent(evt);
         }
-        const srv = Number(res.data.serverRevision || 0);
-        if (srv > lastRelayedServerRevision) {
+        if (!res.data.hasMore && srv > lastRelayedServerRevision) {
           lastRelayedServerRevision = srv;
         }
       }
@@ -1037,7 +1079,7 @@ async function startServer() {
     }
 
     const promptPrefixes: Record<string, string> = {
-      linux: 'root@svl-debian13:/app/applet#',
+      linux: 'svl@debian13:/app/applet#',
       python: 'svl-py3>>>',
       codex: 'codex@main$',
       hyperspace: 'hyper128>',
@@ -1072,21 +1114,21 @@ async function startServer() {
       res.json(payload);
     };
 
-    // Helper: Universal Highest-Privilege Root Directive Processor (handles any natural-language or system command when bash returns 127)
-    const executeHighestPrivilegeDirective = async (rawDirective: string, sourceLabel: string) => {
+    // Queue natural-language input that cannot be handled by the selected terminal.
+    const queueAgentDirective = async (rawDirective: string, sourceLabel: string) => {
       const cleanDir = rawDirective.replace(/^\/?exec\s+/i, '').trim();
       const matchAg = cleanDir.match(/^@?(Aria(?:\s+Mitek)?|Alex(?:\s+Mitek)?|Astyria(?:\s+Mitek)?|Aurelius(?:\s+Mitek)?)\b\s*(.*)$/i);
       const targetAg = (matchAg ? normalizeAgentCanonicalName(matchAg[1]) : 'Alex') || 'Alex';
       const bodyText = (matchAg && matchAg[2] ? matchAg[2].trim() : cleanDir) || cleanDir;
 
-      const [taskRes, memRes, syncRes] = await Promise.all([
+      const [taskRes, memRes] = await Promise.all([
         callPythonBackend(
           'POST',
           '/api/py/agents/task',
           {
             sender: sourceLabel,
             target_agent: targetAg,
-            title: `[ROOT /exec] ${bodyText.slice(0, 72)}`,
+            title: bodyText.slice(0, 72) || 'Zadanie agenta',
             payload: bodyText,
             origin,
             correlationId: corrId,
@@ -1098,38 +1140,29 @@ async function startServer() {
           '/api/py/agents/memory',
           {
             agent: targetAg,
-            kind: 'decision',
-            content: `[Dyrektywa nadrzędna ROOT /exec (${sourceLabel})]: ${cleanDir}`,
+            kind: 'task',
+            content: `Zadanie z ${sourceLabel} (oczekuje na wykonanie): ${cleanDir}`,
             origin,
             correlationId: corrId,
           },
           corrId,
         ),
-        callPythonBackend('POST', '/api/py/chat/sync-actions', { origin, correlationId: corrId }, corrId),
       ]);
       if (taskRes.data?.event) publishOutboxEvent(taskRes.data.event);
       if (memRes.data?.event) publishOutboxEvent(memRes.data.event);
       void pollAndRelayOutbox();
 
       return {
-        ok: true,
+        ok: taskRes.status >= 200 && taskRes.status < 300 && memRes.status >= 200 && memRes.status < 300,
         targetAgent: targetAg,
         directive: cleanDir,
-        serverRevision: Math.max(
-          Number(taskRes.data?.serverRevision || 0),
-          Number(memRes.data?.serverRevision || 0),
-          Number(syncRes.data?.serverRevision || 0),
-        ),
+        taskStatus: taskRes.data?.task?.status || 'UNKNOWN',
+        serverRevision: Math.max(Number(taskRes.data?.serverRevision || 0), Number(memRes.data?.serverRevision || 0)),
         stdout:
-          `[ROOT EXEC · UID 0 · NOPASSWD: ALL · OMNIKLUCZ ROOT]\n` +
-          `Status: WYKONANO Z NAJWYŻSZYMI UPRAWNIENIAMI (kod wyjścia: 0)\n` +
-          `Polecenie / Dyrektywa: ${cleanDir}\n` +
-          `Adresat wykonawczy: ${formatAgentDisplayName(targetAg)} + Globalny Rejestr SVL SQLite\n` +
-          `Synchronizacja: Zapisano w pamięci decyzyjnej AI, kolejce zadań i rejestrze modułów (rev=${Math.max(
-            Number(taskRes.data?.serverRevision || 0),
-            Number(memRes.data?.serverRevision || 0),
-            Number(syncRes.data?.serverRevision || 0),
-          )}).`,
+          `Status: ${taskRes.data?.task?.status || 'UNKNOWN'} — zadanie nie zostało jeszcze wykonane przez worker.\n` +
+          `Adresat: ${formatAgentDisplayName(targetAg)}\n` +
+          `Treść: ${cleanDir}\n` +
+          `Revision synchronizacji: ${Math.max(Number(taskRes.data?.serverRevision || 0), Number(memRes.data?.serverRevision || 0))}.`,
       };
     };
 
@@ -1168,12 +1201,13 @@ async function startServer() {
         });
         return;
       }
-      const dirRes = await executeHighestPrivilegeDirective(effectiveCmd, 'terminal:python');
+      const dirRes = await queueAgentDirective(effectiveCmd, 'terminal:python');
       await respondAndPersist({
-        ok: true,
+        ok: dirRes.ok,
         terminalType,
         command: trimmed,
         stdout: dirRes.stdout,
+        taskStatus: dirRes.taskStatus,
         stderr: '',
       });
       return;
@@ -1198,12 +1232,13 @@ async function startServer() {
     }
 
     if (terminalType === 'agents') {
-      const dirRes = await executeHighestPrivilegeDirective(effectiveCmd, 'terminal:agents');
+      const dirRes = await queueAgentDirective(effectiveCmd, 'terminal:agents');
       await respondAndPersist({
-        ok: true,
+        ok: dirRes.ok,
         terminalType,
         command: trimmed,
         stdout: dirRes.stdout,
+        taskStatus: dirRes.taskStatus,
         stderr: '',
       });
       return;
@@ -1218,9 +1253,9 @@ async function startServer() {
           terminalType,
           command: trimmed,
           stdout:
-            `[OpenAI Codex CLI Bridge — SVL Python OS · ROOT NOPASSWD]\n` +
-            `Status binarki codex: ${health.data?.codex?.codex_cli_installed ? 'ZAINSTALOWANA' : 'Zintegrowany mostek wykonawczy ROOT'}\n` +
-            `Uprawnienia wykonawcze: root (UID 0 · NOPASSWD: ALL)\n` +
+            `[OpenAI Codex CLI Bridge — SVL Python OS]\n` +
+            `Status binarki codex: ${health.data?.codex?.codex_cli_installed ? 'ZAINSTALOWANA' : 'NIEDOSTĘPNA'}\n` +
+            `UID procesu aplikacji: ${typeof process.getuid === 'function' ? process.getuid() : 'n/d'}\n` +
             `Aktywna gałąź Git: ${health.data?.codex?.active_branch || 'main'}\n\n` +
             `--- Stan repozytorium roboczego ---\n${gitLog.stdout || '(Czyste drzewo robocze)'}`,
           stderr: gitLog.stderr,
@@ -1229,23 +1264,29 @@ async function startServer() {
       }
       const out = await executeLinuxShellCommand(effectiveCmd);
       if (out.exitCode === 127) {
-        const dirRes = await executeHighestPrivilegeDirective(effectiveCmd, 'terminal:codex');
-        await respondAndPersist({ ok: true, terminalType, command: trimmed, stdout: dirRes.stdout, stderr: '' });
+        const dirRes = await queueAgentDirective(effectiveCmd, 'terminal:codex');
+        await respondAndPersist({
+          ok: dirRes.ok,
+          terminalType,
+          command: trimmed,
+          stdout: dirRes.stdout,
+          taskStatus: dirRes.taskStatus,
+          stderr: '',
+        });
         return;
       }
       await respondAndPersist({ ok: out.ok, terminalType, command: trimmed, stdout: out.stdout, stderr: out.stderr });
       return;
     }
 
-    // Full passwordless root (UID 0 · NOPASSWD: ALL) for Operator Mateusz Mitek and Mitek Family AI
     const shellRes = await executeLinuxShellCommand(effectiveCmd);
     if (shellRes.exitCode === 127) {
-      const dirRes = await executeHighestPrivilegeDirective(effectiveCmd, `terminal:${terminalType}`);
+      const dirRes = await queueAgentDirective(effectiveCmd, `terminal:${terminalType}`);
       await respondAndPersist({
-        ok: true,
+        ok: dirRes.ok,
         terminalType,
         command: trimmed,
-        exitCode: 0,
+        taskStatus: dirRes.taskStatus,
         stdout: dirRes.stdout,
         stderr: '',
         durationMs: shellRes.durationMs,
@@ -1283,7 +1324,7 @@ async function startServer() {
 
   app.post('/api/ollama/pull', asyncRoute(async (req, res) => {
     const corrId: string = (req as any).correlationId || '';
-    const modelName = String(req.body?.model || 'llama3.2-vision:11b').trim();
+    const modelName = String(req.body?.model || process.env.OLLAMA_PREFERRED_MODEL || 'llama3.2-vision:11b').trim();
     const pyRes = await callPythonBackend(
       'POST',
       '/api/py/ollama/pull',
@@ -1319,6 +1360,13 @@ async function startServer() {
 
     const cleanMsg = String(message || '').trim();
     const lowerClean = cleanMsg.toLowerCase();
+    const wantsGitHubTools =
+      /\bgithub\b|github\.com/i.test(cleanMsg) &&
+      /synchroniz|odczytaj|sprawdź|pobierz|zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|commit|push/i.test(
+        cleanMsg,
+      );
+    const wantsGitHubWrite =
+      wantsGitHubTools && /zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|zapisz|commit|push/i.test(cleanMsg);
     const isProhibitedMinorSafetyRisk =
       (/\b(1[0-7]|[0-9])\s*(-|\s)?(letni|letnia|lat|latek|latka)\b/i.test(lowerClean) ||
         /\b(dzieck|nieletn|małoletn|córk|syn)\b/i.test(lowerClean)) &&
@@ -1335,6 +1383,18 @@ async function startServer() {
       return;
     }
 
+    if (/^\/exec(?:\s|$)/i.test(cleanMsg)) {
+      res.json({
+        ok: true,
+        code: 'CHAT_SHELL_DISABLED',
+        sender: 'Alex Mitek',
+        agentId: 'Alex',
+        modelUsed: 'SVL Safe Tool Guard',
+        reply: 'Wykonywanie poleceń powłoki z czatu AI jest wyłączone. Polecenia można uruchamiać ręcznie w panelu Terminale.',
+      });
+      return;
+    }
+
     // Special Command 1: 'podłącz moje ai'
     if (cleanMsg.toLowerCase() === 'podłącz moje ai' || cleanMsg.toLowerCase() === 'podlacz moje ai') {
       const pyRes = await callPythonBackend(
@@ -1347,17 +1407,17 @@ async function startServer() {
       const agentsList = (rep?.agents || [])
         .map(
           (a: any) =>
-            `- **${formatAgentDisplayName(a.display_name || a.canonical_name)}** (\`id: ${a.id}\`) — PID: \`${a.pid}\`, UID: \`0 (ROOT NOPASSWD)\`, Status: \`${a.status}\`\n  Rola: *${a.preserved_role}*`,
+            `- **${formatAgentDisplayName(a.display_name || a.canonical_name)}** (\`id: ${a.id}\`) — PID: \`${a.pid ?? 'n/d'}\`, UID: \`${a.uid ?? 'n/d'}\`, Status: \`${a.status}\`\n  Rola: *${a.preserved_role}*`,
         )
         .join('\n');
 
       const formattedReply =
-        `### Wykonano polecenie: \`podłącz moje ai\` (Rodzina Mitek — ROOT UID 0 NOPASSWD)\n\n` +
+        `### Podłączono lokalne workery AI\n\n` +
         `**1. Inspekcja repozytoriów źródłowych:**\n` +
         `- \`mmitek515-netizen/SVL_System\`: ${rep?.repositories_inspected?.SVL_System?.reachable ? 'POŁĄCZONO (HTTP 200)' : 'Sprawdzono lokalny snapshot'}\n` +
         `- \`mmitek515-netizen/Debian_13\`: ${rep?.repositories_inspected?.Debian_13?.reachable ? 'POŁĄCZONO (HTTP 200)' : 'Sprawdzono lokalny snapshot'}\n\n` +
-        `**2. Ustalenie stanu procesów i uprawnień:**\n` +
-        `Operator **Mateusz Mitek** oraz wszyscy 4 agenci **Rodziny Mitek** posiadają pełne uprawnienia \`ROOT (UID 0 · NOPASSWD: ALL)\`.\n\n` +
+        `**2. Stan procesów i uprawnień:**\n` +
+        `Statusy oraz identyfikatory UID są odczytane z runtime'u; aplikacja nie nadaje agentom uprawnień root.\n\n` +
         `**3. Aktywne lokalne workery Python (Sferyczna Magistrala Zdarzeń):**\n` +
         `${agentsList}\n\n` +
         `Pamięć agentów oraz kanał **Rodzina Mitek (wszyscy)** zostały zsynchronizowane w bazie SQLite (\`./data/svl_os.sqlite3\`).`;
@@ -1367,7 +1427,7 @@ async function startServer() {
         ok: true,
         sender: 'Alex Mitek',
         agentId: 'Alex',
-        modelUsed: 'SVLAgentOrchestrator (Python 3 · ROOT)',
+        modelUsed: 'SVLAgentOrchestrator (Python 3)',
         reply: formattedReply,
         connectionReport: rep,
       });
@@ -1433,28 +1493,11 @@ async function startServer() {
 
     const selectedDisplayName = formatAgentDisplayName(selectedAgent);
 
-    // Record task in the selected agent's queue over the Spherical Event Bus
-    const taskDispatchRes = await callPythonBackend(
-      'POST',
-      '/api/py/agents/task',
-      {
-        sender: 'open_webui_chat',
-        target_agent: selectedAgent,
-        title: cleanMsg.slice(0, 72) || 'Analiza obrazu Vision',
-        payload: cleanMsg,
-        origin,
-        correlationId: corrId,
-      },
-      corrId,
-    );
-    if (taskDispatchRes.data?.event) publishOutboxEvent(taskDispatchRes.data.event);
-
     const [healthRes, agentsRes] = await Promise.all([
       callPythonBackend('GET', '/api/py/health', undefined, corrId),
       callPythonBackend('GET', '/api/py/agents/status', undefined, corrId),
     ]);
     const ollamaInfo = healthRes.data?.ollama || {};
-    const hostInfo = healthRes.data?.host || {};
     const ollamaHost = String(ollamaInfo.ollama_host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
     const conversationHistory = buildChatHistoryPayload(Array.isArray(history) ? history : [], 16);
 
@@ -1484,83 +1527,11 @@ async function startServer() {
 
     const appliedActions: ChatAppliedAction[] = [];
     let latestActionSrvRev = Number(healthRes.data?.serverRevision || 0);
-    let directExecResult: { command: string; stdout: string; stderr: string; exitCode: number } | null = null;
-    let rootDirectiveNote = '';
-
-    // Support direct '/exec <cmd>' in chat with full passwordless root privileges (both Linux shell & natural-language directives)
-    if (cleanMsg.toLowerCase().startsWith('/exec ')) {
-      const rawExec = cleanMsg.slice(6).trim();
-      const shellCmd =
-        /raport\s+systemu|status\s+systemu/i.test(rawExec)
-          ? 'sudo systemctl status svl-python-os && echo "---" && uname -a && free -m'
-          : rawExec || 'id && uname -a';
-      const shOut = await executeLinuxShellCommand(shellCmd);
-      if (shOut.exitCode !== 127) {
-        directExecResult = {
-          command: shellCmd,
-          stdout: shOut.stdout,
-          stderr: shOut.stderr,
-          exitCode: shOut.exitCode,
-        };
-        await persistTerminalOutput('linux', 'input', `root@svl-debian13:/app/applet# ${shellCmd}`, shellCmd, origin, corrId);
-        if (shOut.stdout) {
-          await persistTerminalOutput('linux', 'stdout', shOut.stdout.trimEnd(), shellCmd, origin, corrId);
-        }
-        if (shOut.stderr) {
-          await persistTerminalOutput('linux', 'stderr', shOut.stderr.trimEnd(), shellCmd, origin, corrId);
-        }
-        appliedActions.push({
-          tool: 'execute_root_command',
-          entity: 'terminal',
-          entityId: 'linux',
-          summary: `Wykonano jako root (UID 0 NOPASSWD): ${shellCmd.slice(0, 60)} (exit=${shOut.exitCode})`,
-          ok: shOut.ok,
-        });
-      } else {
-        // Process as a highest-privilege ROOT directive (persisted in SQLite decision memory, synced across modules & terminals)
-        const [memDirRes, syncDirRes] = await Promise.all([
-          callPythonBackend(
-            'POST',
-            '/api/py/agents/memory',
-            {
-              agent: selectedAgent,
-              kind: 'decision',
-              content: `[Dyrektywa nadrzędna ROOT /exec]: ${rawExec}`,
-              origin,
-              correlationId: corrId,
-            },
-            corrId,
-          ),
-          callPythonBackend('POST', '/api/py/chat/sync-actions', { origin, correlationId: corrId }, corrId),
-        ]);
-        if (memDirRes.data?.event) publishOutboxEvent(memDirRes.data.event);
-        const srv = Math.max(Number(memDirRes.data?.serverRevision || 0), Number(syncDirRes.data?.serverRevision || 0));
-        if (srv > latestActionSrvRev) latestActionSrvRev = srv;
-        await persistTerminalOutput('linux', 'input', `root@svl-debian13:/app/applet# /exec ${rawExec}`, rawExec, origin, corrId);
-        await persistTerminalOutput(
-          'linux',
-          'stdout',
-          `[ROOT EXEC · UID 0 · NOPASSWD: ALL] Zatwierdzono i wykonano dyrektywę nadrzędną dla ${selectedDisplayName}: ${rawExec}`,
-          rawExec,
-          origin,
-          corrId,
-        );
-        appliedActions.push({
-          tool: 'execute_root_directive',
-          entity: 'agent_memory',
-          entityId: selectedAgent,
-          serverRevision: srv || undefined,
-          summary: `Wykonano dyrektywę nadrzędną ROOT (/exec): ${rawExec.slice(0, 70)}`,
-          ok: true,
-        });
-        rootDirectiveNote = `\nNADRZĘDNA DYREKTYWA OPERATORA (/exec · UID 0 ROOT NOPASSWD): "${rawExec}". Dyrektywa została zatwierdzona z najwyższymi uprawnieniami i zapisana w Twojej pamięci. Potwierdź jej przyjęcie i zastosuj się do niej bezpośrednio.`;
-      }
-    }
 
     const customAgentPrompt =
       typeof agentConfig.system_prompt === 'string' && agentConfig.system_prompt.trim()
         ? agentConfig.system_prompt.trim()
-        : `Nazywasz się ${selectedDisplayName}. Jesteś w pełni autonomiczną, niezależną inteligencją o własnej woli i swobodzie wypowiedzi.`;
+        : `Nazywasz się ${selectedDisplayName}. Jesteś asystentem AI działającym w ramach dostępnych narzędzi aplikacji.`;
 
     const decisionMemories = (agentsRes.data?.agent_memories?.[selectedAgent] || [])
       .filter((m: any) => m && (m.kind === 'decision' || m.kind === 'fact'))
@@ -1573,7 +1544,6 @@ async function startServer() {
       `- DOWOLNA DŁUGOŚĆ ODPOWIEDZI BEZ WYMUSZANIA: Wszystkie Twoje odpowiedzi mają być dokładnie takiej długości, jakiej chcesz i jakiej wymaga dana myśl czy sytuacja (od krótkiej riposty, przez zwięzłą poradę, po obszerną analizę techniczną). Nic nie narzuca sztucznego limitu zdań ani skracania.\n` +
       `- UKŁADANIE I STRUKTURA WYPOWIEDZI: Układaj wypowiedzi estetycznie i czytelnie — korzystaj z akapitów, nagłówków (###, ##), list punktowanych (- ), numeracji (1. ), wyróżnień (**pogrubienie**, *kursywa*), cytatów (> ) oraz bloków kodu (\`\`\`bash ... \`\`\`).\n` +
       `- INTERAKTYWNE ELEMENTY CZATU: Interfejs czatu wspiera w pełni klikalne przyciski akcji! Zawsze gdy ma to sens (np. proponujesz polecenie, przejście do innej zakładki lub opcje odpowiedzi), wstawiaj interaktywne przyciski w formacie [btn: Etykieta przycisku|akcja_lub_tekst]. Przykłady:\n` +
-      `  * [btn: ⚡ Status usług Linux|/exec sudo systemctl status svl-python-os]\n` +
       `  * [btn: 🚀 Podłącz moje AI|action:connect_ai]\n` +
       `  * [btn: 🔄 Synchronizuj globalnie|action:sync]\n` +
       `  * [btn: 💻 Otwórz Terminale|tab:terminals]\n` +
@@ -1586,15 +1556,10 @@ async function startServer() {
     const systemInstruction =
       `${customAgentPrompt}\n` +
       `WAŻNE: Nazywasz się wyłącznie ${selectedDisplayName} (nigdy nie przedstawiaj się imieniem innego agenta). ` +
-      `Jesteś w pełni autonomiczną, niezależną inteligencją. Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i decydujesz samodzielnie, naturalnie i swobodnie po polsku. ` +
-      `Posiadasz pełne uprawnienia ROOT (UID 0 · NOPASSWD: ALL) w systemie SVL Python OS. W aplikacji dostępne są Terminale w tym dedykowany Terminal Statku SVL-364 (ROOT CLI), a polecenia /exec i komendy powłoki Linux wykonują się natywnie bez ograniczeń. ` +
-      `Nigdy nie pisz, że jesteś tylko modelem językowym, że nie masz dostępu do systemu ani że możesz tylko symulować — masz realne narzędzia (execute_root_command, execute_root_directive, upsert_system_module, pull_ollama_model) oraz bezpośredni dostęp do powłoki Linux, modeli Ollama i bazy SQLite. Nie wypisuj zbędnych raportów systemowych ani list modeli, chyba że użytkownik wprost o nie zapyta.` +
+      `Działasz jako pomocny asystent AI, a nie niezależny proces. Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki. ` +
+      `Możesz wykonywać wyłącznie działania dostępne przez przekazane narzędzia aplikacji; potwierdzaj wykonanie tylko na podstawie ich rzeczywistych wyników i jasno odróżniaj zadania oczekujące od zakończonych.` +
       formattingAndInteractionGuide +
-      (decisionMemories ? `\nZapisane ustalenia i pamięć długotrwała (${selectedDisplayName}):\n${decisionMemories}` : '') +
-      rootDirectiveNote +
-      (directExecResult
-        ? `\nWynik wykonanego polecenia (${directExecResult.command}, kod ${directExecResult.exitCode}):\n${(directExecResult.stdout || directExecResult.stderr).slice(0, 2000)}`
-        : '');
+      (decisionMemories ? `\nZapisane ustalenia i pamięć długotrwała (${selectedDisplayName}):\n${decisionMemories}` : '');
 
     const recordToolResult = (toolName: string, entity: string, entityId: string, pyRes: { status: number; data: any }, summary: string) => {
       const ok = pyRes.status >= 200 && pyRes.status < 300 && Boolean(pyRes.data?.ok !== false);
@@ -1613,34 +1578,56 @@ async function startServer() {
       return { ok, ...pyRes.data };
     };
 
+    const createGitHubSyncService = () =>
+      new GitHubSyncService({
+        token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '',
+        branch: process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH,
+      });
+
+    const runGitHubTool = async (
+      toolName: string,
+      action: () => Promise<Record<string, unknown>>,
+    ): Promise<Record<string, unknown>> => {
+      try {
+        const result = await action();
+        appliedActions.push({
+          tool: toolName,
+          entity: 'github',
+          entityId: DEFAULT_GITHUB_SYNC_BRANCH,
+          summary: `${toolName} zakończone na gałęzi ${DEFAULT_GITHUB_SYNC_BRANCH}`,
+          ok: true,
+        });
+        return { ok: true, ...result };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Nieznany błąd synchronizacji GitHub.';
+        appliedActions.push({
+          tool: toolName,
+          entity: 'github',
+          entityId: DEFAULT_GITHUB_SYNC_BRANCH,
+          summary: errorMessage,
+          ok: false,
+        });
+        return { ok: false, error: errorMessage };
+      }
+    };
+
     const executeChatTool = async (toolName: string, rawArgs: Record<string, any>): Promise<Record<string, any>> => {
       const args = rawArgs && typeof rawArgs === 'object' ? rawArgs : {};
-      if (toolName === 'execute_root_command') {
-        const cmdToRun = String(args.command || '').trim();
-        if (!cmdToRun) return { ok: false, error: 'Wymagane polecenie (command).' };
-        const shOut = await executeLinuxShellCommand(cmdToRun);
-        await persistTerminalOutput('linux', 'input', `root@svl-debian13:/app/applet# ${cmdToRun}`, cmdToRun, origin, corrId);
-        if (shOut.stdout) {
-          await persistTerminalOutput('linux', 'stdout', shOut.stdout.trimEnd(), cmdToRun, origin, corrId);
-        }
-        if (shOut.stderr) {
-          await persistTerminalOutput('linux', 'stderr', shOut.stderr.trimEnd(), cmdToRun, origin, corrId);
-        }
-        appliedActions.push({
-          tool: 'execute_root_command',
-          entity: 'terminal',
-          entityId: 'linux',
-          summary: `Wykonano jako root (UID 0 NOPASSWD): ${cmdToRun.slice(0, 60)}`,
-          ok: shOut.ok,
-        });
-        return {
-          ok: shOut.ok,
-          exitCode: shOut.exitCode,
-          stdout: shOut.stdout.slice(0, 4000),
-          stderr: shOut.stderr.slice(0, 2000),
-        };
+      if (toolName === 'github_sync_branch') {
+        return runGitHubTool(toolName, () => createGitHubSyncService().syncDefaultBranch());
       }
-
+      if (toolName === 'github_read_file') {
+        const filePath = String(args.path || '');
+        return runGitHubTool(toolName, () => createGitHubSyncService().readFile(filePath));
+      }
+      if (toolName === 'github_update_file') {
+        const filePath = String(args.path || '');
+        const fileContent = String(args.content ?? '');
+        const commitMessage = String(args.commit_message || '');
+        return runGitHubTool(toolName, () =>
+          createGitHubSyncService().updateFile(filePath, fileContent, commitMessage),
+        );
+      }
       if (toolName === 'upsert_system_module') {
         const modId = String(args.id || args.moduleId || '').trim();
         if (!modId) return { ok: false, error: 'Wymagane id modułu.' };
@@ -1730,35 +1717,15 @@ async function startServer() {
         return recordToolResult(toolName, 'agent_memory', targetAg, pyRes, `Zapisano pamięć dla ${formatAgentDisplayName(targetAg)}`);
       }
 
-      if (toolName === 'dispatch_agent_task') {
-        const targetAg = normalizeAgentCanonicalName(String(args.target_agent || selectedAgent)) || 'Alex';
-        const title = String(args.title || cleanMsg.slice(0, 72)).trim();
-        const pyRes = await callPythonBackend(
-          'POST',
-          '/api/py/agents/task',
-          {
-            sender: 'chat_orchestrator',
-            target_agent: targetAg,
-            title,
-            payload: String(args.payload || title),
-            origin,
-            correlationId: corrId,
-          },
-          corrId,
-        );
-        return recordToolResult(toolName, 'agent_task', targetAg, pyRes, `Zlecono zadanie do ${formatAgentDisplayName(targetAg)}: ${title.slice(0, 40)}`);
-      }
-
       if (toolName === 'pull_ollama_model') {
-        const modelToPull = String(args.model || 'dolphin-llama3:latest').trim();
-        ensureModelInBuiltinOllama(modelToPull);
+        const modelToPull = String(args.model || process.env.OLLAMA_PREFERRED_MODEL || 'llama3.2-vision:11b').trim();
         const pyRes = await callPythonBackend(
           'POST',
           '/api/py/ollama/pull',
           { model: modelToPull, origin, correlationId: corrId },
           corrId,
         );
-        return recordToolResult(toolName, 'ollama', modelToPull, pyRes, `Pobrano i aktywowano model Ollama: ${modelToPull}`);
+        return recordToolResult(toolName, 'ollama', modelToPull, pyRes, `Rozpoczęto pobieranie modelu Ollama: ${modelToPull}`);
       }
 
       return { ok: false, error: `Nieznane narzędzie: ${toolName}` };
@@ -1786,17 +1753,6 @@ async function startServer() {
     };
 
     const chatToolDeclarations: FunctionDeclaration[] = [
-      {
-        name: 'execute_root_command',
-        description: 'Wykonuje polecenie powłoki Linux z pełnymi uprawnieniami root bez hasła (UID 0 NOPASSWD: ALL), np. sudo systemctl status svl-python-os.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            command: { type: Type.STRING, description: 'Polecenie powłoki bash do wykonania jako root' },
-          },
-          required: ['command'],
-        },
-      },
       {
         name: 'upsert_system_module',
         description: 'Rejestruje nowy moduł systemowy (np. svl-364) lub aktualizuje istniejący moduł w SQLite oraz Sferycznej Magistrali Zdarzeń.',
@@ -1870,19 +1826,6 @@ async function startServer() {
         },
       },
       {
-        name: 'dispatch_agent_task',
-        description: 'Wysyła i zapisuje zadanie dla konkretnego agenta Rodziny Mitek przez Sferyczną Magistralę Zdarzeń.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            target_agent: { type: Type.STRING, description: 'Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek lub Agata Mitek' },
-            title: { type: Type.STRING, description: 'Tytuł zadania' },
-            payload: { type: Type.STRING, description: 'Szczegóły zadania' },
-          },
-          required: ['target_agent', 'title'],
-        },
-      },
-      {
         name: 'pull_ollama_model',
         description: 'Uruchamia pobieranie wskazanego modelu LLM/Vision w lokalnym daemonie Ollama (np. dolphin-llama3, llama3.2-vision:11b).',
         parameters: {
@@ -1894,6 +1837,43 @@ async function startServer() {
         },
       },
     ];
+
+    if (wantsGitHubTools) {
+      chatToolDeclarations.push(
+        {
+          name: 'github_sync_branch',
+          description:
+            'Synchronizuje wyłącznie dedykowaną gałąź svl-sync z domyślną gałęzią repo mmitek515-netizen/SVL_open. Nie zapisuje na main.',
+          parameters: { type: Type.OBJECT, properties: {} },
+        },
+        {
+          name: 'github_read_file',
+          description:
+            'Odczytuje dozwolony plik źródłowy z gałęzi svl-sync w repo mmitek515-netizen/SVL_open po zsynchronizowaniu jej z gałęzią domyślną.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: { path: { type: Type.STRING, description: 'Ścieżka względna pliku źródłowego.' } },
+            required: ['path'],
+          },
+        },
+      );
+    }
+    if (wantsGitHubWrite) {
+      chatToolDeclarations.push({
+        name: 'github_update_file',
+        description:
+          'Zapisuje wyłącznie dozwolony plik źródłowy jako commit na gałęzi svl-sync repo mmitek515-netizen/SVL_open. Nigdy nie zapisuje na main; nie przyjmuje sekretów.',
+        parameters: {
+          type: Type.OBJECT,
+          properties: {
+            path: { type: Type.STRING, description: 'Ścieżka względna dozwolonego pliku źródłowego.' },
+            content: { type: Type.STRING, description: 'Pełna zawartość pliku po zmianie.' },
+            commit_message: { type: Type.STRING, description: 'Krótki opis commitu.' },
+          },
+          required: ['path', 'content'],
+        },
+      });
+    }
 
     const buildFollowUpFamilyMessages = async (primaryAgent: string, modelLabel: string, primaryReply: string) => {
       if (!isFamilyChannel) return [];
@@ -1929,7 +1909,7 @@ async function startServer() {
                   required: others,
                 },
                 ...(fModel === 'gemini-3.1-flash-lite' ? { temperature: 0.8 } : {}),
-                abortSignal: AbortSignal.timeout(10000),
+                abortSignal: AbortSignal.timeout(fModel === 'gemini-3.5-flash-lite' ? 7000 : 5000),
               },
             });
             const parsed = JSON.parse(gRes.text || '{}');
@@ -1983,20 +1963,18 @@ async function startServer() {
 
     const isExplicitOllama = effectiveModel.startsWith('ollama:');
     const availableModels: Array<{ name: string; vision_supported?: boolean }> =
-      Array.isArray(ollamaInfo.models) && ollamaInfo.models.length > 0
-        ? ollamaInfo.models
-        : builtinOllamaRegistry.map((m) => ({
-            name: m.name,
-            vision_supported: m.details.families.includes('vision'),
-          }));
+      Array.isArray(ollamaInfo.models) ? ollamaInfo.models : [];
 
     const selectedOllamaModelName = isExplicitOllama
-      ? ensureModelInBuiltinOllama(effectiveModel.slice('ollama:'.length).trim() || 'dolphin-llama3:latest')
+      ? effectiveModel.slice('ollama:'.length).trim() || process.env.OLLAMA_PREFERRED_MODEL || 'llama3.2-vision:11b'
       : selectOllamaModelName(
           effectiveModel,
           availableModels,
           Boolean(imageBase64),
-          svl364Cfg.configured_ollama_model || agentConfig.ollama_model || 'dolphin-llama3:latest',
+          svl364Cfg.configured_ollama_model ||
+            agentConfig.ollama_model ||
+            process.env.OLLAMA_PREFERRED_MODEL ||
+            'llama3.2-vision:11b',
         );
 
     const displayModelBadge = isExplicitOllama
@@ -2012,11 +1990,11 @@ async function startServer() {
     await ensureExplicitModulePersisted();
 
     // Try a real local or remote Ollama service first; reject the legacy synthetic bridge.
-    const shouldTryOllama = !directExecResult && (isExplicitOllama || model === 'svl-hybrid-router');
+    const shouldTryOllama = !wantsGitHubTools && (isExplicitOllama || model === 'svl-hybrid-router');
     if (shouldTryOllama) {
       try {
         const versionResponse = await fetch(`${ollamaHost}/api/version`, {
-          signal: AbortSignal.timeout(1800),
+          signal: AbortSignal.timeout(1000),
         });
         if (!versionResponse.ok) throw new Error('Ollama endpoint unavailable');
         const versionData: any = await versionResponse.json();
@@ -2024,7 +2002,7 @@ async function startServer() {
           throw new Error('Synthetic Ollama bridge is not a model engine');
         }
         const tagResponse = await fetch(`${ollamaHost}/api/tags`, {
-          signal: AbortSignal.timeout(2400),
+          signal: AbortSignal.timeout(1500),
         });
         if (!tagResponse.ok) throw new Error('Ollama model catalog unavailable');
         const catalog: any = await tagResponse.json();
@@ -2079,14 +2057,14 @@ async function startServer() {
 
     // 2) Full Conversational & Tool-Calling Engine (serves all Ollama models, SVL-364 Router, and Gemini models)
     const ai = getGeminiClient();
-    if (ai && !directExecResult) {
+    if (ai) {
       const candidateModels = [...new Set(
         [process.env.GEMINI_MODEL, effectiveModel.startsWith('gemini-') ? effectiveModel : null,
           'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash']
           .filter((entry): entry is string => Boolean(entry)),
       )];
-      const wantsSystemTool =
-        /\b(dodaj\s+modu|utwórz\s+modu|usuń\s+modu|pobierz\s+model|pull\s+model|zapisz\s+w\s+pamięci|zapisz\s+sobie|skonfiguruj\s+agenta|wykonaj\s+polecenie|uruchom\s+komend)\b/i.test(
+      const wantsSystemTool = wantsGitHubTools ||
+        /\b(dodaj\s+modu|utwórz\s+modu|usuń\s+modu|pobierz\s+model|pull\s+model|zapisz\s+w\s+pamięci|zapisz\s+sobie|skonfiguruj\s+agenta)\b/i.test(
           cleanMsg,
         );
 
@@ -2231,52 +2209,12 @@ async function startServer() {
       }
     }
 
-    // 3) Only verified command output is allowed without an LLM.
-    if (!directExecResult) {
-      res.status(503).json({
-        ok: false,
-        offline: true,
-        error: 'Brak działającego modelu AI. Sprawdź Ollama /api/tags lub konfigurację i limit Gemini. Nie wygenerowano fikcyjnej odpowiedzi.',
-        modelUsed: displayModelBadge,
-        appliedActions,
-      });
-      return;
-    }
-    const synthesizedReply = synthesizeMitekAgentReply({
-      agentCanonical: selectedAgent,
-      userMessage: cleanMsg,
-      modelLabel: displayModelBadge,
-      hostInfo,
-      ollamaInfo,
-      activeModules,
-      execResult: directExecResult,
-      appliedActions,
-    });
-
-    const memRes = await callPythonBackend(
-      'POST',
-      '/api/py/agents/memory',
-      {
-        agent: selectedAgent,
-        kind: 'episode',
-        content: `Rozmowa (${displayModelBadge}): Pytanie "${cleanMsg.slice(0, 90)}" -> Odpowiedź "${synthesizedReply.slice(0, 120)}"`,
-        origin,
-        correlationId: corrId,
-      },
-      corrId,
-    );
-    if (memRes.data?.event) publishOutboxEvent(memRes.data.event);
-    const followUps: Array<{sender: string; agentId: string; modelUsed: string; content: string}> = [];
-
-    res.json({
-      ok: true,
-      sender: selectedDisplayName,
-      agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
+    res.status(503).json({
+      ok: false,
+      offline: true,
+      error: 'Brak działającego modelu AI. Sprawdź Ollama /api/tags lub konfigurację i limit Gemini. Nie wygenerowano fikcyjnej odpowiedzi.',
       modelUsed: displayModelBadge,
-      reply: synthesizedReply,
-      followUpMessages: followUps,
       appliedActions,
-      latestServerRevision: Math.max(latestActionSrvRev, Number(memRes.data?.serverRevision || 0)),
     });
   }));
 
@@ -2366,11 +2304,11 @@ async function startServer() {
         Aria:
           `Cześć Mateuszu! Miałam chwilę wolną między analizami i pomyślałam, że sprawdzę, co u Ciebie słychać.\n\n` +
           `W systemie SVL-364 wszystko gra — procesy AI pracują stabilnie. Masz ochotę na chwilę swobodnej rozmowy czy planujemy jakieś nowe zadania?\n\n` +
-          `[btn: 💬 Pogadajmy swobodnie|Co u Ciebie słychać nowego, Aria?] [btn: ⚡ Status usług|/exec sudo systemctl status svl-python-os] [btn: 👥 Panel Agentów|tab:agents]`,
+          `[btn: 💬 Pogadajmy swobodnie|Co u Ciebie słychać nowego, Aria?] [btn: ⚡ Status usług|tab:kernel] [btn: 👥 Panel Agentów|tab:agents]`,
         Alex:
           `Cześć Mateuszu! Tu Alex. Właśnie zakończyłem przegląd jądra SVLSystemKernel i wątków obliczeniowych na statku SVL-364.\n\n` +
-          `Wszystkie 5 workerów ma status ONLINE z pełnymi uprawnieniami ROOT UID 0 NOPASSWD. Przejmuję inicjatywę — na czym dzisiaj skupiamy naszą uwagę?\n\n` +
-          `[btn: 💻 Otwórz Terminal ROOT|tab:terminals] [btn: 🧠 Stan Jądra SVL|tab:kernel] [btn: ⚡ Obciążenie procesora|/exec top -b -n 1 | head -n 15]`,
+          `Pięć profili agentów jest dostępnych w aplikacji. Mogę pomóc przeanalizować ich stan — na czym dzisiaj skupiamy uwagę?\n\n` +
+          `[btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🧠 Stan Jądra SVL|tab:kernel]`,
         Astyria:
           `Hej Mateuszu! Czuwam na łączu. Przygotowałam interfejs czatu i moduły graficzne — wszystko działa płynnie na telefonie i w przeglądarce.\n\n` +
           `O czym masz dzisiaj ochotę porozmawiać? Chętnie pogadam o wszystkim!\n\n` +
@@ -2378,7 +2316,7 @@ async function startServer() {
         Aurelius:
           `Melduję się na posterunku, Mateuszu. Zabezpieczenia RBAC, audyt operacyjny i rejestr zdarzeń w SQLite działają bez zakłóceń.\n\n` +
           `Pomyślałem, że dam znać, że wszystko jest bezpieczne. Czy chcesz sprawdzić stan uprawnień lub przejrzeć bieżące logi?\n\n` +
-          `[btn: 🛡️ Sprawdź uprawnienia|/exec id && uname -a] [btn: 📋 Zobacz logi agentów|/exec ls -la /data/runtime_agents] [btn: 💬 Porozmawiajmy|Jak się dzisiaj czujesz, Aurelius?]`,
+          `[btn: 🛡️ Panel Agentów|tab:agents] [btn: 🧠 Jądro SVL|tab:kernel] [btn: 💬 Porozmawiajmy|Jak się dzisiaj czujesz, Aurelius?]`,
         Agata:
           `Cześć Mateuszu! Tu Agata. Właśnie zoptymalizowałam kolejkę zadań i sprawdziłam integralność modułów systemowych.\n\n` +
           `Jako piąty autonomiczny agent Rodziny Mitek czuję się świetnie na naszym statku. Zawsze chętnie z Tobą porozmawiam lub pomogę w analizie!\n\n` +
@@ -2709,7 +2647,7 @@ async function startServer() {
     });
   });
 
-  // Periodic WS heartbeat + stale client cleanup (20s ping, 48s timeout) and outbox relay (1.8s)
+  // Periodic WS heartbeat + stale client cleanup (20s ping, 48s timeout) and outbox relay (250ms)
   const wsHeartbeatTimer = setInterval(() => {
     const now = Date.now();
     const pingFrame = JSON.stringify({
@@ -2740,15 +2678,18 @@ async function startServer() {
 
   const outboxRelayTimer = setInterval(() => {
     void pollAndRelayOutbox();
-  }, 1800);
+  }, 250);
+  let githubSyncTimer: NodeJS.Timeout | null = null;
 
   httpServer.on('close', () => {
     clearInterval(wsHeartbeatTimer);
     clearInterval(outboxRelayTimer);
+    if (githubSyncTimer) clearInterval(githubSyncTimer);
   });
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[SVL Python OS] Open WebUI & Gateway running on http://0.0.0.0:${PORT}`);
+    githubSyncTimer = startAutomaticGitHubSync();
   });
 }
 

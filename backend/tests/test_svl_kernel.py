@@ -12,11 +12,14 @@ Unit & Integration Tests for SVL Python OS Kernel:
 from __future__ import annotations
 
 import asyncio
+import json
 import math
+import multiprocessing
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
@@ -27,7 +30,12 @@ from spherical_bus import SphericalEventBus
 from svl_core import SVLProtectedVariable, SVLSystemKernel, TopologicalInfinityEngine, VisualScope
 
 
-from agents_runtime import CANONICAL_SVL_AGENTS, SVLAgentOrchestrator
+from agents_runtime import (
+    CANONICAL_SVL_AGENTS,
+    SVLAgentOrchestrator,
+    _agent_worker_process_loop,
+    execute_agent_task,
+)
 
 
 class TestSVLKernelSuite(unittest.TestCase):
@@ -116,11 +124,177 @@ class TestSVLKernelSuite(unittest.TestCase):
             self.assertEqual(set(CANONICAL_SVL_AGENTS.keys()), {"Aria", "Alex", "Astyria", "Aurelius", "Agata"})
             self.assertEqual(orchestrator.agent_states["Aria"]["id"], "si_1")
             self.assertEqual(orchestrator.agent_states["Aria"]["config"]["ollama_model"], "llama3.2-vision:11b")
+            for name in CANONICAL_SVL_AGENTS:
+                config = orchestrator.get_agent_config(name)
+                self.assertFalse(config["root_nopasswd"])
+                self.assertEqual(config["rbac_role"], "assistant")
+                self.assertEqual(config["autonomy_mode"], "SUPERVISED_TOOL_USE")
+                self.assertNotIn("root", config["allowed_scopes"])
+                self.assertNotIn("sudo_nopasswd", config["allowed_scopes"])
 
             updated = orchestrator.update_agent_config("Aria", {"temperature": 0.42, "ollama_model": "llama3.2-vision:11b"})
             self.assertAlmostEqual(updated["temperature"], 0.42)
             reloaded = orchestrator.get_agent_config("Aria")
             self.assertAlmostEqual(reloaded["temperature"], 0.42)
+            self.assertFalse(reloaded["root_nopasswd"])
+
+            kernel.run_db(
+                lambda conn: conn.execute(
+                    "UPDATE agent_configs SET config_json = ? WHERE canonical_name = ?",
+                    (
+                        '{"root_nopasswd": true, "rbac_role": "autonomous_independent_ai", '
+                        '"autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT", '
+                        '"allowed_scopes": ["chat", "root", "sudo_nopasswd"]}',
+                        "Aria",
+                    ),
+                ),
+                write=True,
+            )
+            migrated = SVLAgentOrchestrator(kernel, bus).get_agent_config("Aria")
+            self.assertFalse(migrated["root_nopasswd"])
+            self.assertEqual(migrated["rbac_role"], "assistant")
+            self.assertEqual(migrated["autonomy_mode"], "SUPERVISED_TOOL_USE")
+            self.assertEqual(migrated["allowed_scopes"], ["chat"])
+
+    def test_agent_dispatch_is_persisted_until_a_worker_is_connected(self) -> None:
+        async def _run() -> None:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                kernel = SVLSystemKernel(
+                    db_path=str(Path(tmpdir) / "test_agent_queue.sqlite3"),
+                    operator_token="test_operator_token_with_more_than_32_chars_abcdef",
+                )
+                orchestrator = SVLAgentOrchestrator(kernel, SphericalEventBus())
+                dispatched = await orchestrator.dispatch_agent_task(
+                    "test-suite", "Aria", "Inspect sync", "Check event delivery."
+                )
+
+                self.assertEqual(dispatched["task"]["status"], "QUEUED")
+                self.assertIsNone(dispatched["task"]["completed_at"])
+                self.assertIsNone(dispatched["task"]["result"])
+                self.assertEqual(dispatched["resilience"]["status"], "QUEUED")
+                self.assertEqual(dispatched["event"]["type"], "agents.task_queued")
+
+                restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
+                persisted = next(
+                    task
+                    for task in restored.agent_queues["Aria"]
+                    if task["id"] == dispatched["task"]["id"]
+                )
+                self.assertEqual(persisted["status"], "QUEUED")
+                self.assertEqual(persisted["payload"], "Check event delivery.")
+
+        asyncio.run(_run())
+
+    def test_agent_worker_result_updates_persistent_task(self) -> None:
+        async def _run() -> None:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                kernel = SVLSystemKernel(
+                    db_path=str(Path(tmpdir) / "test_agent_result.sqlite3"),
+                    operator_token="test_operator_token_with_more_than_32_chars_abcdef",
+                )
+                orchestrator = SVLAgentOrchestrator(kernel, SphericalEventBus())
+                dispatched = await orchestrator.dispatch_agent_task(
+                    "test-suite", "Aria", "Summarize", "A short task."
+                )
+                task_id = dispatched["task"]["id"]
+
+                await orchestrator._handle_worker_message({
+                    "type": "task_started",
+                    "task_id": task_id,
+                    "agent": "Aria",
+                    "worker_pid": 1234,
+                    "started_at": "2025-01-01T00:00:00+00:00",
+                })
+                await orchestrator._handle_worker_message({
+                    "type": "task_completed",
+                    "task_id": task_id,
+                    "agent": "Aria",
+                    "worker_pid": 1234,
+                    "result": "Task result",
+                    "completed_at": "2025-01-01T00:00:01+00:00",
+                })
+
+                restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
+                task = next(item for item in restored.agent_queues["Aria"] if item["id"] == task_id)
+                self.assertEqual(task["status"], "COMPLETED")
+                self.assertEqual(task["result"], "Task result")
+
+        asyncio.run(_run())
+
+    def test_agent_task_calls_ollama_with_text_only_chat(self) -> None:
+        class FakeResponse:
+            def __init__(self, content: str) -> None:
+                self.content = content.encode("utf-8")
+
+            def __enter__(self) -> "FakeResponse":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return self.content
+
+        with patch(
+            "agents_runtime.urllib.request.urlopen",
+            side_effect=[
+                FakeResponse('{"models":[{"name":"test-model"}]}'),
+                FakeResponse('{"message":{"content":"Generated answer"}}'),
+            ],
+        ) as mock_urlopen:
+            answer = execute_agent_task({
+                "ollama_host": "http://127.0.0.1:11434",
+                "model": "test-model",
+                "title": "Explain",
+                "payload": "A test prompt.",
+                "system_prompt": "Be concise.",
+            })
+
+        self.assertEqual(answer, "Generated answer")
+        request = mock_urlopen.call_args_list[1].args[0]
+        request_body = json.loads(request.data.decode("utf-8"))
+        self.assertFalse(request_body["stream"])
+        self.assertEqual([message["role"] for message in request_body["messages"]], ["system", "user"])
+        self.assertNotIn("tools", request_body)
+
+    def test_worker_process_consumes_tasks_and_reports_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            task_queue = multiprocessing.Queue()
+            result_queue = multiprocessing.Queue()
+            process = multiprocessing.Process(
+                target=_agent_worker_process_loop,
+                args=(
+                    "Aria",
+                    "si_1",
+                    str(Path(tmpdir) / "heartbeat.json"),
+                    str(Path(tmpdir) / "worker.log"),
+                    task_queue,
+                    result_queue,
+                ),
+            )
+            process.start()
+            try:
+                task_queue.put({
+                    "id": "test-task",
+                    "title": "Invalid endpoint",
+                    "payload": "This should fail explicitly.",
+                    "ollama_host": "invalid-endpoint",
+                    "model": "test-model",
+                })
+                started = result_queue.get(timeout=5)
+                failed = result_queue.get(timeout=5)
+                self.assertEqual(started["type"], "task_started")
+                self.assertEqual(failed["type"], "task_failed")
+                self.assertIn("Invalid Ollama endpoint", failed["error"])
+            finally:
+                if process.is_alive():
+                    task_queue.put(None)
+                    process.join(timeout=3)
+                if process.is_alive():
+                    process.terminate()
+                    process.join(timeout=1)
+                task_queue.close()
+                result_queue.close()
 
     def test_sqlite_chat_sync_and_persistence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -159,13 +333,16 @@ class TestSVLKernelSuite(unittest.TestCase):
                     ],
                 },
             ])
-            self.assertEqual(len(synced), 2)
+            synced_ids = {c["id"] for c in synced}
+            self.assertTrue({"conv-sync-1", "conv-sync-2"}.issubset(synced_ids))
             conv1 = next(c for c in synced if c["id"] == "conv-sync-1")
             self.assertEqual([m["id"] for m in conv1["messages"]], ["m-1", "m-2"])
 
             kernel.delete_conversation("conv-sync-2")
             remaining = kernel.list_conversations_with_messages()
-            self.assertEqual([c["id"] for c in remaining], ["conv-sync-1"])
+            remaining_ids = {c["id"] for c in remaining}
+            self.assertIn("conv-sync-1", remaining_ids)
+            self.assertNotIn("conv-sync-2", remaining_ids)
 
     def test_canonical_agent_channels_survive_stale_deletions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -208,9 +385,14 @@ class TestSVLKernelSuite(unittest.TestCase):
             mods = kernel.list_system_modules()
             svl364 = next((m for m in mods if m["id"] == "svl-364"), None)
             self.assertIsNotNone(svl364)
-            self.assertEqual(svl364["name"], "SVL-364 Ebon Apex")
+            self.assertEqual(svl364["name"], "SVL-364 Ebon Apex — Centrum Dowodzenia")
             self.assertEqual(svl364["source"], "chat")
+            self.assertEqual(svl364["sourceMessageId"], "m-svl364-1")
             self.assertEqual(svl364["config"].get("async_event_bus_buffer"), 500)
+            svl364_event = next(event for event in first_sync["events"] if event["entityId"] == "svl-364")
+            self.assertEqual(svl364_event["payload"]["name"], svl364["name"])
+            self.assertEqual(svl364_event["payload"]["source"], svl364["source"])
+            self.assertEqual(svl364_event["payload"]["sourceMessageId"], svl364["sourceMessageId"])
 
             # Second sync MUST be strictly idempotent (appliedCount == 0)
             second_sync = kernel.sync_chat_state_mutations(origin="test-suite")

@@ -133,6 +133,21 @@ test('mergeConversationThreads preserves pending in-flight messages and respects
   assert.deepEqual(merged[1].messages.map((m) => m.id), ['m1', 'm2']);
 });
 
+test('empty authoritative conversation snapshots do not restore stale local threads', () => {
+  const staleLocal = [
+    {
+      id: 'stale-conversation',
+      title: 'Stara sesja',
+      updatedAt: '12:00',
+      messages: [
+        { id: 'stale-message', role: 'user' as const, sender: 'Op', content: 'Stara treść', timestamp: '12:00' },
+      ],
+    },
+  ];
+
+  assert.deepEqual(mergeConversationThreads([], staleLocal), []);
+});
+
 test('safeParseJsonResponse handles HTML <!doctype> and non-JSON payloads without SyntaxError', async () => {
   const htmlResp = new Response('<!doctype html><html><body>502 Bad Gateway</body></html>', {
     status: 200,

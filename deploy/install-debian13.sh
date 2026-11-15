@@ -56,22 +56,17 @@ fi
 
 echo "=== [4/6] Instalacja i konfiguracja lokalnego silnika Ollama ==="
 if ! command -v ollama >/dev/null 2>&1; then
-  curl -fsSL https://ollama.com/install.sh | sh
+  # Keep aligned with Compose; newer Ollama currently rejects the model's mllama architecture.
+  curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION=0.24.0 sh
 fi
-systemctl enable --now ollama || true
+systemctl enable --now ollama
 
-TOTAL_RAM_MB="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
-echo "Dostepny RAM hosta: ${TOTAL_RAM_MB} MB"
-if [ "$TOTAL_RAM_MB" -ge 24000 ]; then
-  echo "Pobieranie modelu 30b uncensored (dolphin-qwen2.5:32b)..."
-  ollama pull dolphin-qwen2.5:32b || ollama pull qwen2.5:32b-instruct || true
-elif [ "$TOTAL_RAM_MB" -ge 14000 ]; then
-  echo "Pobieranie rekomendowanego modelu Vision (qwen2.5vl:14b)..."
-  ollama pull qwen2.5vl:14b || true
-else
-  echo "UWAGA: Mniej niz 14 GB RAM. Pobieranie lzejszego modelu (llama3.2-vision:11b)..."
-  ollama pull llama3.2-vision:11b || true
-fi
+set -a
+. /etc/svl-os/svl.env
+set +a
+OLLAMA_MODEL="${OLLAMA_PREFERRED_MODEL:-llama3.2-vision:11b}"
+echo "Pobieranie skonfigurowanego modelu Ollama: ${OLLAMA_MODEL}"
+ollama pull "$OLLAMA_MODEL"
 
 echo "=== [5/6] Instalacja oficjalnego OpenAI Codex CLI ==="
 npm install -g @openai/codex || true

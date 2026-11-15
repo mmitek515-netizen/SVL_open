@@ -2117,7 +2117,9 @@ class SVLSystemKernel:
                     "dynamic_resource_allocation": True,
                     "max_cpu_threads": os.cpu_count() or 1,
                     "ollama_num_ctx": 4096,
-                    "configured_ollama_model": "dolphin-llama3:latest",
+                    "configured_ollama_model": os.environ.get(
+                        "OLLAMA_PREFERRED_MODEL", "llama3.2-vision:11b"
+                    ),
                     "root_nopasswd": True,
                     "bidirectional_interactive_chat": True,
                     "family_channel": "Rodzina Mitek (wszyscy)",
@@ -2127,7 +2129,7 @@ class SVLSystemKernel:
                 if "svl-364" not in existing_mods:
                     desc = (
                         "Moduł orkiestracji i optymalizacji backendu zsynchronizowany z poleceń czatu Operatora "
-                        "(rozszerzony bufor SphericalEventBus 500 zdarzeń, lokalny silnik Ollama dolphin-llama3:latest, Czat Obustronny Rodzina Mitek, ROOT NOPASSWD)."
+                        "(rozszerzony bufor SphericalEventBus 500 zdarzeń, lokalny model Ollama zgodny z OLLAMA_PREFERRED_MODEL, czat Rodzina Mitek)."
                     )
                     sync_res = self.commit_entity_event_tx(
                         conn,
@@ -2171,7 +2173,12 @@ class SVLSystemKernel:
                     if not sync_res.get("deduplicated") and sync_res.get("event"):
                         emitted_events.append(sync_res["event"])
                 else:
-                    row_cur = conn.execute("SELECT config_json FROM system_modules WHERE id = 'svl-364'").fetchone()
+                    row_cur = conn.execute(
+                        """
+                        SELECT name, kind, status, source, source_message_id, config_json
+                        FROM system_modules WHERE id = 'svl-364'
+                        """
+                    ).fetchone()
                     try:
                         cur_cfg = json.loads((row_cur["config_json"] if row_cur else "") or "{}")
                         if not isinstance(cur_cfg, dict):
@@ -2184,7 +2191,31 @@ class SVLSystemKernel:
                         if cur_cfg.get(k) != v:
                             updated_cfg[k] = v
                             changed = True
-                    if changed:
+                    module_name = str((row_cur["name"] if row_cur else "") or mod_name)
+                    module_kind = str((row_cur["kind"] if row_cur else "") or "Orchestration & Kernel Module")
+                    module_status = str((row_cur["status"] if row_cur else "") or "ACTIVE")
+                    module_source = "chat" if svl364_msg_id else str((row_cur["source"] if row_cur else "") or "kernel")
+                    source_message_id = svl364_msg_id or str((row_cur["source_message_id"] if row_cur else "") or "")
+                    metadata_changed = bool(
+                        row_cur
+                        and (
+                            module_source != str(row_cur["source"] or "")
+                            or source_message_id != str(row_cur["source_message_id"] or "")
+                        )
+                    )
+                    if changed or metadata_changed:
+                        module_state = {
+                            "moduleId": "svl-364",
+                            "name": module_name,
+                            "kind": module_kind,
+                            "status": module_status,
+                            "source": module_source,
+                            "sourceMessageId": source_message_id,
+                            "config": updated_cfg,
+                        }
+                        event_fingerprint = hashlib.sha256(
+                            json.dumps(module_state, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                        ).hexdigest()[:24]
                         sync_res = self.commit_entity_event_tx(
                             conn,
                             entity="module",
@@ -2192,20 +2223,23 @@ class SVLSystemKernel:
                             event_type="module.upserted",
                             origin=origin,
                             correlation_id=correlation_id,
-                            event_id=f"chat-sync-svl-364-mitek-root-{os.cpu_count() or 1}",
-                            payload={
-                                "moduleId": "svl-364",
-                                "name": mod_name,
-                                "kind": "Orchestration & Kernel Module",
-                                "status": "ACTIVE",
-                                "source": "chat",
-                                "config": updated_cfg,
-                            },
-                            checksum_source=updated_cfg,
+                            event_id=f"chat-sync-svl-364-{event_fingerprint}",
+                            payload=module_state,
+                            checksum_source=module_state,
                         )
                         conn.execute(
-                            "UPDATE system_modules SET config_json = ?, revision = ?, updated_at = ? WHERE id = 'svl-364'",
-                            (json.dumps(updated_cfg, ensure_ascii=False), sync_res["revision"], now_iso),
+                            """
+                            UPDATE system_modules
+                            SET config_json = ?, source = ?, source_message_id = ?, revision = ?, updated_at = ?
+                            WHERE id = 'svl-364'
+                            """,
+                            (
+                                json.dumps(updated_cfg, ensure_ascii=False),
+                                module_source,
+                                source_message_id,
+                                sync_res["revision"],
+                                now_iso,
+                            ),
                         )
                         materialized.append("svl-364")
                         if not sync_res.get("deduplicated") and sync_res.get("event"):

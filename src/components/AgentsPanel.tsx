@@ -43,6 +43,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
 
   const agentsList: any[] = agentsData?.agents || [];
   const agentLogs: Record<string, any[]> = agentsData?.agent_logs || {};
+  const agentQueues: Record<string, any[]> = agentsData?.agent_queues || {};
   const agentMemories: Record<string, any[]> = agentsData?.agent_memories || {};
   const sphericalBus = agentsData?.spherical_bus || {};
   const lastReport = agentsData?.last_sync_report;
@@ -62,6 +63,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
 
   const activeAgentObj = agentsList.find((a) => a.canonical_name === selectedAgent) || {};
   const activeAgentCfg = activeAgentObj.config || {};
+  const selectedAgentTasks = agentQueues[selectedAgent] || [];
   const currentConfigRevision: number | undefined =
     typeof activeAgentObj.config_revision === 'number'
       ? activeAgentObj.config_revision
@@ -148,7 +150,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     });
     const data = res.data;
     if (res.ok && data?.ok) {
-      setDispatchStatus(`Zadanie wykonane przez ${selectedAgent}: ${data.task?.result}`);
+      setDispatchStatus(`Zadanie dodane do trwałej kolejki ${selectedAgent} (ID: ${String(data.task?.id || '').slice(0, 8)}). Wynik pojawi się po zakończeniu.`);
       setTaskTitle('');
       setTaskPayload('');
       notifyLocalMutation('agent_task', selectedAgent, data.serverRevision, data.event);
@@ -290,7 +292,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
             01. Panel Pięciu Agentów AI — Rodzina Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek)
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Zachowane oryginalne identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, osobne procesy Python (PID/UID 0 · ROOT NOPASSWD: ALL), izolowana pamięć SQLite, konfiguracja Ollama i magistrala zdarzeń (rev {serverRevision}).
+            Zachowane identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, lokalne procesy workerów o rzeczywistym PID/UID, trwała kolejka SQLite, tekstowe zadania Ollama i magistrala zdarzeń (rev {serverRevision}).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
@@ -346,7 +348,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
         {CANONICAL_AGENTS.map((meta) => {
           const live = agentsList.find((a) => a.canonical_name === meta.canonicalName) || {};
           const cb = sphericalBus.circuit_breakers?.[meta.canonicalName] || { state: 'CLOSED', failure_count: 0 };
-          const isOnline = live.status === 'ONLINE_LOCAL_WORKER';
+          const isOnline = ['ONLINE_LOCAL_WORKER', 'BUSY_LOCAL_WORKER', 'DEGRADED_LOCAL_WORKER'].includes(live.status);
           const isSelected = selectedAgent === meta.canonicalName;
 
           return (
@@ -373,9 +375,12 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                 </div>
 
                 <div className="text-[11px] font-mono tabular-nums text-slate-400">
-                  <span>{isOnline ? `ONLINE (PID ${live.pid} · ROOT UID 0)` : 'STAN: DEFINICJA KODU'}</span>
+                  <span>{isOnline ? `${live.status} (PID ${live.pid} · UID ${live.uid ?? '?'})` : `STAN: ${live.status || 'BRAK DANYCH'}`}</span>
                   <span aria-hidden="true"> · </span>
                   <span>CB: {cb.state}</span>
+                </div>
+                <div className="text-[11px] font-mono text-slate-500">
+                  Faza: {live.worker_phase || '—'} · kolejka: {live.queue_depth ?? 0}
                 </div>
 
                 <p className="text-xs text-slate-300 leading-relaxed">
@@ -393,7 +398,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                 <div className="flex justify-between">
                   <span>Uprawnienia / Temp:</span>
                   <span className="text-emerald-300 truncate max-w-[170px]">
-                    ROOT NOPASSWD · {live.config?.temperature ?? 0.7}
+                    {live.config?.rbac_role || 'assistant'} · {live.config?.temperature ?? 0.7}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -442,7 +447,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   onChange={(e) => setSenderActor(e.target.value as any)}
                   className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
                 >
-                  <option value="operator">Mateusz Mitek (Operator · ROOT)</option>
+                  <option value="operator">Mateusz Mitek (Operator)</option>
                   <option value="Aria">Agent: Aria Mitek (id: si_1)</option>
                   <option value="Alex">Agent: Alex Mitek (id: Alex)</option>
                   <option value="Astyria">Agent: Astyria Mitek (id: Astyria)</option>
@@ -528,6 +533,35 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                       [{new Date(lg.timestamp).toLocaleTimeString('pl-PL')}]
                     </span>{' '}
                     <span className="text-violet-400">[{lg.level}]</span> {lg.message}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="pt-3 border-t border-slate-800 space-y-2">
+            <div className="text-xs font-semibold text-slate-300">
+              Zadania trwałe: {selectedAgentTasks.length}
+            </div>
+            <div className="max-h-56 overflow-y-auto space-y-2">
+              {selectedAgentTasks.length === 0 ? (
+                <div className="text-xs text-slate-500">Brak zapisanych zadań dla tego agenta.</div>
+              ) : (
+                selectedAgentTasks.slice().reverse().slice(0, 12).map((task: any) => (
+                  <div key={task.id} className="p-2.5 rounded-lg bg-[#0B0D13] border border-slate-800 text-xs space-y-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-200 truncate">{task.title}</span>
+                      <span className={`shrink-0 font-mono ${
+                        task.status === 'COMPLETED' ? 'text-emerald-400' :
+                          task.status === 'FAILED' ? 'text-rose-400' :
+                            task.status === 'RUNNING' ? 'text-violet-300' : 'text-amber-300'
+                      }`}>{task.status}</span>
+                    </div>
+                    {task.result && <p className="text-slate-300 whitespace-pre-wrap break-words">{task.result}</p>}
+                    {task.error && <p className="text-rose-300 whitespace-pre-wrap break-words">{task.error}</p>}
+                    <div className="text-[10px] font-mono text-slate-500">
+                      {task.completed_at || task.started_at || task.created_at || ''}
+                    </div>
                   </div>
                 ))
               )}

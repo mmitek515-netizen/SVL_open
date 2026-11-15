@@ -42,7 +42,10 @@ export const LinuxDeployDashboard: React.FC = () => {
 
   const [ollamaHostInput, setOllamaHostInput] = useState<string>(ollama.ollama_host || 'http://127.0.0.1:11434');
   const ollamaHostDirtyRef = useRef(false);
-  const [pullModelInput, setPullModelInput] = useState<string>('llama3.2-vision:11b');
+  const [pullModelInput, setPullModelInput] = useState<string>(
+    ollama.preferred_14b_vision_model || 'llama3.2-vision:11b',
+  );
+  const pullModelDirtyRef = useRef(false);
   const [ollamaActionMsg, setOllamaActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [isUpdatingOllama, setIsUpdatingOllama] = useState(false);
   const [pullState, setPullState] = useState<any>(ollama.pull_state || null);
@@ -51,10 +54,13 @@ export const LinuxDeployDashboard: React.FC = () => {
     if (ollama.ollama_host && !ollamaHostDirtyRef.current) {
       setOllamaHostInput(ollama.ollama_host);
     }
+    if (ollama.preferred_14b_vision_model && !pullModelDirtyRef.current) {
+      setPullModelInput(ollama.preferred_14b_vision_model);
+    }
     if (ollama.pull_state) {
       setPullState(ollama.pull_state);
     }
-  }, [ollama.ollama_host, ollama.pull_state]);
+  }, [ollama.ollama_host, ollama.preferred_14b_vision_model, ollama.pull_state]);
 
   useEffect(() => {
     if (!pullState?.active) return;
@@ -108,7 +114,7 @@ export const LinuxDeployDashboard: React.FC = () => {
   };
 
   const handlePullOllamaModel = async () => {
-    const target = pullModelInput.trim() || 'llama3.2-vision:11b';
+    const target = pullModelInput.trim() || ollama.preferred_14b_vision_model || 'llama3.2-vision:11b';
     setIsUpdatingOllama(true);
     setOllamaActionMsg(null);
     try {
@@ -310,7 +316,10 @@ export const LinuxDeployDashboard: React.FC = () => {
                   type="text"
                   aria-label="Nazwa modelu Ollama do pobrania"
                   value={pullModelInput}
-                  onChange={(e) => setPullModelInput(e.target.value)}
+                  onChange={(e) => {
+                    pullModelDirtyRef.current = true;
+                    setPullModelInput(e.target.value);
+                  }}
                   placeholder="np. llama3.2-vision:11b"
                   className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg bg-[#0B0D13] border border-slate-700 text-xs font-mono text-slate-100 focus:outline-none focus:border-violet-500"
                 />

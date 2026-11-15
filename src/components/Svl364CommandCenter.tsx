@@ -65,7 +65,9 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   };
 
   const agents: any[] = Array.isArray(agentsData?.agents) ? agentsData.agents : [];
-  const activeWorkers = agents.filter((agent) => agent.status === 'ONLINE_LOCAL_WORKER').length;
+  const activeWorkers = agents.filter((agent) =>
+    ['ONLINE_LOCAL_WORKER', 'BUSY_LOCAL_WORKER'].includes(agent.status),
+  ).length;
   const commandModule: any = systemModules.find((item: any) => item.id === 'svl-364');
   const totalMessages = conversations.reduce((sum, thread) => sum + (thread.messages?.length || 0), 0);
   const ollamaReachable = healthData?.ollama?.daemon_reachable === true;
@@ -131,7 +133,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
               {targetNames.map((name) => {
                 const agent = agents.find((entry) => String(entry.name || entry.agent || '').toLowerCase().includes(name.toLowerCase()));
                 const state = String(agent?.status || 'Brak danych');
-                const running = state === 'ONLINE_LOCAL_WORKER';
+                const running = ['ONLINE_LOCAL_WORKER', 'BUSY_LOCAL_WORKER'].includes(state);
                 return (
                   <div key={name} className="flex items-center justify-between rounded-md bg-slate-950/50 px-3 py-2 text-sm">
                     <span>{name} Mitek</span>

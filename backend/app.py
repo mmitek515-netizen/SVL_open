@@ -20,6 +20,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import traceback
 import urllib.parse
@@ -58,58 +59,17 @@ class SVLBackendRuntime:
         self.hyperspace = BinaryHyperspaceKernel(dimensions=128)
         self.without_nlp = WithoutNlpHarmonicEngine()
         self.ollama_host = self._load_persisted_ollama_host()
+        self.orchestrator.ollama_host = self.ollama_host
+        self._ollama_pull_lock = threading.RLock()
+        self._ollama_pull_thread: Optional[threading.Thread] = None
         self.ollama_pull_state: dict[str, Any] = {
             "active": False,
-            "model": "dolphin-llama3:latest",
-            "status": "Pobrano i aktywowano: dolphin-llama3:latest, llama3.2-vision:11b, svl-364-omega:latest",
-            "percent": 100.0,
+            "model": os.environ.get("OLLAMA_PREFERRED_MODEL", "llama3.2-vision:11b"),
+            "status": "Brak aktywnego pobierania w tej sesji.",
+            "percent": 0.0,
             "error": None,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        self.builtin_ollama_models: list[dict[str, Any]] = [
-            {
-                "name": "dolphin-llama3:latest",
-                "size_gb": 4.7,
-                "parameter_size": "8B",
-                "quantization": "Q4_K_M",
-                "vision_supported": False,
-            },
-            {
-                "name": "dolphin-mixtral:8x22b",
-                "size_gb": 80.0,
-                "parameter_size": "8x22B (MoE Turbo)",
-                "quantization": "Q4_K_M-FlashAttn",
-                "vision_supported": True,
-            },
-            {
-                "name": "llama3.2-vision:11b",
-                "size_gb": 7.8,
-                "parameter_size": "11B",
-                "quantization": "Q4_K_M",
-                "vision_supported": True,
-            },
-            {
-                "name": "svl-364-omega:latest",
-                "size_gb": 9.2,
-                "parameter_size": "14B",
-                "quantization": "Q8_0",
-                "vision_supported": True,
-            },
-            {
-                "name": "qwen2.5-coder:7b",
-                "size_gb": 4.5,
-                "parameter_size": "7B",
-                "quantization": "Q4_K_M",
-                "vision_supported": False,
-            },
-            {
-                "name": "deepseek-r1:8b",
-                "size_gb": 4.9,
-                "parameter_size": "8B",
-                "quantization": "Q4_K_M",
-                "vision_supported": False,
-            },
-        ]
         self.repl_globals: dict[str, Any] = {
             "__builtins__": __builtins__,
             "math": math,
@@ -168,10 +128,9 @@ class SVLBackendRuntime:
         correlation_id: str = "",
         event_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        clean = (new_host or "").strip().rstrip("/")
-        if not (clean.startswith("http://") or clean.startswith("https://")):
-            raise ValueError("Adres OLLAMA_HOST musi zaczynać się od http:// lub https://")
+        clean = self._validate_ollama_host(new_host)
         self.ollama_host = clean
+        self.orchestrator.ollama_host = clean
         now_iso = datetime.now(timezone.utc).isoformat()
 
         def _write(conn: Any) -> dict[str, Any]:
@@ -197,6 +156,58 @@ class SVLBackendRuntime:
         probe["serverRevision"] = sync_res["serverRevision"]
         probe["event"] = sync_res["event"]
         return probe
+
+    @staticmethod
+    def _validate_ollama_host(host: str) -> str:
+        clean = str(host or "").strip().rstrip("/")
+        parsed = urllib.parse.urlsplit(clean)
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("Adres Ollama zawiera nieprawidłowy port.") from exc
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+            or (port is not None and not 1 <= port <= 65535)
+        ):
+            raise ValueError("Podaj poprawny adres bazowy Ollama, np. http://127.0.0.1:11434.")
+        return clean
+
+    def _get_ollama_pull_state(self) -> dict[str, Any]:
+        with self._ollama_pull_lock:
+            return dict(self.ollama_pull_state)
+
+    def _set_ollama_pull_state(self, **updates: Any) -> dict[str, Any]:
+        with self._ollama_pull_lock:
+            self.ollama_pull_state = {
+                **self.ollama_pull_state,
+                **updates,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            return dict(self.ollama_pull_state)
+
+    def _emit_ollama_pull_event(
+        self,
+        event_type: str,
+        state: dict[str, Any],
+        origin: str,
+        correlation_id: str,
+        event_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        return self.kernel.emit_sync_event(
+            entity="ollama",
+            entity_id="pull",
+            event_type=event_type,
+            origin=origin,
+            correlation_id=correlation_id,
+            event_id=event_id,
+            payload={"model": state["model"], "pullState": state},
+        )
 
     def _register_initial_services(self) -> None:
         self.kernel.register_service(
@@ -298,16 +309,6 @@ class SVLBackendRuntime:
         binary_installed = shutil.which("ollama") is not None or Path("/usr/local/bin/ollama").exists()
 
         reachable, models, error_msg = self._probe_single_ollama_endpoint(ollama_host, timeout=1.5)
-        if not reachable and ollama_host == "http://127.0.0.1:11434":
-            docker_reachable, docker_models, _ = self._probe_single_ollama_endpoint(
-                "http://host.docker.internal:11434", timeout=0.6
-            )
-            if docker_reachable:
-                ollama_host = "http://host.docker.internal:11434"
-                self.ollama_host = ollama_host
-                reachable = True
-                models = docker_models
-                error_msg = None
 
         # Report only actual daemon responses. A built-in catalog is not proof of installation.
         loaded_models: list[str] = []
@@ -331,7 +332,7 @@ class SVLBackendRuntime:
             "models": models,
             "loaded_models": loaded_models,
             "vision_models_available": [m["name"] for m in models if m.get("vision_supported")],
-            "pull_state": self.ollama_pull_state,
+            "pull_state": self._get_ollama_pull_state(),
             "host_ram_total_mb": telemetry["ram_total_mb"],
             "host_ram_available_mb": telemetry["ram_available_mb"],
             "host_disk_free_gb": telemetry["disk_free_gb"],
@@ -339,63 +340,159 @@ class SVLBackendRuntime:
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    def pull_ollama_model(self, model_name: str) -> tuple[int, dict[str, Any]]:
-        clean_model = (model_name or "").strip() or "llama3.2-vision:11b"
-        if ":" not in clean_model:
-            clean_model = f"{clean_model}:latest"
-        ollama_host = self.ollama_host.rstrip("/")
-
-        # Ensure the model is registered in builtin_ollama_models immediately
-        has_vision = any(kw in clean_model.lower() for kw in ("vl", "vision", "llava", "minicpm", "pixtral", "gemma3", "svl-364"))
-        if not any(m.get("name") == clean_model for m in self.builtin_ollama_models):
-            self.builtin_ollama_models.insert(
-                0,
-                {
-                    "name": clean_model,
-                    "size_gb": 5.2,
-                    "parameter_size": "8B",
-                    "quantization": "Q4_K_M",
-                    "vision_supported": has_vision,
-                },
-            )
-
-        # Also notify local 127.0.0.1:11434 daemon if listening
+    def _run_ollama_pull(
+        self,
+        model_name: str,
+        ollama_host: str,
+        origin: str,
+        correlation_id: str,
+    ) -> None:
+        success_received = False
         try:
-            payload = json.dumps({"model": clean_model, "stream": False}).encode("utf-8")
+            payload = json.dumps({"model": model_name, "stream": True}).encode("utf-8")
             req = urllib.request.Request(
                 f"{ollama_host}/api/pull",
                 data=payload,
-                headers={"Content-Type": "application/json"},
+                headers={"Accept": "application/x-ndjson", "Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=2.5) as _:
-                pass
-        except Exception:
-            pass
+            with urllib.request.urlopen(req, timeout=60.0) as response:
+                for raw_line in response:
+                    if not raw_line.strip():
+                        continue
+                    frame = json.loads(raw_line.decode("utf-8"))
+                    if not isinstance(frame, dict):
+                        raise RuntimeError("Ollama returned an invalid pull progress frame.")
+                    if frame.get("error"):
+                        raise RuntimeError(str(frame["error"])[:500])
 
-        self.ollama_pull_state = {
-            "active": False,
-            "model": clean_model,
-            "status": f"Pobrano i aktywowano pomyślnie: {clean_model}",
-            "percent": 100.0,
-            "error": None,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self.kernel.record_audit("operator", "OLLAMA_PULL", clean_model, "OK", f"Pobrano model {clean_model}")
-        sync_res = self.kernel.emit_sync_event(
-            entity="ollama",
-            entity_id="pull",
-            event_type="ollama.pull_completed",
-            origin="python-kernel",
-            payload={"model": clean_model, "pullState": self.ollama_pull_state},
-        )
-        return 200, {
+                    status = str(frame.get("status") or "Pobieranie modelu")
+                    progress: dict[str, Any] = {"status": status, "error": None}
+                    try:
+                        total = int(frame.get("total") or 0)
+                        completed = int(frame.get("completed") or 0)
+                    except (TypeError, ValueError):
+                        total = completed = 0
+                    if total > 0:
+                        progress["percent"] = round(max(0.0, min(100.0, completed * 100 / total)), 1)
+                    self._set_ollama_pull_state(**progress)
+                    if status.lower() == "success":
+                        success_received = True
+                        break
+
+            if not success_received:
+                raise RuntimeError("Ollama zamknęła strumień przed potwierdzeniem zakończenia pobierania.")
+
+            state = self._set_ollama_pull_state(
+                active=False,
+                percent=100.0,
+                status=f"Pobieranie zakończone: {model_name}",
+                error=None,
+            )
+            self.kernel.record_audit("operator", "OLLAMA_PULL", model_name, "OK", f"Pobrano model {model_name}")
+            self._emit_ollama_pull_event("ollama.pull_completed", state, origin, correlation_id)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:1000]
+            state = self._set_ollama_pull_state(
+                active=False,
+                status=f"Błąd pobierania modelu {model_name}",
+                error=error,
+            )
+            self.kernel.record_audit("operator", "OLLAMA_PULL", model_name, "ERROR", error)
+            self._emit_ollama_pull_event("ollama.pull_failed", state, origin, correlation_id)
+        finally:
+            with self._ollama_pull_lock:
+                if self._ollama_pull_thread is threading.current_thread():
+                    self._ollama_pull_thread = None
+
+    def pull_ollama_model(
+        self,
+        model_name: str,
+        *,
+        origin: str = "client",
+        correlation_id: str = "",
+        event_id: Optional[str] = None,
+    ) -> tuple[int, dict[str, Any]]:
+        clean_model = str(model_name or os.environ.get("OLLAMA_PREFERRED_MODEL", "llama3.2-vision:11b")).strip()
+        if not clean_model or len(clean_model) > 200 or any(ord(char) < 33 for char in clean_model):
+            return 400, {"ok": False, "error": "Nazwa modelu Ollama jest pusta lub nieprawidłowa."}
+        if ":" not in clean_model:
+            clean_model = f"{clean_model}:latest"
+        try:
+            ollama_host = self._validate_ollama_host(self.ollama_host)
+        except ValueError as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
+        with self._ollama_pull_lock:
+            if self.ollama_pull_state.get("active"):
+                if self.ollama_pull_state.get("model") == clean_model:
+                    state = dict(self.ollama_pull_state)
+                    meta = self.kernel.get_sync_snapshot_meta()
+                    return 202, {
+                        "ok": True,
+                        "started": False,
+                        "completed": False,
+                        "model": clean_model,
+                        "pull_state": state,
+                        "serverRevision": meta["serverRevision"],
+                    }
+                return 409, {
+                    "ok": False,
+                    "error": f"Inny model jest już pobierany: {self.ollama_pull_state.get('model')}.",
+                    "pull_state": dict(self.ollama_pull_state),
+                }
+
+            self.ollama_pull_state = {
+                "active": True,
+                "model": clean_model,
+                "status": "Łączenie z demonem Ollama…",
+                "percent": 0.0,
+                "error": None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            state = dict(self.ollama_pull_state)
+            try:
+                sync_res = self._emit_ollama_pull_event(
+                    "ollama.pull_started",
+                    state,
+                    origin,
+                    correlation_id,
+                    event_id,
+                )
+            except Exception as exc:
+                state = self._set_ollama_pull_state(
+                    active=False,
+                    status=f"Nie udało się zarejestrować pobierania modelu {clean_model}",
+                    error=f"{type(exc).__name__}: {exc}"[:1000],
+                )
+                return 503, {"ok": False, "error": state["error"], "pull_state": state}
+
+            thread = threading.Thread(
+                target=self._run_ollama_pull,
+                args=(clean_model, ollama_host, origin, correlation_id),
+                name=f"ollama-pull-{clean_model[:40]}",
+                daemon=True,
+            )
+            self._ollama_pull_thread = thread
+            try:
+                thread.start()
+            except RuntimeError as exc:
+                self._ollama_pull_thread = None
+                state = self._set_ollama_pull_state(
+                    active=False,
+                    status=f"Nie udało się uruchomić pobierania modelu {clean_model}",
+                    error=str(exc)[:1000],
+                )
+                self.kernel.record_audit("operator", "OLLAMA_PULL", clean_model, "ERROR", state["error"])
+                self._emit_ollama_pull_event("ollama.pull_failed", state, origin, correlation_id)
+                return 503, {"ok": False, "error": state["error"], "pull_state": state}
+
+        return 202, {
             "ok": True,
             "started": True,
-            "completed": True,
+            "completed": False,
             "model": clean_model,
-            "pull_state": self.ollama_pull_state,
-            "status": self.probe_ollama_status(),
+            "pull_state": state,
             "revision": sync_res["revision"],
             "serverRevision": sync_res["serverRevision"],
             "event": sync_res["event"],
@@ -662,6 +759,7 @@ async def handle_api_request(
 
     if method == "POST" and path == "/api/py/agents/connect":
         triggered_by = str(body.get("triggered_by", origin or "operator"))
+        runtime.orchestrator.ollama_host = runtime.ollama_host
         report = await runtime.orchestrator.connect_my_ai(triggered_by=triggered_by)
         return 200, {
             "ok": True,
@@ -705,6 +803,7 @@ async def handle_api_request(
                 origin=origin,
                 correlation_id=corr,
                 event_id=event_id,
+                ollama_host=runtime.ollama_host,
             )
             return 200, {"ok": True, **res}
         except Exception as exc:
@@ -806,11 +905,16 @@ async def handle_api_request(
             return 400, {"ok": False, "error": str(exc)}
 
     if method == "POST" and path == "/api/py/ollama/pull":
-        model_name = str(body.get("model", "llama3.2-vision:11b")).strip()
-        return runtime.pull_ollama_model(model_name)
+        model_name = str(body.get("model") or os.environ.get("OLLAMA_PREFERRED_MODEL", "llama3.2-vision:11b")).strip()
+        return runtime.pull_ollama_model(
+            model_name,
+            origin=origin,
+            correlation_id=corr,
+            event_id=event_id,
+        )
 
     if method == "GET" and path == "/api/py/ollama/pull-status":
-        return 200, {"ok": True, "pull_state": runtime.ollama_pull_state, "ollama": runtime.probe_ollama_status()}
+        return 200, {"ok": True, "pull_state": runtime._get_ollama_pull_state(), "ollama": runtime.probe_ollama_status()}
 
     if method == "POST" and path == "/api/py/python-repl":
         code = str(body.get("code", ""))
@@ -1002,7 +1106,6 @@ async def handle_api_request(
         # Spójny, idempotentny i bezpieczny snapshot globalny bez niebezpiecznych operacji OS
         sync_id = f"sync-{uuid.uuid4().hex[:12]}"
         started_at = datetime.now(timezone.utc).isoformat()
-        client_rev = _opt_int(body.get("clientRevision"))
         modules_status: dict[str, dict[str, Any]] = {}
         warnings: list[str] = []
 
@@ -1033,16 +1136,16 @@ async def handle_api_request(
         sqlite_meta = _time_module("sqlite_persistence", True, runtime.kernel.get_sync_snapshot_meta)
 
         def _load_chat() -> list[dict[str, Any]]:
-            runtime.kernel.ensure_mitek_family_channel()
-            # Full sync must be read-only for chat: replaying stale browser caches
-            # can resurrect deleted messages after a clear-all event.
             return runtime.kernel.list_conversations_with_messages()
 
         conversations = _time_module("chat", True, _load_chat)
 
         def _load_agents() -> dict[str, Any]:
             agents = runtime.orchestrator.refresh_states()
-            alive_count = sum(1 for a in agents if a.get("status") == "ONLINE_LOCAL_WORKER")
+            alive_count = sum(
+                1 for a in agents
+                if a.get("status") in {"ONLINE_LOCAL_WORKER", "BUSY_LOCAL_WORKER"}
+            )
             if alive_count < len(CANONICAL_SVL_AGENTS):
                 warnings.append(f"agents: aktywne workery lokalne {alive_count}/{len(CANONICAL_SVL_AGENTS)}")
             memories = {
@@ -1061,12 +1164,7 @@ async def handle_api_request(
 
         agents_payload = _time_module("agents", True, _load_agents)
 
-        def _sync_modules() -> list[dict[str, Any]]:
-            # Snapshot reads cannot re-execute chat directives or emit new module mutations.
-            # Chat writes process directives once in the message endpoint.
-            return runtime.apply_active_module_settings()
-
-        system_modules = _time_module("modules_registry", True, _sync_modules)
+        system_modules = _time_module("modules_registry", True, runtime.kernel.list_system_modules)
 
         def _load_kernel() -> dict[str, Any]:
             raw_report = json.loads(runtime.kernel.generate_system_status_report(include_demo_history=False))
@@ -1105,14 +1203,11 @@ async def handle_api_request(
                     name == configured_model or name.startswith(f"{base_match}:")
                     for name in installed_names
                 )
-                if not is_installed and not runtime.ollama_pull_state.get("active"):
-                    runtime.pull_ollama_model(configured_model)
-                    ollama_status = runtime.probe_ollama_status()
                 if not is_installed:
-                    pct = runtime.ollama_pull_state.get("percent", 0)
-                    warnings.append(
-                        f"ollama: trwa pobieranie skonfigurowanego modelu {configured_model} ({pct}%)"
-                    )
+                    missing_model = f"Skonfigurowany model {configured_model} nie jest zainstalowany."
+                    modules_status["ollama"]["status"] = "degraded"
+                    modules_status["ollama"]["error"] = missing_model
+                    warnings.append(f"ollama: {missing_model}")
 
         codex_status = _time_module("codex", False, runtime.probe_codex_status)
 
@@ -1298,6 +1393,7 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
 async def _run_boot_autoconnect() -> None:
     try:
+        runtime.orchestrator.ollama_host = runtime.ollama_host
         await runtime.orchestrator.connect_my_ai(triggered_by="system_boot_autoconnect")
     except Exception as exc:
         print(f"[SVL Python OS] Warning during boot autoconnect: {exc}", flush=True)

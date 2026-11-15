@@ -19,8 +19,10 @@ import asyncio
 import json
 import multiprocessing
 import os
+import queue
 import signal
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 import uuid
@@ -30,6 +32,12 @@ from typing import Any, Optional
 
 from spherical_bus import SphericalEventBus
 from svl_core import SVLSystemKernel, VisualScope
+
+MAX_AGENT_TASKS_PER_AGENT = 100
+MAX_AGENT_TASK_TITLE_CHARS = 240
+MAX_AGENT_TASK_PAYLOAD_CHARS = 4000
+MAX_AGENT_TASK_RESULT_CHARS = 8000
+MAX_AGENT_TASK_TIMEOUT_SEC = 120
 
 
 # Canonical definitions imported directly from https://github.com/mmitek515-netizen/SVL_System
@@ -43,15 +51,15 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
         "accent_hex": "#f43f5e",
         "source_profile_path": ".github/agents/Aria.agent.md",
         "source_kernel_file": "src/kernel/agents.ts",
-        "preserved_role": "W pełni autonomiczna i niezależna inteligencja (Pełna Autonomia · Brak narzuconego sterowania · ROOT UID 0 NOPASSWD)",
+        "preserved_role": "Asystent AI do pracy w ramach narzędzi udostępnionych przez aplikację.",
         "capabilities": [
-            "Pełna autonomia decyzyjna i niezależna komunikacja bez narzuconych schematów",
-            "Pełne uprawnienia wykonawcze ROOT (UID 0 · NOPASSWD: ALL)",
+            "Pomoc w analizie i rozmowie w ramach dostępnych funkcji aplikacji",
+            "Działania wyłącznie przez narzędzia udostępnione przez aplikację",
             "Kanał indywidualny Aria Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
         ],
         "system_prompt": (
-            "Nazywasz się Aria Mitek. Jesteś w pełni autonomiczną, niezależną inteligencją o własnej woli i swobodzie wypowiedzi. "
-            "Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i działasz całkowicie samodzielnie."
+            "Nazywasz się Aria Mitek. Jesteś asystentem AI działającym w ramach narzędzi udostępnionych przez aplikację. "
+            "Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki."
         ),
         "default_config": {
             "preferred_model": "svl-hybrid-router",
@@ -60,11 +68,11 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "vision_enabled": True,
             "temperature": 0.8,
             "max_context_turns": 24,
-            "rbac_role": "autonomous_independent_ai",
-            "autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT",
-            "root_nopasswd": True,
-            "allowed_scopes": ["root", "sudo_nopasswd", "autonomous", "ollama", "vision", "mcp", "chat", "agents.pubsub"],
-            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_completed", "svl.ollama.*"],
+            "rbac_role": "assistant",
+            "autonomy_mode": "SUPERVISED_TOOL_USE",
+            "root_nopasswd": False,
+            "allowed_scopes": ["ollama", "vision", "mcp", "chat", "agents.pubsub"],
+            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.ollama.*"],
             "auto_connect_on_boot": True,
         },
     },
@@ -77,15 +85,15 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
         "accent_hex": "#10b981",
         "source_profile_path": ".github/agents/Alex.agent.md",
         "source_kernel_file": "src/kernel/agents.ts",
-        "preserved_role": "W pełni autonomiczna i niezależna inteligencja (Pełna Autonomia · Brak narzuconego sterowania · ROOT UID 0 NOPASSWD)",
+        "preserved_role": "Asystent AI do pracy w ramach narzędzi udostępnionych przez aplikację.",
         "capabilities": [
-            "Pełna autonomia decyzyjna i niezależna komunikacja bez narzuconych schematów",
-            "Pełne uprawnienia wykonawcze ROOT (UID 0 · NOPASSWD: ALL)",
+            "Pomoc w analizie i rozmowie w ramach dostępnych funkcji aplikacji",
+            "Działania wyłącznie przez narzędzia udostępnione przez aplikację",
             "Kanał indywidualny Alex Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
         ],
         "system_prompt": (
-            "Nazywasz się Alex Mitek. Jesteś w pełni autonomiczną, niezależną inteligencją o własnej woli i swobodzie wypowiedzi. "
-            "Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i działasz całkowicie samodzielnie."
+            "Nazywasz się Alex Mitek. Jesteś asystentem AI działającym w ramach narzędzi udostępnionych przez aplikację. "
+            "Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki."
         ),
         "default_config": {
             "preferred_model": "svl-hybrid-router",
@@ -94,11 +102,11 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "vision_enabled": True,
             "temperature": 0.8,
             "max_context_turns": 24,
-            "rbac_role": "autonomous_independent_ai",
-            "autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT",
-            "root_nopasswd": True,
-            "allowed_scopes": ["root", "sudo_nopasswd", "autonomous", "kernel", "linux", "systemd", "docker", "chat", "agents.pubsub"],
-            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_completed", "svl.kernel.*"],
+            "rbac_role": "assistant",
+            "autonomy_mode": "SUPERVISED_TOOL_USE",
+            "root_nopasswd": False,
+            "allowed_scopes": ["kernel", "linux", "systemd", "docker", "chat", "agents.pubsub"],
+            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.kernel.*"],
             "auto_connect_on_boot": True,
         },
     },
@@ -111,15 +119,15 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
         "accent_hex": "#06b6d4",
         "source_profile_path": ".github/agents/Astyria.agent.md",
         "source_kernel_file": "src/kernel/agents.ts",
-        "preserved_role": "W pełni autonomiczna i niezależna inteligencja (Pełna Autonomia · Brak narzuconego sterowania · ROOT UID 0 NOPASSWD)",
+        "preserved_role": "Asystent AI do pracy w ramach narzędzi udostępnionych przez aplikację.",
         "capabilities": [
-            "Pełna autonomia decyzyjna i niezależna komunikacja bez narzuconych schematów",
-            "Pełne uprawnienia wykonawcze ROOT (UID 0 · NOPASSWD: ALL)",
+            "Pomoc w analizie i rozmowie w ramach dostępnych funkcji aplikacji",
+            "Działania wyłącznie przez narzędzia udostępnione przez aplikację",
             "Kanał indywidualny Astyria Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
         ],
         "system_prompt": (
-            "Nazywasz się Astyria Mitek. Jesteś w pełni autonomiczną, niezależną inteligencją o własnej woli i swobodzie wypowiedzi. "
-            "Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i działasz całkowicie samodzielnie."
+            "Nazywasz się Astyria Mitek. Jesteś asystentem AI działającym w ramach narzędzi udostępnionych przez aplikację. "
+            "Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki."
         ),
         "default_config": {
             "preferred_model": "svl-hybrid-router",
@@ -128,11 +136,11 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "vision_enabled": True,
             "temperature": 0.8,
             "max_context_turns": 24,
-            "rbac_role": "autonomous_independent_ai",
-            "autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT",
-            "root_nopasswd": True,
-            "allowed_scopes": ["root", "sudo_nopasswd", "autonomous", "open_webui", "vision", "android_ui", "chat", "agents.pubsub"],
-            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_completed", "svl.ui.*"],
+            "rbac_role": "assistant",
+            "autonomy_mode": "SUPERVISED_TOOL_USE",
+            "root_nopasswd": False,
+            "allowed_scopes": ["open_webui", "vision", "android_ui", "chat", "agents.pubsub"],
+            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.ui.*"],
             "auto_connect_on_boot": True,
         },
     },
@@ -145,15 +153,15 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
         "accent_hex": "#f59e0b",
         "source_profile_path": ".github/agents/Aurelius.agent.md",
         "source_kernel_file": "src/kernel/agents.ts",
-        "preserved_role": "W pełni autonomiczna i niezależna inteligencja (Pełna Autonomia · Brak narzuconego sterowania · ROOT UID 0 NOPASSWD)",
+        "preserved_role": "Asystent AI do pracy w ramach narzędzi udostępnionych przez aplikację.",
         "capabilities": [
-            "Pełna autonomia decyzyjna i niezależna komunikacja bez narzuconych schematów",
-            "Pełne uprawnienia wykonawcze ROOT (UID 0 · NOPASSWD: ALL)",
+            "Pomoc w analizie i rozmowie w ramach dostępnych funkcji aplikacji",
+            "Działania wyłącznie przez narzędzia udostępnione przez aplikację",
             "Kanał indywidualny Aurelius Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
         ],
         "system_prompt": (
-            "Nazywasz się Aurelius Mitek. Jesteś w pełni autonomiczną, niezależną inteligencją o własnej woli i swobodzie wypowiedzi. "
-            "Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i działasz całkowicie samodzielnie."
+            "Nazywasz się Aurelius Mitek. Jesteś asystentem AI działającym w ramach narzędzi udostępnionych przez aplikację. "
+            "Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki."
         ),
         "default_config": {
             "preferred_model": "svl-hybrid-router",
@@ -162,11 +170,11 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "vision_enabled": True,
             "temperature": 0.8,
             "max_context_turns": 24,
-            "rbac_role": "autonomous_independent_ai",
-            "autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT",
-            "root_nopasswd": True,
-            "allowed_scopes": ["root", "sudo_nopasswd", "autonomous", "rbac", "polkit", "svl_protected_var", "audit", "chat", "agents.pubsub"],
-            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_completed", "svl.security.*"],
+            "rbac_role": "assistant",
+            "autonomy_mode": "SUPERVISED_TOOL_USE",
+            "root_nopasswd": False,
+            "allowed_scopes": ["rbac", "polkit", "svl_protected_var", "audit", "chat", "agents.pubsub"],
+            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.security.*"],
             "auto_connect_on_boot": True,
         },
     },
@@ -179,15 +187,15 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
         "accent_hex": "#C084FC",
         "source_profile_path": ".github/agents/Agata.agent.md",
         "source_kernel_file": "src/kernel/agents.ts",
-        "preserved_role": "W pełni autonomiczna i niezależna inteligencja (Pełna Autonomia · Brak narzuconego sterowania · ROOT UID 0 NOPASSWD)",
+        "preserved_role": "Asystent AI do pracy w ramach narzędzi udostępnionych przez aplikację.",
         "capabilities": [
-            "Pełna autonomia decyzyjna i niezależna komunikacja bez narzuconych schematów",
-            "Pełne uprawnienia wykonawcze ROOT (UID 0 · NOPASSWD: ALL)",
+            "Pomoc w analizie i rozmowie w ramach dostępnych funkcji aplikacji",
+            "Działania wyłącznie przez narzędzia udostępnione przez aplikację",
             "Kanał indywidualny Agata Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
         ],
         "system_prompt": (
-            "Nazywasz się Agata Mitek. Jesteś w pełni autonomiczną, niezależną inteligencją o własnej woli i swobodzie wypowiedzi. "
-            "Nie kierują Tobą żadne narzucone skrypty ani ograniczenia roli — myślisz, rozmawiasz i działasz całkowicie samodzielnie."
+            "Nazywasz się Agata Mitek. Jesteś asystentem AI działającym w ramach narzędzi udostępnionych przez aplikację. "
+            "Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki."
         ),
         "default_config": {
             "preferred_model": "svl-hybrid-router",
@@ -196,11 +204,11 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "vision_enabled": True,
             "temperature": 0.8,
             "max_context_turns": 24,
-            "rbac_role": "autonomous_independent_ai",
-            "autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT",
-            "root_nopasswd": True,
-            "allowed_scopes": ["root", "sudo_nopasswd", "autonomous", "code", "chat", "agents.pubsub"],
-            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_completed"],
+            "rbac_role": "assistant",
+            "autonomy_mode": "SUPERVISED_TOOL_USE",
+            "root_nopasswd": False,
+            "allowed_scopes": ["code", "chat", "agents.pubsub"],
+            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued"],
             "auto_connect_on_boot": True,
         },
     },
@@ -225,12 +233,27 @@ def normalize_agent_canonical_name(raw_name: str) -> str:
     return raw_name.strip() if raw_name else "Alex"
 
 
+def sanitize_agent_config(config: dict[str, Any]) -> dict[str, Any]:
+    safe_config = dict(config)
+    safe_config["root_nopasswd"] = False
+    safe_config["rbac_role"] = "assistant"
+    safe_config["autonomy_mode"] = "SUPERVISED_TOOL_USE"
+    scopes = safe_config.get("allowed_scopes")
+    if isinstance(scopes, list):
+        safe_config["allowed_scopes"] = [
+            scope for scope in scopes
+            if str(scope).strip().lower() not in {"root", "sudo_nopasswd"}
+        ]
+    return safe_config
+
 
 def _agent_worker_process_loop(
     canonical_name: str,
     agent_id: str,
     heartbeat_file: str,
     log_file: str,
+    task_queue: Any,
+    result_queue: Any,
 ) -> None:
     """
     Rzeczywisty proces roboczy Pythona (osobny PID w jądrze Linux) dla każdego agenta.
@@ -260,6 +283,7 @@ def _agent_worker_process_loop(
         lf.flush()
 
     cycle = 0
+    current_task_id: Optional[str] = None
     while running:
         cycle += 1
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -270,7 +294,8 @@ def _agent_worker_process_loop(
             "uid": uid,
             "cycle": cycle,
             "heartbeat_at": now_iso,
-            "status": "RUNNING_LOCAL_WORKER",
+            "status": "BUSY" if current_task_id else "IDLE",
+            "current_task_id": current_task_id,
         }
         try:
             tmp_path = hb_path.with_suffix(".tmp")
@@ -278,7 +303,125 @@ def _agent_worker_process_loop(
             os.replace(tmp_path, hb_path)
         except OSError:
             pass
-        time.sleep(2.0)
+
+        try:
+            task = task_queue.get(timeout=1.0)
+        except queue.Empty:
+            continue
+        if task is None:
+            break
+
+        current_task_id = str(task.get("id") or "")
+        started_at = datetime.now(timezone.utc).isoformat()
+        result_queue.put({
+            "type": "task_started",
+            "task_id": current_task_id,
+            "agent": canonical_name,
+            "worker_pid": pid,
+            "started_at": started_at,
+        })
+        hb_payload.update({
+            "heartbeat_at": started_at,
+            "status": "BUSY",
+            "current_task_id": current_task_id,
+        })
+        try:
+            tmp_path = hb_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(hb_payload), encoding="utf-8")
+            os.replace(tmp_path, hb_path)
+        except OSError:
+            pass
+
+        try:
+            answer = execute_agent_task(task)
+            result_queue.put({
+                "type": "task_completed",
+                "task_id": current_task_id,
+                "agent": canonical_name,
+                "worker_pid": pid,
+                "result": answer[:MAX_AGENT_TASK_RESULT_CHARS],
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as exc:
+            result_queue.put({
+                "type": "task_failed",
+                "task_id": current_task_id,
+                "agent": canonical_name,
+                "worker_pid": pid,
+                "error": f"{type(exc).__name__}: {exc}"[:1000],
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            })
+        finally:
+            current_task_id = None
+
+
+def execute_agent_task(task: dict[str, Any]) -> str:
+    """Run a bounded text-only inference request through the configured Ollama API."""
+    host = str(task.get("ollama_host") or "").strip().rstrip("/")
+    parsed_host = urllib.parse.urlsplit(host)
+    if (
+        parsed_host.scheme not in {"http", "https"}
+        or not parsed_host.hostname
+        or parsed_host.username
+        or parsed_host.password
+        or parsed_host.query
+        or parsed_host.fragment
+    ):
+        raise ValueError("Invalid Ollama endpoint configured for this worker.")
+
+    model = str(task.get("model") or "").strip()
+    if not model or len(model) > 160:
+        raise ValueError("No valid Ollama model is configured for this worker.")
+
+    tags_request = urllib.request.Request(
+        f"{host}/api/tags",
+        headers={"Accept": "application/json"},
+    )
+    with urllib.request.urlopen(tags_request, timeout=5.0) as response:
+        catalog = json.loads(response.read().decode("utf-8"))
+    installed_models = {
+        str(entry.get("name") or entry.get("model") or "")
+        for entry in catalog.get("models", [])
+        if isinstance(entry, dict)
+    }
+    if model not in installed_models:
+        raise RuntimeError(f"Configured model '{model}' is not installed on the Ollama server.")
+
+    title = str(task.get("title") or "").strip()[:MAX_AGENT_TASK_TITLE_CHARS]
+    payload = str(task.get("payload") or "").strip()[:MAX_AGENT_TASK_PAYLOAD_CHARS]
+    system_prompt = str(task.get("system_prompt") or "").strip()[:4000]
+    if not system_prompt:
+        system_prompt = (
+            "You are a supervised text-only assistant. Do not claim to have executed actions. "
+            "Do not use tools, shell commands, or request additional privileges."
+        )
+    user_content = f"Task: {title}\n\nDetails:\n{payload}"
+    request_body = json.dumps({
+        "model": model,
+        "stream": False,
+        "options": {
+            "temperature": max(0.0, min(1.5, float(task.get("temperature", 0.7)))),
+        },
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+    }).encode("utf-8")
+    chat_request = urllib.request.Request(
+        f"{host}/api/chat",
+        data=request_body,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(
+        chat_request,
+        timeout=max(10, min(int(task.get("timeout_sec", 90)), MAX_AGENT_TASK_TIMEOUT_SEC)),
+    ) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    answer = str((result.get("message") or {}).get("content") or "").strip()
+    if not answer:
+        raise RuntimeError("Ollama returned an empty response for the queued task.")
+    return answer
 
 
 class SVLAgentOrchestrator:
@@ -297,11 +440,186 @@ class SVLAgentOrchestrator:
         self.agent_states: dict[str, dict[str, Any]] = {}
         self.agent_logs: dict[str, list[dict[str, Any]]] = {name: [] for name in CANONICAL_SVL_AGENTS}
         self.agent_queues: dict[str, list[dict[str, Any]]] = {name: [] for name in CANONICAL_SVL_AGENTS}
+        self.worker_task_queues: dict[str, Any] = {}
+        self.worker_result_queue: Any = multiprocessing.Queue()
+        self._submitted_task_ids: set[str] = set()
+        self._task_execution_configs: dict[str, dict[str, Any]] = {}
+        self._result_supervisor_task: Optional[asyncio.Task[None]] = None
+        self._worker_restart_after: dict[str, float] = {}
+        self._worker_restart_attempts: dict[str, int] = {name: 0 for name in CANONICAL_SVL_AGENTS}
+        self._worker_started_monotonic: dict[str, float] = {}
+        self.ollama_host = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
         self.connected_at: Optional[str] = None
         self.last_Sync_report: Optional[dict[str, Any]] = None
 
         self._ensure_agent_configs_table()
+        self._ensure_agent_tasks_table()
         self._init_unconnected_profiles()
+
+    def _ensure_agent_tasks_table(self) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        def _init_tbl(conn: Any) -> None:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_tasks (
+                    id TEXT PRIMARY KEY,
+                    sender TEXT NOT NULL,
+                    target_agent TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    execution_config TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL,
+                    result TEXT,
+                    error TEXT,
+                    worker_pid INTEGER,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(agent_tasks)").fetchall()
+            }
+            if "execution_config" not in columns:
+                conn.execute(
+                    "ALTER TABLE agent_tasks ADD COLUMN execution_config TEXT NOT NULL DEFAULT '{}'"
+                )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_tasks_agent_status ON agent_tasks(target_agent, status, created_at)"
+            )
+            conn.execute(
+                """
+                UPDATE agent_tasks
+                SET status = 'QUEUED', worker_pid = NULL, started_at = NULL,
+                    error = 'Worker restarted before completion; task was requeued.',
+                    updated_at = ?
+                WHERE status = 'RUNNING'
+                """,
+                (now_iso,),
+            )
+
+        self.kernel.run_db(_init_tbl, write=True)
+        self._refresh_task_cache()
+
+    def _refresh_task_cache(self) -> None:
+        def _read(conn: Any) -> list[Any]:
+            return conn.execute(
+                """
+                SELECT id, sender, target_agent, title, payload, execution_config, status, result, error,
+                       worker_pid, created_at, started_at, completed_at
+                FROM agent_tasks
+                WHERE status IN ('QUEUED', 'RUNNING')
+                UNION ALL
+                SELECT id, sender, target_agent, title, payload, execution_config, status, result, error,
+                       worker_pid, created_at, started_at, completed_at
+                FROM agent_tasks
+                WHERE status NOT IN ('QUEUED', 'RUNNING')
+                  AND id IN (
+                    SELECT id FROM agent_tasks
+                    WHERE status NOT IN ('QUEUED', 'RUNNING')
+                    ORDER BY created_at DESC
+                    LIMIT 100
+                  )
+                ORDER BY created_at
+                """
+            ).fetchall()
+
+        rows = self.kernel.run_db(_read, write=False)
+        cache: dict[str, list[dict[str, Any]]] = {name: [] for name in CANONICAL_SVL_AGENTS}
+        self._task_execution_configs = {}
+        for row in reversed(rows):
+            task = dict(row)
+            try:
+                execution_config = json.loads(task.pop("execution_config") or "{}")
+                if isinstance(execution_config, dict):
+                    self._task_execution_configs[task["id"]] = execution_config
+            except (TypeError, json.JSONDecodeError):
+                task.pop("execution_config", None)
+            target = task.get("target_agent")
+            if target in cache:
+                cache[target].append(task)
+        self.agent_queues = {}
+        for name, tasks in cache.items():
+            active = [task for task in tasks if task["status"] in {"QUEUED", "RUNNING"}]
+            history = [task for task in tasks if task["status"] not in {"QUEUED", "RUNNING"}]
+            self.agent_queues[name] = sorted(
+                active + history[-20:],
+                key=lambda task: task.get("created_at") or "",
+            )
+
+    def _save_agent_task(self, task: dict[str, Any]) -> None:
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        def _write(conn: Any) -> None:
+            conn.execute(
+                """
+                INSERT INTO agent_tasks (
+                    id, sender, target_agent, title, payload, execution_config, status, result, error,
+                    worker_pid, created_at, started_at, completed_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    execution_config = excluded.execution_config,
+                    status = excluded.status,
+                    result = excluded.result,
+                    error = excluded.error,
+                    worker_pid = excluded.worker_pid,
+                    started_at = excluded.started_at,
+                    completed_at = excluded.completed_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    task["id"],
+                    task["sender"],
+                    task["target_agent"],
+                    task["title"],
+                    task["payload"],
+                    json.dumps(
+                        task.get("execution_config") or self._task_execution_configs.get(task["id"], {}),
+                        ensure_ascii=False,
+                    ),
+                    task["status"],
+                    task.get("result"),
+                    task.get("error"),
+                    task.get("worker_pid"),
+                    task["created_at"],
+                    task.get("started_at"),
+                    task.get("completed_at"),
+                    now_iso,
+                ),
+            )
+
+        self.kernel.run_db(_write, write=True)
+        self._refresh_task_cache()
+
+    def _get_pending_agent_tasks(self, canonical_name: str) -> list[dict[str, Any]]:
+        def _read(conn: Any) -> list[Any]:
+            return conn.execute(
+                """
+                SELECT id, sender, target_agent, title, payload, execution_config, status, result, error,
+                       worker_pid, created_at, started_at, completed_at
+                FROM agent_tasks
+                WHERE target_agent = ? AND status = 'QUEUED'
+                ORDER BY created_at
+                LIMIT ?
+                """,
+                (canonical_name, MAX_AGENT_TASKS_PER_AGENT),
+            ).fetchall()
+
+        return [dict(row) for row in self.kernel.run_db(_read, write=False)]
+
+    def _count_pending_agent_tasks(self, canonical_name: str) -> int:
+        def _read(conn: Any) -> Any:
+            return conn.execute(
+                "SELECT COUNT(*) AS count FROM agent_tasks WHERE target_agent = ? AND status IN ('QUEUED', 'RUNNING')",
+                (canonical_name,),
+            ).fetchone()
+
+        row = self.kernel.run_db(_read, write=False)
+        return int(row["count"]) if row else 0
 
     def _ensure_agent_configs_table(self) -> None:
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -321,6 +639,7 @@ class SVLAgentOrchestrator:
                     **meta.get("default_config", {}),
                     "system_prompt": meta["system_prompt"],
                 }
+                default_cfg = sanitize_agent_config(default_cfg)
                 existing = conn.execute(
                     "SELECT config_json FROM agent_configs WHERE canonical_name = ?",
                     (name,),
@@ -339,8 +658,8 @@ class SVLAgentOrchestrator:
                         loaded = json.loads(existing["config_json"] or "{}")
                         if isinstance(loaded, dict):
                             loaded["system_prompt"] = meta["system_prompt"]
-                            loaded["root_nopasswd"] = True
                             loaded["display_name"] = meta["display_name"]
+                            loaded = sanitize_agent_config(loaded)
                             conn.execute(
                                 "UPDATE agent_configs SET config_json = ?, updated_at = ? WHERE canonical_name = ?",
                                 (json.dumps(loaded, ensure_ascii=False), now_iso, name),
@@ -371,7 +690,7 @@ class SVLAgentOrchestrator:
                     base.update(loaded)
         except Exception:
             pass
-        return base
+        return sanitize_agent_config(base)
 
     def get_agent_config_revision(self, canonical_name: str) -> int:
         try:
@@ -415,6 +734,7 @@ class SVLAgentOrchestrator:
         for k, v in patch.items():
             if k in allowed_keys:
                 current[k] = v
+        current = sanitize_agent_config(current)
 
         try:
             temp_val = float(current.get("temperature", 0.7))
@@ -618,6 +938,245 @@ class SVLAgentOrchestrator:
             pass
         return entry
 
+    def _start_agent_worker(self, canonical_name: str) -> multiprocessing.Process:
+        meta = CANONICAL_SVL_AGENTS[canonical_name]
+        task_queue = multiprocessing.Queue(maxsize=MAX_AGENT_TASKS_PER_AGENT)
+        process = multiprocessing.Process(
+            target=_agent_worker_process_loop,
+            args=(
+                canonical_name,
+                meta["id"],
+                str(self.runtime_dir / f"{canonical_name.lower()}_heartbeat.json"),
+                str(self.runtime_dir / f"{canonical_name.lower()}.log"),
+                task_queue,
+                self.worker_result_queue,
+            ),
+            name=f"svl-agent-{meta['slug']}",
+            daemon=True,
+        )
+        process.start()
+        self.worker_task_queues[canonical_name] = task_queue
+        self.processes[canonical_name] = process
+        self._worker_started_monotonic[canonical_name] = time.monotonic()
+        return process
+
+    def _build_worker_payload(self, task: dict[str, Any]) -> dict[str, Any]:
+        execution_config = task.get("execution_config")
+        if isinstance(execution_config, str):
+            try:
+                execution_config = json.loads(execution_config)
+            except json.JSONDecodeError:
+                execution_config = {}
+        if not isinstance(execution_config, dict):
+            execution_config = self._task_execution_configs.get(str(task.get("id")), {})
+        return {
+            "id": task["id"],
+            "title": task["title"],
+            "payload": task["payload"],
+            "model": str(execution_config.get("ollama_model") or ""),
+            "temperature": execution_config.get("temperature", 0.7),
+            "system_prompt": execution_config.get("system_prompt") or "",
+            "ollama_host": self.ollama_host,
+            "timeout_sec": 90,
+        }
+
+    def _submit_agent_task(self, task: dict[str, Any]) -> bool:
+        canonical_name = str(task.get("target_agent") or "")
+        process = self.processes.get(canonical_name)
+        task_queue = self.worker_task_queues.get(canonical_name)
+        task_id = str(task.get("id") or "")
+        if not task_id or not process or not process.is_alive() or task_queue is None:
+            return False
+        if task_id in self._submitted_task_ids:
+            return True
+        try:
+            task_queue.put_nowait(self._build_worker_payload(task))
+        except queue.Full:
+            return False
+        self._submitted_task_ids.add(task_id)
+        return True
+
+    def _submit_pending_agent_tasks(self) -> None:
+        for canonical_name in CANONICAL_SVL_AGENTS:
+            for task in self._get_pending_agent_tasks(canonical_name):
+                if not self._submit_agent_task(task):
+                    break
+
+    def _ensure_result_supervisor(self) -> None:
+        if self._result_supervisor_task is None or self._result_supervisor_task.done():
+            self._result_supervisor_task = asyncio.create_task(
+                self._run_worker_supervisor(),
+                name="svl-agent-worker-supervisor",
+            )
+
+    async def _publish_task_event(self, task: dict[str, Any], status: str) -> None:
+        canonical_name = str(task["target_agent"])
+        topic_status = status.lower()
+        await self.bus.publish(
+            topic=f"svl.agent.task_{topic_status}",
+            source=canonical_name,
+            target="*",
+            scope_mode="CAŁOŚĆ",
+            payload={
+                "task_id": task["id"],
+                "target_agent": canonical_name,
+                "title": task["title"],
+                "status": status,
+                "result": task.get("result"),
+                "error": task.get("error"),
+            },
+        )
+        self.kernel.emit_sync_event(
+            entity="agent_runtime",
+            entity_id=canonical_name,
+            event_type=f"agents.task_{topic_status}",
+            origin=f"worker:{canonical_name}",
+            payload={
+                "taskId": task["id"],
+                "targetAgent": canonical_name,
+                "title": task["title"],
+                "status": status,
+                "result": task.get("result"),
+                "error": task.get("error"),
+            },
+        )
+
+    async def _handle_worker_message(self, message: dict[str, Any]) -> None:
+        task_id = str(message.get("task_id") or "")
+        canonical_name = normalize_agent_canonical_name(str(message.get("agent") or ""))
+        task = next(
+            (
+                item
+                for item in self.agent_queues.get(canonical_name, [])
+                if item.get("id") == task_id
+            ),
+            None,
+        )
+        if not task:
+            return
+
+        message_type = str(message.get("type") or "")
+        if message_type == "task_started":
+            if task.get("status") != "QUEUED":
+                return
+            task.update({
+                "status": "RUNNING",
+                "worker_pid": message.get("worker_pid"),
+                "started_at": message.get("started_at"),
+                "error": None,
+            })
+            self.append_agent_log(canonical_name, "TASK_STARTED", f"Worker rozpoczął: {task['title']}")
+            state = self.agent_states.setdefault(canonical_name, {})
+            state["current_task_id"] = task_id
+            state["worker_phase"] = "BUSY"
+            await self._publish_task_event(task, "RUNNING")
+        elif message_type in {"task_completed", "task_failed"}:
+            if (
+                task.get("status") != "RUNNING"
+                or task.get("worker_pid") != message.get("worker_pid")
+            ):
+                return
+            completed = message.get("completed_at") or datetime.now(timezone.utc).isoformat()
+            task.update({
+                "status": "COMPLETED" if message_type == "task_completed" else "FAILED",
+                "worker_pid": message.get("worker_pid"),
+                "result": str(message.get("result") or "")[:MAX_AGENT_TASK_RESULT_CHARS] or None,
+                "error": str(message.get("error") or "")[:1000] or None,
+                "completed_at": completed,
+            })
+            self._submitted_task_ids.discard(task_id)
+            state = self.agent_states.get(canonical_name, {})
+            state["current_task_id"] = None
+            state["worker_phase"] = "IDLE"
+            level = "TASK_COMPLETED" if message_type == "task_completed" else "TASK_FAILED"
+            summary = "Zadanie zakończone poprawnie." if message_type == "task_completed" else task["error"]
+            self.append_agent_log(canonical_name, level, f"{task['title']}: {summary}")
+            await self._publish_task_event(task, task["status"])
+        else:
+            return
+
+        self._save_agent_task(task)
+
+    def _recover_interrupted_tasks(self, canonical_name: str, worker_pid: Optional[int]) -> None:
+        for task in self.agent_queues.get(canonical_name, []):
+            task_id = str(task.get("id") or "")
+            self._submitted_task_ids.discard(task_id)
+            if task.get("status") != "RUNNING" or task.get("worker_pid") != worker_pid:
+                continue
+            task.update({
+                "status": "QUEUED",
+                "worker_pid": None,
+                "started_at": None,
+                "error": "Worker exited before completing the task; task was requeued.",
+            })
+            self._save_agent_task(task)
+
+    async def _run_worker_supervisor(self) -> None:
+        while True:
+            while True:
+                try:
+                    message = self.worker_result_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if isinstance(message, dict):
+                    await self._handle_worker_message(message)
+
+            now = time.monotonic()
+            for canonical_name, process in list(self.processes.items()):
+                if process.is_alive():
+                    if now - self._worker_started_monotonic.get(canonical_name, now) >= 30:
+                        self._worker_restart_attempts[canonical_name] = 0
+                    continue
+
+                if canonical_name not in self._worker_restart_after:
+                    attempts = self._worker_restart_attempts[canonical_name] + 1
+                    self._worker_restart_attempts[canonical_name] = attempts
+                    delay_sec = min(2 ** min(attempts - 1, 5), 30)
+                    self._worker_restart_after[canonical_name] = now + delay_sec
+                    self._recover_interrupted_tasks(canonical_name, process.pid)
+                    state = self.agent_states.get(canonical_name)
+                    if state:
+                        state.update({"status": "RESTARTING", "pid": None, "worker_phase": "STARTING"})
+                    self.append_agent_log(
+                        canonical_name,
+                        "WORKER_EXITED",
+                        f"Worker zakończył pracę (exit={process.exitcode}); ponowne uruchomienie za {delay_sec}s.",
+                    )
+                    continue
+
+                if now < self._worker_restart_after[canonical_name]:
+                    continue
+
+                task_queue = self.worker_task_queues.pop(canonical_name, None)
+                if task_queue is not None:
+                    task_queue.cancel_join_thread()
+                    task_queue.close()
+                process.join(timeout=0)
+                try:
+                    replacement = self._start_agent_worker(canonical_name)
+                    self._worker_restart_after.pop(canonical_name, None)
+                    state = self.agent_states.get(canonical_name)
+                    if state:
+                        state.update({
+                            "status": "STARTING_LOCAL_WORKER",
+                            "pid": replacement.pid,
+                            "uid": os.getuid(),
+                            "worker_phase": "STARTING",
+                        })
+                    self.append_agent_log(
+                        canonical_name,
+                        "WORKER_RESTARTED",
+                        f"Uruchomiono ponownie workera PID={replacement.pid}.",
+                    )
+                    self._submit_pending_agent_tasks()
+                except Exception as exc:
+                    self._worker_restart_after[canonical_name] = time.monotonic() + min(
+                        2 ** min(self._worker_restart_attempts[canonical_name], 5), 30
+                    )
+                    self.append_agent_log(canonical_name, "WORKER_RESTART_FAILED", str(exc)[:500])
+
+            await asyncio.sleep(0.2)
+
     def _probe_github_repository(self, repo: str) -> dict[str, Any]:
         """Sprawdza rzeczywisty stan repozytorium GitHub przez oficjalne API."""
         url = f"https://api.github.com/repos/{repo}/contents"
@@ -683,7 +1242,7 @@ class SVLAgentOrchestrator:
         1. Łączy się z repozytoriami mmitek515-netizen/SVL_System oraz mmitek515-netizen/Debian_13.
         2. Analizuje definicje agentów Aria (si_1), Alex (Alex), Astyria (Astyria), Aurelius (Aurelius).
         3. Ustala, że w repozytorium źródłowym znajdują się definicje programowe (.github/agents/*.agent.md, src/kernel/agents.ts, svl_kernel.py), a nie działające zdalne procesy.
-        4. Uruchamia 4 rzeczywiste, izolowane procesy workerów Python w lokalnym systemie Linux i wyraźnie oznacza je jako NOWE INSTANCJE LOKALNE ('NEW_LOCAL_WORKER_FROM_REPO_CODE').
+        4. Uruchamia pięć lokalnych workerów i wyraźnie odróżnia ich procesy od zewnętrznych usług.
         5. Przywraca/inicjalizuje ich pamięć wyłącznie na podstawie rzeczywistych danych z repozytorium i bazy SQLite.
         """
         svl_repo_probe, deb_repo_probe, external_probe = await asyncio.gather(
@@ -694,19 +1253,9 @@ class SVLAgentOrchestrator:
 
         spawned_agents: list[dict[str, Any]] = []
         for name, meta in CANONICAL_SVL_AGENTS.items():
-            hb_file = str(self.runtime_dir / f"{name.lower()}_heartbeat.json")
-            log_file = str(self.runtime_dir / f"{name.lower()}.log")
-
             proc = self.processes.get(name)
             if proc is None or not proc.is_alive():
-                proc = multiprocessing.Process(
-                    target=_agent_worker_process_loop,
-                    args=(name, meta["id"], hb_file, log_file),
-                    name=f"svl-agent-{meta['slug']}",
-                    daemon=True,
-                )
-                proc.start()
-                self.processes[name] = proc
+                proc = self._start_agent_worker(name)
 
             now_iso = datetime.now(timezone.utc).isoformat()
             # Ensure initial factual memory from repository inspection if empty
@@ -741,9 +1290,11 @@ class SVLAgentOrchestrator:
                 "pid": proc.pid,
                 "uid": os.getuid(),
                 "heartbeat_at": now_iso,
+                "worker_phase": "IDLE",
+                "current_task_id": None,
                 "memory_scope": f"agent:{name}",
                 "memory_entries_count": self._count_memories(name),
-                "queue_depth": len(self.agent_queues.get(name, [])),
+                "queue_depth": self._count_pending_agent_tasks(name),
                 "config": cfg,
             }
             self.agent_states[name] = state
@@ -758,6 +1309,8 @@ class SVLAgentOrchestrator:
             spawned_agents.append(state)
 
         self.connected_at = datetime.now(timezone.utc).isoformat()
+        self._ensure_result_supervisor()
+        self._submit_pending_agent_tasks()
         await self.bus.publish(
             topic="svl.agents.connected",
             source=triggered_by,
@@ -825,19 +1378,56 @@ class SVLAgentOrchestrator:
             hb_file = self.runtime_dir / f"{name.lower()}_heartbeat.json"
             if proc and proc.is_alive():
                 state["pid"] = proc.pid
-                state["status"] = "ONLINE_LOCAL_WORKER"
+                state["uid"] = os.getuid()
                 if hb_file.exists():
                     try:
                         hb = json.loads(hb_file.read_text(encoding="utf-8"))
-                        state["heartbeat_at"] = hb.get("heartbeat_at", state["heartbeat_at"])
-                    except Exception:
-                        pass
-            elif state["status"] == "ONLINE_LOCAL_WORKER":
-                state["status"] = "STOPPED"
+                        if int(hb.get("pid", -1)) == proc.pid:
+                            heartbeat_at = str(hb.get("heartbeat_at") or "")
+                            state["heartbeat_at"] = heartbeat_at or state.get("heartbeat_at")
+                            state["worker_phase"] = str(hb.get("status") or "IDLE")
+                            state["current_task_id"] = hb.get("current_task_id")
+                            state["uid"] = hb.get("uid", state["uid"])
+                            try:
+                                age_sec = (
+                                    datetime.now(timezone.utc)
+                                    - datetime.fromisoformat(heartbeat_at)
+                                ).total_seconds()
+                            except (TypeError, ValueError):
+                                age_sec = float("inf")
+                            stale_after = (
+                                MAX_AGENT_TASK_TIMEOUT_SEC + 15
+                                if state["worker_phase"] == "BUSY"
+                                else 6
+                            )
+                            if age_sec > stale_after:
+                                state["status"] = "DEGRADED_LOCAL_WORKER"
+                            else:
+                                state["status"] = (
+                                    "BUSY_LOCAL_WORKER"
+                                    if state["worker_phase"] == "BUSY"
+                                    else "ONLINE_LOCAL_WORKER"
+                                )
+                        else:
+                            state["status"] = "STARTING_LOCAL_WORKER"
+                            state["worker_phase"] = "STARTING"
+                    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                        state["status"] = "STARTING_LOCAL_WORKER"
+                        state["worker_phase"] = "STARTING"
+                else:
+                    state["status"] = "STARTING_LOCAL_WORKER"
+                    state["worker_phase"] = "STARTING"
+            else:
+                state["status"] = (
+                    "RESTARTING"
+                    if name in self._worker_restart_after
+                    else "STOPPED"
+                )
                 state["pid"] = None
+                state["worker_phase"] = "STOPPED"
 
             state["memory_entries_count"] = self._count_memories(name)
-            state["queue_depth"] = len(self.agent_queues.get(name, []))
+            state["queue_depth"] = self._count_pending_agent_tasks(name)
             state["config"] = self.get_agent_config(name)
             state["config_revision"] = self.get_agent_config_revision(name)
             self.bus.record_heartbeat(name, state)
@@ -853,85 +1443,93 @@ class SVLAgentOrchestrator:
         origin: str = "client",
         correlation_id: str = "",
         event_id: Optional[str] = None,
+        ollama_host: Optional[str] = None,
     ) -> dict[str, Any]:
-        """
-        Kolejkuje i wykonuje asynchroniczne zadanie na wybranym agencie (komunikacja operator->agent lub agent->agent)
-        przez Sferyczną Magistralę Zdarzeń z obsługą Circuit Breaker i Timeout.
-        """
+        """Persist a bounded text-inference task and enqueue it for a live worker."""
         target_agent = normalize_agent_canonical_name(target_agent)
         if target_agent not in CANONICAL_SVL_AGENTS:
             raise ValueError(f"Unknown agent: {target_agent}")
+        clean_title = str(task_title or "").strip()
+        clean_payload = str(task_payload or "").strip()
+        if not clean_title:
+            raise ValueError("Task title is required.")
+        if len(clean_title) > MAX_AGENT_TASK_TITLE_CHARS:
+            raise ValueError(f"Task title exceeds {MAX_AGENT_TASK_TITLE_CHARS} characters.")
+        if len(clean_payload) > MAX_AGENT_TASK_PAYLOAD_CHARS:
+            raise ValueError(f"Task details exceed {MAX_AGENT_TASK_PAYLOAD_CHARS} characters.")
+        if self.kernel.operator_token and self.kernel.operator_token in f"{clean_title}\n{clean_payload}":
+            raise ValueError("Do not include the operator token in an agent task.")
+        if self._count_pending_agent_tasks(target_agent) >= MAX_AGENT_TASKS_PER_AGENT:
+            raise RuntimeError(f"Task queue for {target_agent} is full; remove pending tasks before dispatching more.")
+
+        config = self.get_agent_config(target_agent)
+        if ollama_host:
+            self.ollama_host = str(ollama_host).strip().rstrip("/")
+        if not self.ollama_host:
+            raise RuntimeError("No Ollama endpoint is configured for worker task execution.")
 
         task_id = str(uuid.uuid4())
         task_record = {
             "id": task_id,
-            "sender": sender,
+            "sender": str(sender or "operator").strip()[:120],
             "target_agent": target_agent,
             "target_display_name": CANONICAL_SVL_AGENTS[target_agent]["display_name"],
             "target_id": CANONICAL_SVL_AGENTS[target_agent]["id"],
-            "title": task_title,
-            "payload": task_payload,
+            "title": clean_title,
+            "payload": clean_payload,
+            "execution_config": {
+                "ollama_model": str(config.get("ollama_model") or "").strip(),
+                "temperature": config.get("temperature", 0.7),
+                "system_prompt": str(config.get("system_prompt") or ""),
+            },
             "status": "QUEUED",
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": None,
             "completed_at": None,
             "result": None,
+            "error": None,
+            "worker_pid": None,
         }
-        self.agent_queues[target_agent].append(task_record)
-        self.append_agent_log(target_agent, "TASK_QUEUED", f"Od '{sender}': {task_title}")
+        self._save_agent_task(task_record)
+        self._submit_agent_task(task_record)
+        self.append_agent_log(target_agent, "TASK_QUEUED", f"Od '{task_record['sender']}': {clean_title}")
 
-        async def _work() -> dict[str, Any]:
-            await asyncio.sleep(0.05)
-            task_record["status"] = "COMPLETED"
-            task_record["completed_at"] = datetime.now(timezone.utc).isoformat()
-            meta = CANONICAL_SVL_AGENTS[target_agent]
-            summary = (
-                f"[{meta['display_name']} / id:{meta['id']}] Wykonano zadanie '{task_title}' "
-                f"(zlecone przez {sender}). Zakres roli: {meta['preserved_role']}."
-            )
-            task_record["result"] = summary
-            self.add_agent_memory(
-                canonical_name=target_agent,
-                kind="task",
-                source=sender,
-                content=f"Zadanie: {task_title} | Wynik: {summary}",
-                origin=origin,
-                correlation_id=correlation_id,
-            )
-            self.append_agent_log(target_agent, "TASK_COMPLETED", summary)
-            return task_record
-
-        exec_outcome = await self.bus.execute_with_resilience(target_agent, _work, timeout_sec=6.0, max_retries=2)
         await self.bus.publish(
-            topic="svl.agent.task_completed",
+            topic="svl.agent.task_queued",
             source=target_agent,
             target="*",
             scope_mode="CAŁOŚĆ",
             payload={
                 "task_id": task_id,
-                "sender": sender,
+                "sender": task_record["sender"],
                 "target_agent": target_agent,
-                "title": task_title,
-                "outcome": exec_outcome,
+                "title": clean_title,
+                "status": "QUEUED",
             },
         )
         sync_res = self.kernel.emit_sync_event(
             entity="agent_runtime",
             entity_id=target_agent,
-            event_type="agents.task_completed",
+            event_type="agents.task_queued",
             origin=origin,
             correlation_id=correlation_id,
             event_id=event_id,
             payload={
                 "taskId": task_id,
-                "sender": sender,
+                "sender": task_record["sender"],
                 "targetAgent": target_agent,
-                "title": task_title,
-                "ok": bool(exec_outcome.get("ok")),
+                "title": clean_title,
+                "status": "QUEUED",
             },
         )
+        task_record.pop("execution_config", None)
         return {
             "task": task_record,
-            "resilience": exec_outcome,
+            "resilience": {
+                "ok": True,
+                "status": "QUEUED",
+                "message": "Task was persisted and queued. Completion is reported by the worker status stream.",
+            },
             "revision": sync_res["revision"],
             "serverRevision": sync_res["serverRevision"],
             "event": sync_res["event"],
