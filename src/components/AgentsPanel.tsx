@@ -555,10 +555,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-slate-200 truncate">{task.title}</span>
                       <span className={`shrink-0 font-mono ${
-                        task.status === 'COMPLETED' ? 'text-emerald-400' :
+                        task.status === 'ANSWER_READY' || task.status === 'COMPLETED' ? 'text-emerald-400' :
                           task.status === 'FAILED' ? 'text-rose-400' :
                             task.status === 'RUNNING' ? 'text-violet-300' : 'text-amber-300'
-                      }`}>{task.status === 'COMPLETED' ? 'ODPOWIEDŹ GOTOWA' : task.status}</span>
+                      }`}>{task.status === 'ANSWER_READY' || task.status === 'COMPLETED' ? 'ODPOWIEDŹ GOTOWA' : task.status}</span>
                     </div>
                     {task.result && <p className="text-slate-300 whitespace-pre-wrap break-words">{task.result}</p>}
                     {task.error && <p className="text-rose-300 whitespace-pre-wrap break-words">{task.error}</p>}
