@@ -657,6 +657,31 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     setIsSending(true);
     try {
     setChatActionError(null);
+    // Prevent orphan user messages in SQLite when the only configured engine
+    // (Codex CLI OAuth) is unavailable in this runtime.
+    if (selectedModel === 'codex-cli') {
+      if (attachedImage) {
+        setChatActionError('Tryb Codex CLI działa tekstowo; usuń obraz albo wybierz rzeczywiście dostępny model z obsługą Vision.');
+        return;
+      }
+      if (!codexAccessToken.trim()) {
+        setChatActionError('Podaj prywatny token dostępu SVL przed wysłaniem wiadomości przez Codex CLI.');
+        return;
+      }
+      const ready = await safeFetchJson<{
+        ok: boolean; enabled: boolean; accessConfigured: boolean;
+        authenticated: boolean; loggedIn: boolean; reason?: string;
+      }>('/api/codex-chat/status', {
+        timeoutMs: 10000,
+        headers: {'X-SVL-Codex-Access': codexAccessToken},
+      });
+      if (!ready.ok || !ready.data?.ok || !ready.data.authenticated || !ready.data.loggedIn) {
+        const reason = ready.data?.reason || ready.error ||
+          'Codex CLI nie jest dostępny w backendzie tej aplikacji.';
+        setChatActionError('Nie zapisano wiadomości: ' + reason);
+        return;
+      }
+    }
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
     const fullPrompt = attachedTextFile
       ? `${trimmed || 'Przeanalizuj załączony plik.'}\n\n[Załączony plik: ${attachedTextFile.name}]\n\`\`\`\n${attachedTextFile.content.slice(0, 4000)}\n\`\`\``
@@ -1141,23 +1166,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                   Ollama: {m.name} ({m.parameter_size || 'LLM'})
                 </option>
               ))}
-              {svl364ConfiguredModel && !hasConfiguredModelPulled && (
-                <option value={`ollama:${svl364ConfiguredModel}`}>
-                  Ollama: {svl364ConfiguredModel}
-                </option>
-              )}
-              {!ollamaModels.some((m: any) => m.name === 'dolphin-mixtral:8x22b') && (
-                <option value="ollama:dolphin-mixtral:8x22b">
-                  Ollama: dolphin-mixtral:8x22b (8x22B MoE)
-                </option>
-              )}
-              {!hasLlama32Vision && (
-                <option value="ollama:llama3.2-vision:11b">
-                  Ollama: llama3.2-vision:11b
-                </option>
-              )}
-              <option value="gemini-3.1-flash-lite">Gemini (jeśli dostępny)</option>
-              <option value="gemini-4-hydrogen">Gemini — starsza konfiguracja</option>
+              <option value="gemini-3.1-flash-lite">Gemini (wymaga dostępnego API key)</option>
             </select>
             {selectedModel === 'codex-cli' && (
               <label className="flex min-w-0 items-center gap-1.5 text-[11px] text-slate-400">
