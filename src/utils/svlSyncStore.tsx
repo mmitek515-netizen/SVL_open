@@ -819,6 +819,11 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     const scheduleReconnect = () => {
       if (unmounted) return;
+      if (!getSvlOperatorAccessToken()) {
+        setWsState('offline');
+        setWsLastError('Do synchronizacji WebSocket wymagany jest SVL_OPERATOR_TOKEN.');
+        return;
+      }
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         setWsState('offline');
         setWsLastError('Brak połączenia sieciowego przeglądarki (navigator.onLine = false).');
@@ -840,20 +845,28 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const connect = () => {
       if (unmounted) return;
       clearTimers();
+      // Detach first: the old onclose handler must never schedule a second
+      // reconnect for a connection being deliberately replaced.
+      const previousSocket = ws;
+      ws = null;
+      if (previousSocket && previousSocket.readyState < WebSocket.CLOSING) {
+        try { previousSocket.close(1000, 'Reconnect'); } catch { /* already closed */ }
+      }
+      const operatorSecret = getSvlOperatorAccessToken();
+      if (!operatorSecret) {
+        setWsState('offline');
+        setWsLastError('Wpisz SVL_OPERATOR_TOKEN, aby włączyć synchronizację WebSocket.');
+        return;
+      }
       setWsState(consecutiveFailures === 0 ? 'connecting' : 'reconnecting');
 
       try {
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const revParam = serverRevisionRef.current;
         const url = `${proto}//${window.location.host}/ws/svl?origin=${encodeURIComponent(tabOrigin)}&lastRevision=${revParam}`;
-        const operatorSecret = getSvlOperatorAccessToken();
-        const encoded = operatorSecret
-          ? btoa(String.fromCharCode(...new TextEncoder().encode(operatorSecret)))
-              .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-          : '';
-        const protocols = encoded
-          ? ['svl-v1', `svl-auth.${encoded}`]
-          : ['svl-v1'];
+        const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(operatorSecret)))
+          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+        const protocols = ['svl-v1', `svl-auth.${encoded}`];
         ws = new WebSocket(url, protocols);
       } catch (err: any) {
         setWsLastError(err?.message || 'Nie udało się utworzyć WebSocket /ws/svl.');
@@ -978,11 +991,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       consecutiveFailures = 0;
       setWsAttempt(0);
       setWsLastError(null);
-      try {
-        ws?.close();
-      } catch {
-        // ignore
-      }
+      // connect() deliberately closes any existing socket and detaches its
+      // old close handler. Avoid a parallel reconnect timer.
       connect();
     };
 
