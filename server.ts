@@ -1343,6 +1343,7 @@ async function startServer() {
           stdout:
             `[OpenAI Codex CLI Bridge — SVL Python OS]\n` +
             `Status binarki codex: ${health.data?.codex?.codex_cli_installed ? 'ZAINSTALOWANA' : 'NIEDOSTĘPNA'}\n` +
+            `Sesja Codex CLI backendu: ${health.data?.codex?.codex_cli_logged_in ? 'ZALOGOWANA' : 'BRAK LOGOWANIA'}\n` +
             `UID procesu aplikacji: ${typeof process.getuid === 'function' ? process.getuid() : 'n/d'}\n` +
             `Aktywna gałąź Git: ${health.data?.codex?.active_branch || 'main'}\n\n` +
             `--- Stan repozytorium roboczego ---\n${gitLog.stdout || '(Czyste drzewo robocze)'}`,
