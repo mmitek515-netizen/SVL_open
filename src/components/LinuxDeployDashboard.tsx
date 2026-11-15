@@ -460,8 +460,14 @@ export const LinuxDeployDashboard: React.FC = () => {
               <span>{codex.codex_cli_installed ? codex.codex_binary_path : 'Skrypt w install-debian13.sh'}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
+              <span className="text-slate-400">Logowanie Codex (backend):</span>
+              <span className={codex.codex_cli_logged_in ? 'text-emerald-400' : 'text-amber-400'}>
+                {codex.codex_cli_logged_in ? 'Zalogowano CLI' : 'Brak aktywnej sesji CLI'}
+              </span>
+            </div>
+            <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Komenda Device Login:</span>
-              <span className="text-emerald-400">codex login --device</span>
+              <span className="text-emerald-400">codex login --device-auth</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Repozytorium SVL_System:</span>
@@ -618,7 +624,7 @@ export const LinuxDeployDashboard: React.FC = () => {
               <li>
                 Zaloguj oficjalny Codex CLI przez konto ChatGPT:
                 <div className="mt-1 p-1.5 bg-slate-900 rounded text-emerald-400">
-                  codex login --device
+                  codex login --device-auth
                 </div>
               </li>
             </ol>
