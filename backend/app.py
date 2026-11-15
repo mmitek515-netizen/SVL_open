@@ -531,7 +531,13 @@ class SVLBackendRuntime:
                     timeout=5.0,
                     check=False,
                 )
-                codex_logged_in = login_result.returncode == 0
+                # Only a ChatGPT OAuth session is accepted for the SVL Codex CLI bridge.
+                # The raw status output and all credentials stay on the server.
+                login_mode = (
+                    login_result.stdout.decode("utf-8", "replace")
+                    + login_result.stderr.decode("utf-8", "replace")
+                ).lower()
+                codex_logged_in = login_result.returncode == 0 and "chatgpt" in login_mode
             except (OSError, subprocess.TimeoutExpired):
                 pass
 
