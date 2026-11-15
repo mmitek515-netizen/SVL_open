@@ -5,6 +5,8 @@
  */
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import os from 'node:os';
 import { timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 
@@ -42,14 +44,29 @@ function codexEnvironment() {
   env.CODEX_HOME = CODEX_HOME;
   return env;
 }
-function runCodex(args, stdin = '', maxTime = 12_000) {
+function runCodex(args, stdin = '', maxTime = 12_000, sharedLock = false) {
   return new Promise(resolve => {
-    const child = spawn('codex', args, {
-      cwd: WORKDIR,
-      env: codexEnvironment(),
-      shell: false,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    // Share a private per-user lock with the SVL gateway and Python agent workers.
+    // One ChatGPT CLI account must not be used concurrently by multiple queues.
+    let child;
+    try {
+      const lockDir = path.join(os.homedir(), '.local', 'state', 'svl-open');
+      if (sharedLock) mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+      const program = sharedLock ? 'flock' : 'codex';
+      const commandArgs = sharedLock
+        ? ['--no-fork', '--exclusive', '--wait', '15', '--conflict-exit-code', '75',
+          path.join(lockDir, 'codex-cli.lock'), 'codex', ...args]
+        : args;
+      child = spawn(program, commandArgs, {
+        cwd: WORKDIR,
+        env: codexEnvironment(),
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+    } catch {
+      resolve({ code: 127, stdout: '', stderr: '', timedOut: false, truncated: false });
+      return;
+    }
     let stdout = '';
     let stderr = '';
     let total = 0;
@@ -249,13 +266,15 @@ async function handleRpc(msg) {
         ['exec', '--ignore-user-config', '--ephemeral', '--json', '--sandbox', sandbox, '-'],
         prompt,
         TIMEOUT_MS,
+        true,
       );
       const message = parseAgentMessage(result.stdout);
       if (result.code !== 0 || result.timedOut || result.truncated) {
         return reply(id, toolReply({
           error: result.timedOut ? 'Codex execution timed out'
             : result.truncated ? 'Codex output exceeded limit'
-              : 'Codex execution failed; inspect the host service logs',
+              : result.code === 75 ? 'Shared Codex CLI is busy; retry after the current agent task'
+                : 'Codex execution failed; inspect the host service logs',
           exitCode: result.code,
         }, true));
       }
