@@ -39,6 +39,8 @@ MAX_AGENT_TASK_TITLE_CHARS = 240
 MAX_AGENT_TASK_PAYLOAD_CHARS = 4000
 MAX_AGENT_TASK_RESULT_CHARS = 8000
 MAX_AGENT_TASK_TIMEOUT_SEC = 120
+GITHUB_AGENT_SCOPES = ("github.read", "github.write_sync")
+GITHUB_AGENT_SCOPE_VERSION = 1
 MISSION_CONTEXT_PATTERN = re.compile(r"\b(?:misj|procedur|operacj)\w*", re.IGNORECASE)
 MISSION_COMPLETION_PATTERNS = (
     re.compile(
@@ -127,7 +129,8 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "rbac_role": "assistant",
             "autonomy_mode": "SUPERVISED_TOOL_USE",
             "root_nopasswd": False,
-            "allowed_scopes": ["ollama", "vision", "mcp", "chat", "agents.pubsub"],
+            "allowed_scopes": ["ollama", "vision", "mcp", "chat", "agents.pubsub", *GITHUB_AGENT_SCOPES],
+            "github_agent_scope_version": GITHUB_AGENT_SCOPE_VERSION,
             "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.ollama.*"],
             "auto_connect_on_boot": True,
         },
@@ -161,7 +164,8 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "rbac_role": "assistant",
             "autonomy_mode": "SUPERVISED_TOOL_USE",
             "root_nopasswd": False,
-            "allowed_scopes": ["kernel", "linux", "systemd", "docker", "chat", "agents.pubsub"],
+            "allowed_scopes": ["kernel", "linux", "systemd", "docker", "chat", "agents.pubsub", *GITHUB_AGENT_SCOPES],
+            "github_agent_scope_version": GITHUB_AGENT_SCOPE_VERSION,
             "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.kernel.*"],
             "auto_connect_on_boot": True,
         },
@@ -195,7 +199,8 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "rbac_role": "assistant",
             "autonomy_mode": "SUPERVISED_TOOL_USE",
             "root_nopasswd": False,
-            "allowed_scopes": ["open_webui", "vision", "android_ui", "chat", "agents.pubsub"],
+            "allowed_scopes": ["open_webui", "vision", "android_ui", "chat", "agents.pubsub", *GITHUB_AGENT_SCOPES],
+            "github_agent_scope_version": GITHUB_AGENT_SCOPE_VERSION,
             "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.ui.*"],
             "auto_connect_on_boot": True,
         },
@@ -229,7 +234,8 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "rbac_role": "assistant",
             "autonomy_mode": "SUPERVISED_TOOL_USE",
             "root_nopasswd": False,
-            "allowed_scopes": ["rbac", "polkit", "svl_protected_var", "audit", "chat", "agents.pubsub"],
+            "allowed_scopes": ["rbac", "polkit", "svl_protected_var", "audit", "chat", "agents.pubsub", *GITHUB_AGENT_SCOPES],
+            "github_agent_scope_version": GITHUB_AGENT_SCOPE_VERSION,
             "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.security.*"],
             "auto_connect_on_boot": True,
         },
@@ -263,7 +269,8 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
             "rbac_role": "assistant",
             "autonomy_mode": "SUPERVISED_TOOL_USE",
             "root_nopasswd": False,
-            "allowed_scopes": ["code", "chat", "agents.pubsub"],
+            "allowed_scopes": ["code", "chat", "agents.pubsub", *GITHUB_AGENT_SCOPES],
+            "github_agent_scope_version": GITHUB_AGENT_SCOPE_VERSION,
             "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued"],
             "auto_connect_on_boot": True,
         },
@@ -391,7 +398,7 @@ def _agent_worker_process_loop(
         try:
             answer = execute_agent_task(task)
             result_queue.put({
-                "type": "task_completed",
+                "type": "task_answer_ready",
                 "task_id": current_task_id,
                 "agent": canonical_name,
                 "worker_pid": pid,
@@ -723,11 +730,31 @@ class SVLAgentOrchestrator:
                     if not isinstance(loaded, dict):
                         raise RuntimeError(f"Stored configuration for agent {name} must be a JSON object.")
 
+                    try:
+                        github_scope_version = int(loaded.get("github_agent_scope_version", 0))
+                    except (TypeError, ValueError):
+                        github_scope_version = 0
+                    config_changed = False
+                    if github_scope_version < GITHUB_AGENT_SCOPE_VERSION:
+                        existing_scopes = loaded.get("allowed_scopes")
+                        if not isinstance(existing_scopes, list):
+                            existing_scopes = []
+                        loaded["allowed_scopes"] = list(dict.fromkeys(
+                            [str(scope) for scope in existing_scopes if str(scope).strip()]
+                            + list(GITHUB_AGENT_SCOPES)
+                        ))
+                        loaded["github_agent_scope_version"] = GITHUB_AGENT_SCOPE_VERSION
+                        config_changed = True
                     if "system_prompt" not in loaded:
                         loaded["system_prompt"] = meta["system_prompt"]
-                    loaded["display_name"] = meta["display_name"]
+                        config_changed = True
+                    if loaded.get("display_name") != meta["display_name"]:
+                        loaded["display_name"] = meta["display_name"]
+                        config_changed = True
                     sanitized = sanitize_agent_config(loaded)
                     if sanitized != loaded:
+                        config_changed = True
+                    if config_changed:
                         conn.execute(
                             "UPDATE agent_configs SET config_json = ?, updated_at = ? WHERE canonical_name = ?",
                             (json.dumps(sanitized, ensure_ascii=False), now_iso, name),
@@ -1137,7 +1164,7 @@ class SVLAgentOrchestrator:
             state["current_task_id"] = task_id
             state["worker_phase"] = "BUSY"
             await self._publish_task_event(task, "RUNNING")
-        elif message_type in {"task_completed", "task_failed"}:
+        elif message_type in {"task_answer_ready", "task_failed"}:
             if (
                 task.get("status") != "RUNNING"
                 or task.get("worker_pid") != message.get("worker_pid")
@@ -1145,7 +1172,7 @@ class SVLAgentOrchestrator:
                 return
             completed = message.get("completed_at") or datetime.now(timezone.utc).isoformat()
             task.update({
-                "status": "COMPLETED" if message_type == "task_completed" else "FAILED",
+                "status": "ANSWER_READY" if message_type == "task_answer_ready" else "FAILED",
                 "worker_pid": message.get("worker_pid"),
                 "result": str(message.get("result") or "")[:MAX_AGENT_TASK_RESULT_CHARS] or None,
                 "error": str(message.get("error") or "")[:1000] or None,
@@ -1155,8 +1182,12 @@ class SVLAgentOrchestrator:
             state = self.agent_states.get(canonical_name, {})
             state["current_task_id"] = None
             state["worker_phase"] = "IDLE"
-            level = "TASK_COMPLETED" if message_type == "task_completed" else "TASK_FAILED"
-            summary = "Zadanie zakończone poprawnie." if message_type == "task_completed" else task["error"]
+            level = "TASK_RESPONSE_READY" if message_type == "task_answer_ready" else "TASK_FAILED"
+            summary = (
+                "Model zwrócił odpowiedź; nie potwierdzono wykonania żadnych działań."
+                if message_type == "task_answer_ready"
+                else task["error"]
+            )
             self.append_agent_log(canonical_name, level, f"{task['title']}: {summary}")
             await self._publish_task_event(task, task["status"])
         else:
@@ -1248,7 +1279,7 @@ class SVLAgentOrchestrator:
         """Sprawdza rzeczywisty stan repozytorium GitHub przez oficjalne API."""
         url = f"https://api.github.com/repos/{repo}/contents"
         headers = {"User-Agent": "SVL-Python-OS/5.6.0", "Accept": "application/vnd.github.v3+json"}
-        gh_token = os.environ.get("GITHUB_TOKEN", "").strip()
+        gh_token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
         if gh_token:
             headers["Authorization"] = f"Bearer {gh_token}"
         try:
