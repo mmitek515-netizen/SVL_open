@@ -20,6 +20,7 @@ import json
 import multiprocessing
 import os
 import queue
+import re
 import signal
 import time
 import urllib.parse
@@ -38,6 +39,61 @@ MAX_AGENT_TASK_TITLE_CHARS = 240
 MAX_AGENT_TASK_PAYLOAD_CHARS = 4000
 MAX_AGENT_TASK_RESULT_CHARS = 8000
 MAX_AGENT_TASK_TIMEOUT_SEC = 120
+MISSION_CONTEXT_PATTERN = re.compile(r"\b(?:misj|procedur|operacj)\w*", re.IGNORECASE)
+MISSION_COMPLETION_PATTERNS = (
+    re.compile(
+        r"\b(?:misja|misję|procedura|procedurę|operacja|operację)\s+"
+        r"(?:(?:został[ay]?\s+|jest\s+)?(?:już\s+)?(?:pomyślnie\s+)?"
+        r"(?:zakończon\w*|ukończon\w*|wykonan\w*|zrealizowan\w*))\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:cał\w*\s+)?(?:misj\w*|procedur\w*|operacj\w*)"
+        r"(?:\s+misj\w*)?\s+dobiegł\w*\s+(?:już\s+)?(?:do\s+)?końca\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:wykonał[ae]m|zrealizował[ae]m|zakończył[ae]m|ukończył[ae]m)\s+"
+        r"(?:już\s+)?(?:cał\w*\s+)?(?:misj\w*|procedur\w*|operacj\w*)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:wszystkie|całe)\s+(?:kroki|etapy|fazy)\s+(?:misji\s+)?"
+        r"(?:zostały|są)\s+(?:już\s+)?"
+        r"(?:zakończon\w*|ukończon\w*|wykonan\w*|zrealizowan\w*)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:the\s+)?(?:mission|procedure|operation)s?\s+"
+        r"(?:(?:is|was|has|have)\s+(?:been\s+)?|are\s+)?"
+        r"(?:successfully\s+)?(?:completed|finished|concluded|done)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:i\s+)?(?:completed|finished|concluded)\s+"
+        r"(?:the\s+)?(?:mission|procedure|operation)s?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:all\s+)?(?:mission\s+)?(?:steps|stages|phases)\s+"
+        r"(?:are|have\s+been|were)\s+(?:fully\s+)?(?:completed|finished|done)\b",
+        re.IGNORECASE,
+    ),
+)
+UNVERIFIED_MISSION_STATUS_REPLY = (
+    "⚠️ **Status misji: NIEZWERYFIKOWANY.** System nie ma rejestru misji ani potwierdzeń "
+    "wykonania jej kroków. Wygenerowanie odpowiedzi AI lub status „COMPLETED” zadania agenta "
+    "oznacza tylko gotową odpowiedź, nie zakończenie procedury. Nie mogę potwierdzić, że misja "
+    "dobiegła końca. Prześlij checklistę i wyniki z wiarygodnego źródła, a pomogę sprawdzić każdy krok."
+)
+
+
+def guard_unverified_mission_completion(context: str, answer: str) -> str:
+    if not MISSION_CONTEXT_PATTERN.search(context):
+        return answer
+    if any(pattern.search(answer) for pattern in MISSION_COMPLETION_PATTERNS):
+        return UNVERIFIED_MISSION_STATUS_REPLY
+    return answer
 
 
 # Canonical definitions imported directly from https://github.com/mmitek515-netizen/SVL_System
@@ -395,6 +451,12 @@ def execute_agent_task(task: dict[str, Any]) -> str:
             "You are a supervised text-only assistant. Do not claim to have executed actions. "
             "Do not use tools, shell commands, or request additional privileges."
         )
+    system_prompt += (
+        "\n\nMission verification policy: This application has no mission registry or tool that "
+        "verifies mission steps. Never claim a mission, procedure, or operation is complete unless "
+        "every required step has explicit trusted evidence. A completed text response is not mission "
+        "completion. If asked for status, say it is UNVERIFIED and do not invent progress or timing."
+    )
     user_content = f"Task: {title}\n\nDetails:\n{payload}"
     request_body = json.dumps({
         "model": model,
@@ -421,7 +483,7 @@ def execute_agent_task(task: dict[str, Any]) -> str:
     answer = str((result.get("message") or {}).get("content") or "").strip()
     if not answer:
         raise RuntimeError("Ollama returned an empty response for the queued task.")
-    return answer
+    return guard_unverified_mission_completion(f"{title}\n{payload}", answer)
 
 
 class SVLAgentOrchestrator:
