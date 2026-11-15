@@ -34,6 +34,11 @@ W tym trybie pięć procesów Aria, Alex, Astyria, Aurelius, Agata korzysta ze w
 
 Oprogramowanie uruchomione w osobnym AI Studio nadal nie będzie miało dostępu do lokalnego OAuth Codexa. Zmienne środowiskowe i dane logowania nie są kopiowane przez GitHub.
 
+## Podział uprawnień
+
+Token `SVL_CODEX_CHAT_ACCESS_TOKEN` pozwala wysyłać wiadomości, tworzyć rozmowy i czytać historię rozmów.
+Usunięcie rozmowy, wyczyszczenie całej historii, synchronizacja administracyjna i dostęp do systemowych narzędzi wymagają osobnego `SVL_OPERATOR_TOKEN`. Można go podać w górnym pasku SVL_open; jest przechowywany wyłącznie w pamięci karty przeglądarki.
+
 ## Bezpieczeństwo i ograniczenia
 
 - `SVL_CODEX_CHAT_ENABLED` jest domyślnie `false`. Włączenie wymaga prywatnego tokenu operatora długości minimum 32 znaków.

@@ -1279,14 +1279,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (conversationsRef.current.length <= 1) {
         return { ok: false, error: 'Nie można usunąć ostatniej aktywnej sesji.' };
       }
-      pendingConvIdsRef.current.delete(convId);
-      deletedConvIdsRef.current.add(convId);
-      const remaining = conversationsRef.current.filter((c) => c.id !== convId);
-      setConversations(remaining);
-      if (activeConvIdState === convId && remaining[0]) {
-        setActiveConvId(remaining[0].id);
-      }
-
+      // SQLite is authoritative: do not hide or blacklist a thread before
+      // the backend confirms that it has actually been deleted.
       const eventId = createUniqueId('evt-del');
       const res = await safeFetchJson<{
         ok: boolean;
@@ -1305,6 +1299,13 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       });
 
       if (res.ok && res.data?.ok) {
+        pendingConvIdsRef.current.delete(convId);
+        deletedConvIdsRef.current.add(convId);
+        const remaining = conversationsRef.current.filter((c) => c.id !== convId);
+        setConversations((prev) => prev.filter((c) => c.id !== convId));
+        if (activeConvIdState === convId && remaining[0]) {
+          setActiveConvId(remaining[0].id);
+        }
         if (Array.isArray(res.data.conversations)) {
           const hydrated = normalizeConversationsFromServer(res.data.conversations);
           for (const conversation of hydrated) {
@@ -1342,10 +1343,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }>('/api/py/chat/conversations/clear-all', {
       method: 'POST',
       timeoutMs: 12000,
-      headers: accessToken ? {
-        'X-SVL-Operator-Token': accessToken,
-        'X-SVL-Codex-Access': accessToken,
-      } : {},
+      headers: accessToken ? { 'X-SVL-Operator-Token': accessToken } : {},
       body: JSON.stringify({ origin: tabOrigin, eventId }),
     });
 

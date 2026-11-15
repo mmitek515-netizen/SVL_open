@@ -654,26 +654,20 @@ async function startServer() {
     const method = req.method === 'POST' ? 'POST' : 'GET';
     const timeoutMs = req.path === '/api/py/images/generate' ? 900000 : 20000;
     const isOperator = hasOperatorAuthorization(req.headers['x-svl-operator-token']);
-    const isChatToken = req.path.startsWith('/api/py/chat/') &&
+    // The Codex chat token is for ordinary conversations only.
+    // Destructive operations, sync-actions and diagnostics require the operator.
+    const chatTokenAllowed =
+      (method === 'GET' && req.path === '/api/py/chat/conversations') ||
+      (method === 'POST' && (
+        req.path === '/api/py/chat/conversations/create' ||
+        req.path === '/api/py/chat/conversations/message'
+      ));
+    const isChatToken = chatTokenAllowed &&
       codexChatAccessAllowed(req.headers['x-svl-codex-access']);
     if (!isOperator && !isChatToken) {
       res.status(401).json({
         ok: false,
         error: 'Wymagana autoryzacja SVL. Wpisz SVL_OPERATOR_TOKEN w górnym pasku aplikacji.',
-      });
-      return;
-    }
-    const chatClearProtected =
-      (process.env.SVL_OPERATOR_TOKEN || '').length >= 32 ||
-      (process.env.SVL_CODEX_CHAT_ENABLED === 'true' &&
-        (process.env.SVL_CODEX_CHAT_ACCESS_TOKEN || '').length >= 32);
-    if (method === 'POST' && req.path === '/api/py/chat/conversations/clear-all' &&
-        chatClearProtected &&
-        !hasOperatorAuthorization(req.headers['x-svl-operator-token']) &&
-        !codexChatAccessAllowed(req.headers['x-svl-codex-access'])) {
-      res.status(401).json({
-        ok: false,
-        error: 'Czyszczenie wszystkich rozmów wymaga tokenu operatora lub prywatnego tokenu Codex CLI.',
       });
       return;
     }
