@@ -1310,7 +1310,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [activeConvIdState, notifyLocalMutation, setActiveConvId, tabOrigin],
   );
 
-  const clearAllConversationsAndBuffers = useCallback(async () => {
+  const clearAllConversationsAndBuffers = useCallback(async (accessToken = '') => {
     const previousConversations = conversationsRef.current;
     const previousActiveConvId = activeConvIdState;
     const previousTargetAgent = targetAgentState;
@@ -1330,6 +1330,10 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }>('/api/py/chat/conversations/clear-all', {
       method: 'POST',
       timeoutMs: 12000,
+      headers: accessToken ? {
+        'X-SVL-Operator-Token': accessToken,
+        'X-SVL-Codex-Access': accessToken,
+      } : {},
       body: JSON.stringify({ origin: tabOrigin, eventId }),
     });
 

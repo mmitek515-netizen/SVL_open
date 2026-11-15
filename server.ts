@@ -576,6 +576,20 @@ async function startServer() {
     const fullEndpoint = queryStr ? `${req.path}?${queryStr}` : req.path;
     const method = req.method === 'POST' ? 'POST' : 'GET';
     const timeoutMs = req.path === '/api/py/images/generate' ? 900000 : 20000;
+    const chatClearProtected =
+      (process.env.SVL_OPERATOR_TOKEN || '').length >= 32 ||
+      (process.env.SVL_CODEX_CHAT_ENABLED === 'true' &&
+        (process.env.SVL_CODEX_CHAT_ACCESS_TOKEN || '').length >= 32);
+    if (method === 'POST' && req.path === '/api/py/chat/conversations/clear-all' &&
+        chatClearProtected &&
+        !hasOperatorAuthorization(req.headers['x-svl-operator-token']) &&
+        !codexChatAccessAllowed(req.headers['x-svl-codex-access'])) {
+      res.status(401).json({
+        ok: false,
+        error: 'Czyszczenie wszystkich rozmów wymaga tokenu operatora lub prywatnego tokenu Codex CLI.',
+      });
+      return;
+    }
     if (method === 'POST' &&
         (req.path === '/api/py/python-repl' ||
          (req.path === '/api/py/agents/task' && process.env.SVL_CODEX_AGENTS_ENABLED === 'true')) &&

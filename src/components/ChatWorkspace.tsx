@@ -914,8 +914,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
             type="button"
             onClick={async () => {
               if (window.confirm('Czy na pewno chcesz wyczyścić wszystkie wiadomości i odetkać bufory czatu?')) {
-                await clearAllConversationsAndBuffers();
-                setMobileSidebarOpen(false);
+                const credential = codexAccessToken ||
+                  window.prompt('Podaj prywatny token operatora lub token Codex CLI (jeżeli system wymaga autoryzacji):') || '';
+                const cleared = await clearAllConversationsAndBuffers(credential);
+                if (cleared.ok) setMobileSidebarOpen(false);
+                else setChatActionError(cleared.error || 'Nie udało się wyczyścić rozmów w SQLite.');
               }
             }}
             className="w-full min-h-[36px] px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/35 border border-rose-500/40 text-rose-200 text-xs font-medium rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
