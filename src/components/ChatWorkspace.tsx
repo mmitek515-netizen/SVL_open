@@ -391,27 +391,40 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       return;
     }
     let cancelled = false;
-    const timer = setTimeout(async () => {
-      const result = await safeFetchJson<{
-        ok: boolean; enabled: boolean; accessConfigured: boolean;
-        authenticated: boolean; loggedIn: boolean; reason: string;
-      }>('/api/codex-chat/status', {
-        timeoutMs: 9000,
-        headers: codexAccessToken ? {'X-SVL-Codex-Access': codexAccessToken} : {},
-      });
-      if (cancelled) return;
-      if (result.ok && result.data?.ok) {
-        setCodexRuntimeStatus(result.data);
-      } else {
-        setCodexRuntimeStatus({
-          enabled: false, accessConfigured: false,
-          reason: result.error || 'Brak odpowiedzi aktualnego backendu.',
+    let checking = false;
+    const checkStatus = async () => {
+      if (checking || cancelled || document.hidden) return;
+      checking = true;
+      try {
+        const result = await safeFetchJson<{
+          ok: boolean; enabled: boolean; accessConfigured: boolean;
+          authenticated: boolean; loggedIn: boolean; reason: string;
+        }>('/api/codex-chat/status', {
+          timeoutMs: 9000,
+          headers: codexAccessToken ? {'X-SVL-Codex-Access': codexAccessToken} : {},
         });
+        if (cancelled) return;
+        if (result.ok && result.data?.ok) {
+          setCodexRuntimeStatus(result.data);
+        } else {
+          setCodexRuntimeStatus({
+            enabled: false, accessConfigured: false,
+            reason: result.error || 'Brak odpowiedzi aktualnego backendu.',
+          });
+        }
+      } finally {
+        checking = false;
       }
-    }, 650);
+    };
+    const initial = setTimeout(() => { void checkStatus(); }, 650);
+    const poll = setInterval(() => { void checkStatus(); }, 30000);
+    const onVisible = () => { if (!document.hidden) void checkStatus(); };
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      clearTimeout(initial);
+      clearInterval(poll);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [selectedModel, codexAccessToken]);
 
