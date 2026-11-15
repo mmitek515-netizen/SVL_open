@@ -4,7 +4,7 @@ import {
   Check,
   RefreshCw,
 } from 'lucide-react';
-import { createUniqueId, safeFetchJson } from '../utils/svlLogic';
+import { createUniqueId, getSvlOperatorAccessToken, safeFetchJson } from '../utils/svlLogic';
 import { useSvlSync } from '../utils/svlSyncStore';
 
 const QUICK_INSPECT_FILES = [
@@ -219,17 +219,18 @@ export const LinuxDeployDashboard: React.FC = () => {
     }
   };
 
+  const effectiveOperatorToken = githubOperatorToken || getSvlOperatorAccessToken();
   useEffect(() => {
     const controller = new AbortController();
     async function loadFile() {
-      if (!githubOperatorToken) {
-        setFileContent('Aby odczytać plik, wprowadź prywatny SVL_OPERATOR_TOKEN w polu GitHub / Dostęp do plików.');
+      if (!effectiveOperatorToken) {
+        setFileContent('Aby odczytać plik, wprowadź SVL_OPERATOR_TOKEN w głównym pasku 🔒 SVL lub w tym panelu.');
         return;
       }
       const res = await safeFetchJson<any>(`/api/files?path=${encodeURIComponent(selectedFilePath)}`, {
         signal: controller.signal,
         timeoutMs: 10000,
-        headers: {'X-SVL-Operator-Token': githubOperatorToken},
+        headers: {'X-SVL-Operator-Token': effectiveOperatorToken},
       });
       if (res.aborted) return;
       const data = res.data;
@@ -239,7 +240,7 @@ export const LinuxDeployDashboard: React.FC = () => {
     return () => {
       controller.abort();
     };
-  }, [selectedFilePath, githubOperatorToken]);
+  }, [selectedFilePath, effectiveOperatorToken]);
 
   const handleCopyFile = async () => {
     try {
@@ -612,7 +613,7 @@ export const LinuxDeployDashboard: React.FC = () => {
           </h2>
           <div className="space-y-3 text-xs text-slate-300 leading-relaxed">
             <p>
-              W środowisku Google AI Studio aplikacja uruchamia na żywo frontend Open WebUI, serwer WebSocket oraz backend Python 3 (<code className="text-violet-300">backend/app.py</code>) z bazą SQLite i 4 procesami workerów.
+              Google AI Studio może uruchomić podgląd frontendowy. Faktyczne działanie backendu Python 3 (<code className="text-violet-300">backend/app.py</code>), bazy SQLite i pięciu workerów wymaga potwierdzenia w diagnostyce uruchomionego środowiska. Sesja Codex CLI z Codespaces nie jest automatycznie przenoszona do AI Studio.
             </p>
             <p>
               Aby uruchomić pełny stos na fizycznej maszynie lub VM z <strong>Debian 13 Trixie</strong> (systemd, Docker Compose, Ollama <code className="text-violet-300">llama3.2-vision:11b</code> z GPU oraz Open WebUI):

@@ -1061,7 +1061,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                     type="button"
                     aria-label={`Usuń konwersację ${conv.title}`}
                     onClick={() => void handleDeleteConversationClick(conv.id)}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-rose-400 transition-opacity"
+                    className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 focus:opacity-100 focus-visible:outline-2 focus-visible:outline-violet-400 focus-visible:outline-offset-2 rounded-md min-h-8 min-w-8 flex items-center justify-center text-slate-500 hover:text-rose-400 transition-opacity"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -1488,7 +1488,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         )}
 
         {chatActionError && (
-          <div className="px-4 py-2 border-b border-rose-500/40 bg-rose-950/40 text-rose-300 text-xs font-mono flex items-center justify-between gap-2">
+          <div role="alert" aria-live="assertive" className="px-4 py-2 border-b border-rose-500/40 bg-rose-950/40 text-rose-300 text-xs font-mono flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
               {chatActionError}
