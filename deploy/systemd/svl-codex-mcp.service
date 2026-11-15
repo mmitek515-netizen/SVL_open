@@ -1,0 +1,30 @@
+[Unit]
+Description=SVL_open Codex CLI MCP bridge (ChatGPT OAuth, Streamable HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=svlos
+Group=svlos
+WorkingDirectory=/opt/svl-python-os
+EnvironmentFile=/etc/svl-os/svl-mcp.env
+Environment=HOME=/var/lib/svl-os/svlos
+Environment=CODEX_HOME=/var/lib/svl-os/codex
+ExecStart=/usr/bin/node /opt/svl-python-os/mcp/codex-bridge.mjs
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/svl-os /opt/svl-python-os
+
+[Install]
+WantedBy=multi-user.target
