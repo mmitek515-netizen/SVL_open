@@ -10,10 +10,12 @@ import { TerminalsWorkspace } from './components/TerminalsWorkspace';
 import { KernelDiagnosticsView } from './components/KernelDiagnosticsView';
 import { LinuxDeployDashboard } from './components/LinuxDeployDashboard';
 import { Svl364CommandCenter } from './components/Svl364CommandCenter';
+import { NotificationsWorkspace } from './components/NotificationsWorkspace';
+import { InfrastructureWorkspace } from './components/InfrastructureWorkspace';
 import { SvlSyncProvider, useSvlSync } from './utils/svlSyncStore';
 import { CANONICAL_AGENTS, getSvlOperatorAccessToken, safeFetchJson, setSvlOperatorAccessToken } from './utils/svlLogic';
 
-type ActiveWorkspaceTab = 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux';
+type ActiveWorkspaceTab = 'chat' | 'svl364' | 'notifications' | 'infrastructure' | 'agents' | 'terminals' | 'kernel' | 'linux';
 
 function SVLWorkspaceShell() {
   const [activeTab, setActiveTab] = useState<ActiveWorkspaceTab>('chat');
@@ -33,6 +35,7 @@ function SVLWorkspaceShell() {
   }, [operatorToken]);
   const {
     agentsData,
+    irisUnreadCount,
     isConnectingAi,
     connectMyAi,
     refreshDomainModules,
@@ -41,9 +44,13 @@ function SVLWorkspaceShell() {
 
   useEffect(() => {
     if (activeTab === 'chat') {
-      void refreshDomainModules(['chat', 'agents', 'health', 'workspace']);
+      void refreshDomainModules(['chat', 'agents', 'health', 'workspace', 'notifications']);
     } else if (activeTab === 'svl364') {
-      void refreshDomainModules(['modules', 'kernel', 'agents', 'health', 'chat', 'terminals']);
+      void refreshDomainModules(['modules', 'kernel', 'agents', 'health', 'chat', 'terminals', 'notifications']);
+    } else if (activeTab === 'notifications') {
+      void refreshDomainModules(['notifications', 'modules', 'agents', 'health', 'chat']);
+    } else if (activeTab === 'infrastructure') {
+      void refreshDomainModules(['modules', 'agents', 'health', 'kernel', 'notifications']);
     } else if (activeTab === 'agents') {
       void refreshDomainModules(['agents', 'health', 'workspace']);
     } else if (activeTab === 'terminals') {
@@ -140,6 +147,30 @@ function SVLWorkspaceShell() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveTab('notifications')}
+            className={`py-0.5 transition-colors whitespace-nowrap shrink-0 border-b-2 font-mono tabular-nums ${
+              activeTab === 'notifications'
+                ? 'text-cyan-300 border-cyan-400 font-semibold'
+                : irisUnreadCount > 0
+                  ? 'border-transparent text-cyan-300 hover:text-cyan-200'
+                  : 'border-transparent hover:text-slate-100'
+            }`}
+          >
+            Powiadomienia ({irisUnreadCount})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('infrastructure')}
+            className={`py-0.5 transition-colors whitespace-nowrap shrink-0 border-b-2 ${
+              activeTab === 'infrastructure'
+                ? 'text-emerald-300 border-emerald-400 font-semibold'
+                : 'border-transparent hover:text-slate-100'
+            }`}
+          >
+            Infrastruktura
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveTab('agents')}
             className={`py-0.5 transition-colors whitespace-nowrap shrink-0 border-b-2 font-mono tabular-nums ${
               activeTab === 'agents'
@@ -158,7 +189,7 @@ function SVLWorkspaceShell() {
                 : 'border-transparent hover:text-slate-100'
             }`}
           >
-            Terminale (5)
+            Terminale (4)
           </button>
           <button
             type="button"
@@ -245,6 +276,8 @@ function SVLWorkspaceShell() {
       <main className="flex-1 min-h-0 w-full overflow-hidden">
         {activeTab === 'chat' && <ChatWorkspace onNavigateTab={setActiveTab} />}
         {activeTab === 'svl364' && <Svl364CommandCenter onNavigate={setActiveTab} />}
+        {activeTab === 'notifications' && <NotificationsWorkspace onNavigateTab={setActiveTab} />}
+        {activeTab === 'infrastructure' && <InfrastructureWorkspace onNavigateTab={setActiveTab} />}
         {activeTab === 'agents' && (
           <AgentsPanel
             onNavigateToChat={() => setActiveTab('chat')}

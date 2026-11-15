@@ -8,6 +8,9 @@ import React, {
   useState,
 } from 'react';
 import {
+  AvatarProfileKey,
+  IrisNotification,
+  SvlAvatarMap,
   SyncableConversation,
   SyncableMessage,
   SystemModule,
@@ -31,17 +34,12 @@ const CONVERSATIONS_CACHE_KEY = 'svl_python_os_conversations_v1';
 const DEFAULT_TERMINAL_LOGS: Record<TerminalTabId, TerminalLogLine[]> = {
   linux: [],
   python: [],
-  codex: [],
   hyperspace: [],
   agents: [],
 };
 
 export const INITIAL_WELCOME_CONVERSATIONS: SyncableConversation[] = [
   { id: 'conv-rodzina-mitek-wszyscy', title: 'Rodzina Mitek (wszyscy)', updatedAt: '', revision: 1, messages: [] },
-  { id: 'conv-agent-aria', title: 'Aria Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
-  { id: 'conv-agent-alex', title: 'Alex Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
-  { id: 'conv-agent-astyria', title: 'Astyria Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
-  { id: 'conv-agent-aurelius', title: 'Aurelius Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
   { id: 'conv-agent-agata', title: 'Agata Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
 ];
 
@@ -79,27 +77,32 @@ function stripObsoleteDiagnosticMessages(msgs: any[]): SyncableMessage[] {
   return msgs.filter(Boolean);
 }
 
+const REMOVED_AGENT_CONVERSATION_IDS = new Set([
+  'conv-agent-aria',
+  'conv-agent-alex',
+  'conv-agent-astyria',
+  'conv-agent-aurelius',
+]);
+
 export function getCanonicalConversationTitle(id: string, fallbackTitle?: string): string {
   if (id === 'conv-rodzina-mitek-wszyscy') return 'Rodzina Mitek (wszyscy)';
-  if (id === 'conv-agent-aria') return 'Aria Mitek (1-na-1)';
-  if (id === 'conv-agent-alex') return 'Alex Mitek (1-na-1)';
-  if (id === 'conv-agent-astyria') return 'Astyria Mitek (1-na-1)';
-  if (id === 'conv-agent-aurelius') return 'Aurelius Mitek (1-na-1)';
   if (id === 'conv-agent-agata') return 'Agata Mitek (1-na-1)';
   return fallbackTitle || 'Sesja SVL Python OS';
 }
 
 function normalizeConversationsFromServer(rawList: any[]): SyncableConversation[] {
-  return (rawList || []).map((c: any) => {
-    const cleaned = stripObsoleteDiagnosticMessages(c.messages);
-    return {
-      id: String(c.id),
-      title: getCanonicalConversationTitle(String(c.id), c.title),
-      updatedAt: formatUpdatedAt(c.updatedAt),
-      revision: typeof c.revision === 'number' ? c.revision : Number(c.revision || 1),
-      messages: cleaned,
-    };
-  });
+  return (rawList || [])
+    .filter((c: any) => !REMOVED_AGENT_CONVERSATION_IDS.has(String(c?.id || '')))
+    .map((c: any) => {
+      const cleaned = stripObsoleteDiagnosticMessages(c.messages);
+      return {
+        id: String(c.id),
+        title: getCanonicalConversationTitle(String(c.id), c.title),
+        updatedAt: formatUpdatedAt(c.updatedAt),
+        revision: typeof c.revision === 'number' ? c.revision : Number(c.revision || 1),
+        messages: cleaned,
+      };
+    });
 }
 
 interface SvlSyncContextValue {
@@ -119,24 +122,27 @@ interface SvlSyncContextValue {
   kernelData: any;
   agentsData: any;
   systemModules: SystemModule[];
+  avatars: SvlAvatarMap;
+  irisNotifications: IrisNotification[];
+  irisUnreadCount: number;
   conversations: SyncableConversation[];
   terminalLogsByTab: Record<TerminalTabId, TerminalLogLine[]>;
   workspaceState: WorkspaceUiState;
 
   activeConvId: string;
-  targetAgent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
-  selectedAgentPanel: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
+  targetAgent: 'Auto' | 'Rodzina Mitek' | 'Agata';
+  selectedAgentPanel: 'Agata';
 
   triggerFullSync: (reason?: string) => Promise<SyncExecutionReport>;
-  refreshDomainModules: (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules'>) => Promise<void>;
+  refreshDomainModules: (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>) => Promise<void>;
   reconnectWebSocket: () => void;
   connectMyAi: (triggeredBy?: string) => Promise<any>;
 
   setActiveConvId: (convId: string) => void;
-  setTargetAgent: (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
-  setSelectedAgentPanel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
+  setTargetAgent: (agent: 'Auto' | 'Rodzina Mitek' | 'Agata') => void;
+  setSelectedAgentPanel: (agent: 'Agata') => void;
   openFamilyChannel: () => void;
-  openAgentChannel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
+  openAgentChannel: (agent: 'Agata') => void;
 
   createConversation: () => SyncableConversation;
   deleteConversation: (convId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -144,6 +150,10 @@ interface SvlSyncContextValue {
   appendAndPersistChatMessage: (convId: string, convTitle: string, model: string, msg: SyncableMessage) => Promise<{ ok: boolean; error?: string }>;
   upsertSystemModule: (mod: { id: string; name: string; kind?: string; status?: string; description?: string; config?: Record<string, any> }) => Promise<{ ok: boolean; module?: SystemModule; error?: string }>;
   deleteSystemModule: (modId: string) => Promise<{ ok: boolean; error?: string }>;
+  saveAgentAvatar: (agent: AvatarProfileKey, image: string) => Promise<{ ok: boolean; avatars?: SvlAvatarMap; error?: string }>;
+  resetAgentAvatar: (agent: AvatarProfileKey) => Promise<{ ok: boolean; avatars?: SvlAvatarMap; error?: string }>;
+  emitIrisNotification: (payload: { severity?: 'INFO' | 'WARN' | 'ALERT'; category?: string; title: string; message?: string; details?: Record<string, any>; mirrorToFamilyChat?: boolean }) => Promise<{ ok: boolean; notification?: IrisNotification; error?: string }>;
+  ackIrisNotifications: (ids?: string[]) => Promise<{ ok: boolean; unreadCount?: number; error?: string }>;
   clearTerminalTab: (tab: TerminalTabId) => Promise<{ ok: boolean; error?: string }>;
   refreshTerminals: () => Promise<void>;
   notifyLocalMutation: (entity: string, entityId: string, serverRevision?: number, event?: SvlSyncEvent | null) => void;
@@ -177,6 +187,9 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [kernelData, setKernelData] = useState<any>(null);
   const [agentsData, setAgentsData] = useState<any>(null);
   const [systemModules, setSystemModules] = useState<SystemModule[]>([]);
+  const [avatars, setAvatars] = useState<SvlAvatarMap>({});
+  const [irisNotifications, setIrisNotifications] = useState<IrisNotification[]>([]);
+  const [irisUnreadCount, setIrisUnreadCount] = useState<number>(0);
   const [conversations, setConversations] = useState<SyncableConversation[]>(INITIAL_WELCOME_CONVERSATIONS);
   // Never restore erased conversation history from an old browser cache.
   useEffect(() => {
@@ -190,15 +203,15 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [workspaceState, setWorkspaceState] = useState<WorkspaceUiState>({
     active_conversation_id: null,
     selected_target_agent: 'Rodzina Mitek',
-    selected_agent_panel_id: 'Alex',
+    selected_agent_panel_id: 'Agata',
     revisions: {},
   });
 
   const [activeConvIdState, setActiveConvIdState] = useState<string>(
     () => conversations[0]?.id || 'conv-rodzina-mitek-wszyscy',
   );
-  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Rodzina Mitek');
-  const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Alex');
+  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Agata'>('Rodzina Mitek');
+  const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Agata'>('Agata');
 
   const pendingMsgIdsRef = useRef<Set<string>>(new Set());
   // Keep a newly-created EMPTY thread visible while SQLite create is in-flight.
@@ -310,6 +323,19 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
             : null;
       if (snapModules) setSystemModules(snapModules);
 
+      if (snap.avatars && typeof snap.avatars === 'object') {
+        setAvatars(snap.avatars);
+      }
+
+      if (Array.isArray(snap.irisNotifications)) {
+        setIrisNotifications(snap.irisNotifications);
+        setIrisUnreadCount(
+          typeof snap.irisUnreadCount === 'number'
+            ? snap.irisUnreadCount
+            : snap.irisNotifications.filter((n) => !n.isRead).length,
+        );
+      }
+
       if (Array.isArray(snap.conversations)) {
         const hydrated = normalizeConversationsFromServer(snap.conversations);
         setConversations((prev) =>
@@ -320,7 +346,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (snap.terminalLogs) {
         setTerminalLogsByTab((prev) => {
           const next = { ...prev };
-          (['linux', 'python', 'codex', 'hyperspace', 'agents'] as TerminalTabId[]).forEach((tab) => {
+          (['linux', 'python', 'hyperspace', 'agents'] as TerminalTabId[]).forEach((tab) => {
             if (Array.isArray(snap.terminalLogs?.[tab])) {
               next[tab] = snap.terminalLogs[tab];
             }
@@ -336,32 +362,24 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const rawTargetAgent =
           (snap.workspaceState.selected_target_agent as any)?.value ?? snap.workspaceState.selected_target_agent;
 
-        if (typeof rawActiveConv === 'string' && rawActiveConv) {
+        if (typeof rawActiveConv === 'string' && rawActiveConv && !REMOVED_AGENT_CONVERSATION_IDS.has(rawActiveConv)) {
           setActiveConvIdState((prev) => {
             const existsInRemote = snap.conversations?.some((c) => c.id === rawActiveConv);
             return existsInRemote ? rawActiveConv : prev;
           });
           if (rawActiveConv === 'conv-rodzina-mitek-wszyscy') {
             setTargetAgentState('Rodzina Mitek');
-          } else if (rawActiveConv.startsWith('conv-agent-')) {
-            const slug = rawActiveConv.replace('conv-agent-', '').toLowerCase();
-            const map: Record<string, 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'> = {
-              aria: 'Aria',
-              alex: 'Alex',
-              astyria: 'Astyria',
-              aurelius: 'Aurelius',
-              agata: 'Agata',
-            };
-            if (map[slug]) setTargetAgentState(map[slug]);
-          } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawTargetAgent))) {
+          } else if (rawActiveConv === 'conv-agent-agata') {
+            setTargetAgentState('Agata');
+          } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Agata'].includes(String(rawTargetAgent))) {
             setTargetAgentState(String(rawTargetAgent) as any);
           }
-        } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawTargetAgent))) {
+        } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Agata'].includes(String(rawTargetAgent))) {
           setTargetAgentState(String(rawTargetAgent) as any);
         }
         const rawPanelAgent =
           (snap.workspaceState.selected_agent_panel_id as any)?.value ?? snap.workspaceState.selected_agent_panel_id;
-        if (rawPanelAgent && ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawPanelAgent))) {
+        if (rawPanelAgent && ['Agata'].includes(String(rawPanelAgent))) {
           setSelectedAgentPanelState(String(rawPanelAgent) as any);
         }
       }
@@ -445,9 +463,45 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const refreshDomainModules = useCallback(
-    async (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules'>) => {
+    async (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>) => {
       const unique = Array.from(new Set(modules));
       const tasks: Promise<void>[] = [];
+
+      if (unique.includes('avatars')) {
+        tasks.push(
+          safeFetchJson<{
+            ok: boolean;
+            avatars?: SvlAvatarMap;
+            serverRevision?: number;
+          }>('/api/avatars', { timeoutMs: 10000 }).then((r) => {
+            if (r.ok && r.data?.ok && r.data.avatars && typeof r.data.avatars === 'object') {
+              setAvatars(r.data.avatars);
+              advanceServerRevision(r.data.serverRevision);
+            }
+          }),
+        );
+      }
+
+      if (unique.includes('notifications')) {
+        tasks.push(
+          safeFetchJson<{
+            ok: boolean;
+            notifications?: IrisNotification[];
+            unreadCount?: number;
+            serverRevision?: number;
+          }>('/api/py/notifications?limit=80', { timeoutMs: 12000 }).then((r) => {
+            if (r.ok && r.data?.ok && Array.isArray(r.data.notifications)) {
+              setIrisNotifications(r.data.notifications);
+              setIrisUnreadCount(
+                typeof r.data.unreadCount === 'number'
+                  ? r.data.unreadCount
+                  : r.data.notifications.filter((n) => !n.isRead).length,
+              );
+              advanceServerRevision(r.data.serverRevision);
+            }
+          }),
+        );
+      }
 
       if (unique.includes('health')) {
         tasks.push(
@@ -531,13 +585,15 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
               const ws = r.data.workspaceState as any;
               setWorkspaceState(ws);
               const rawConv = ws.active_conversation_id?.value ?? ws.active_conversation_id;
-              if (typeof rawConv === 'string' && rawConv) setActiveConvIdState(rawConv);
+              if (typeof rawConv === 'string' && rawConv && !REMOVED_AGENT_CONVERSATION_IDS.has(rawConv)) {
+                setActiveConvIdState(rawConv);
+              }
               const rawTarget = ws.selected_target_agent?.value ?? ws.selected_target_agent;
-              if (rawTarget && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawTarget))) {
+              if (rawTarget && ['Auto', 'Rodzina Mitek', 'Agata'].includes(String(rawTarget))) {
                 setTargetAgentState(String(rawTarget) as any);
               }
               const rawPanel = ws.selected_agent_panel_id?.value ?? ws.selected_agent_panel_id;
-              if (rawPanel && ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawPanel))) {
+              if (rawPanel && ['Agata'].includes(String(rawPanel))) {
                 setSelectedAgentPanelState(String(rawPanel) as any);
               }
             }
@@ -552,11 +608,11 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   // Coalesced domain refresh queue for incoming outbox events
-  const queuedDomainsRef = useRef<Set<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules'>>(new Set());
+  const queuedDomainsRef = useRef<Set<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>>(new Set());
   const domainFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const scheduleDomainRefresh = useCallback(
-    (domains: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules'>) => {
+    (domains: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>) => {
       for (const d of domains) queuedDomainsRef.current.add(d);
       if (domainFlushTimerRef.current) return;
       domainFlushTimerRef.current = setTimeout(() => {
@@ -566,7 +622,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (batch.length > 0) {
           void refreshDomainModules(batch);
         }
-      }, 90);
+      }, 25);
     },
     [refreshDomainModules],
   );
@@ -646,16 +702,16 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           [key]: val,
           revisions: { ...(prev.revisions || {}), [key]: evt.revision },
         }));
-        if (key === 'active_conversation_id' && typeof val === 'string' && val) {
+        if (key === 'active_conversation_id' && typeof val === 'string' && val && !REMOVED_AGENT_CONVERSATION_IDS.has(val)) {
           setActiveConvIdState(val);
         } else if (
           key === 'selected_target_agent' &&
-          ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(val))
+          ['Auto', 'Rodzina Mitek', 'Agata'].includes(String(val))
         ) {
           setTargetAgentState(val);
         } else if (
           key === 'selected_agent_panel_id' &&
-          ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(val))
+          ['Agata'].includes(String(val))
         ) {
           setSelectedAgentPanelState(val);
         }
@@ -677,12 +733,22 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return;
       }
 
+      if (evt.entity === 'notification') {
+        scheduleDomainRefresh(['notifications', 'chat']);
+        return;
+      }
+
+      if (evt.entity === 'avatar') {
+        scheduleDomainRefresh(['avatars']);
+        return;
+      }
+
       if (evt.entity === 'system' && evt.origin !== tabOrigin && evt.type !== 'system.snapshot_synced') {
         void triggerFullSync('remote_system_mutation');
         return;
       }
 
-      scheduleDomainRefresh(['health', 'kernel', 'agents', 'chat', 'terminals', 'workspace', 'modules']);
+      scheduleDomainRefresh(['health', 'kernel', 'agents', 'chat', 'terminals', 'workspace', 'modules', 'notifications', 'avatars']);
     },
     [advanceServerRevision, recordSeenEventId, scheduleDomainRefresh, tabOrigin, triggerFullSync],
   );
@@ -1082,23 +1148,12 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const setActiveConvId = useCallback(
     (convId: string) => {
+      if (REMOVED_AGENT_CONVERSATION_IDS.has(convId)) return;
       setActiveConvIdState(convId);
       void persistWorkspaceKey('active_conversation_id', convId);
       if (convId === 'conv-rodzina-mitek-wszyscy') {
         setTargetAgentState('Rodzina Mitek');
         void persistWorkspaceKey('selected_target_agent', 'Rodzina Mitek');
-      } else if (convId === 'conv-agent-aria') {
-        setTargetAgentState('Aria');
-        void persistWorkspaceKey('selected_target_agent', 'Aria');
-      } else if (convId === 'conv-agent-alex') {
-        setTargetAgentState('Alex');
-        void persistWorkspaceKey('selected_target_agent', 'Alex');
-      } else if (convId === 'conv-agent-astyria') {
-        setTargetAgentState('Astyria');
-        void persistWorkspaceKey('selected_target_agent', 'Astyria');
-      } else if (convId === 'conv-agent-aurelius') {
-        setTargetAgentState('Aurelius');
-        void persistWorkspaceKey('selected_target_agent', 'Aurelius');
       } else if (convId === 'conv-agent-agata') {
         setTargetAgentState('Agata');
         void persistWorkspaceKey('selected_target_agent', 'Agata');
@@ -1108,11 +1163,11 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const openAgentChannel = useCallback(
-    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
+    (agent: 'Agata') => {
       const slug = agent.toLowerCase();
       const convId = `conv-agent-${slug}`;
       const displayName = `${agent} Mitek`;
-      const agentId = agent === 'Aria' ? 'si_1' : agent;
+      const agentId = agent;
       deletedConvIdsRef.current.delete(convId);
       const exists = conversationsRef.current.some((c) => c.id === convId);
       if (!exists) {
@@ -1145,7 +1200,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const setTargetAgent = useCallback(
-    (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
+    (agent: 'Auto' | 'Rodzina Mitek' | 'Agata') => {
       setTargetAgentState(agent);
       void persistWorkspaceKey('selected_target_agent', agent);
     },
@@ -1153,7 +1208,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const setSelectedAgentPanel = useCallback(
-    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
+    (agent: 'Agata') => {
       setSelectedAgentPanelState(agent);
       void persistWorkspaceKey('selected_agent_panel_id', agent);
     },
@@ -1504,6 +1559,114 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [notifyLocalMutation, refreshDomainModules, tabOrigin],
   );
 
+  const emitIrisNotification = useCallback(
+    async (payload: {
+      severity?: 'INFO' | 'WARN' | 'ALERT';
+      category?: string;
+      title: string;
+      message?: string;
+      details?: Record<string, any>;
+      mirrorToFamilyChat?: boolean;
+    }) => {
+      const eventId = createUniqueId('evt-iris');
+      const res = await safeFetchJson<{
+        ok: boolean;
+        notification?: IrisNotification;
+        serverRevision?: number;
+        event?: SvlSyncEvent;
+        error?: string;
+      }>('/api/py/notifications/emit', {
+        method: 'POST',
+        timeoutMs: 12000,
+        body: JSON.stringify({
+          ...payload,
+          channel: 'wszyscy',
+          origin: tabOrigin,
+          eventId,
+        }),
+      });
+      if (res.ok && res.data?.ok) {
+        notifyLocalMutation('notification', res.data.notification?.id || 'iris', res.data.serverRevision, res.data.event);
+        await refreshDomainModules(['notifications', 'chat']);
+        return { ok: true, notification: res.data.notification };
+      }
+      return { ok: false, error: res.error || res.data?.error || 'Nie udało się wysłać powiadomienia Iris.' };
+    },
+    [notifyLocalMutation, refreshDomainModules, tabOrigin],
+  );
+
+  const ackIrisNotifications = useCallback(
+    async (ids?: string[]) => {
+      const res = await safeFetchJson<{
+        ok: boolean;
+        unreadCount?: number;
+        serverRevision?: number;
+        event?: SvlSyncEvent;
+        error?: string;
+      }>('/api/py/notifications/ack', {
+        method: 'POST',
+        timeoutMs: 10000,
+        body: JSON.stringify({
+          ids: Array.isArray(ids) ? ids : undefined,
+          origin: tabOrigin,
+        }),
+      });
+      if (res.ok && res.data?.ok) {
+        notifyLocalMutation('notification', 'ack', res.data.serverRevision, res.data.event);
+        await refreshDomainModules(['notifications']);
+        return { ok: true, unreadCount: res.data.unreadCount };
+      }
+      return { ok: false, error: res.error || res.data?.error || 'Nie udało się potwierdzić powiadomień.' };
+    },
+    [notifyLocalMutation, refreshDomainModules, tabOrigin],
+  );
+
+  const saveAgentAvatar = useCallback(
+    async (agent: AvatarProfileKey, image: string) => {
+      const eventId = createUniqueId('evt-avatar');
+      const res = await safeFetchJson<{
+        ok: boolean;
+        avatars?: SvlAvatarMap;
+        serverRevision?: number;
+        event?: SvlSyncEvent;
+        error?: string;
+      }>('/api/avatars', {
+        method: 'POST',
+        timeoutMs: 15000,
+        body: JSON.stringify({ agent, image, origin: tabOrigin, eventId }),
+      });
+      if (res.ok && res.data?.ok) {
+        if (res.data.avatars) setAvatars(res.data.avatars);
+        notifyLocalMutation('avatar', agent, res.data.serverRevision, res.data.event);
+        return { ok: true, avatars: res.data.avatars };
+      }
+      return { ok: false, error: res.error || res.data?.error || 'Nie udało się zapisać awatara.' };
+    },
+    [notifyLocalMutation, tabOrigin],
+  );
+
+  const resetAgentAvatar = useCallback(
+    async (agent: AvatarProfileKey) => {
+      const res = await safeFetchJson<{
+        ok: boolean;
+        avatars?: SvlAvatarMap;
+        serverRevision?: number;
+        event?: SvlSyncEvent;
+        error?: string;
+      }>(`/api/avatars/${encodeURIComponent(agent)}`, {
+        method: 'DELETE',
+        timeoutMs: 12000,
+      });
+      if (res.ok && res.data?.ok) {
+        if (res.data.avatars) setAvatars(res.data.avatars);
+        notifyLocalMutation('avatar', agent, res.data.serverRevision, res.data.event);
+        return { ok: true, avatars: res.data.avatars };
+      }
+      return { ok: false, error: res.error || res.data?.error || 'Nie udało się przywrócić awatara.' };
+    },
+    [notifyLocalMutation],
+  );
+
   const value = useMemo<SvlSyncContextValue>(
     () => ({
       tabOrigin,
@@ -1521,6 +1684,9 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       kernelData,
       agentsData,
       systemModules,
+      avatars,
+      irisNotifications,
+      irisUnreadCount,
       conversations,
       terminalLogsByTab,
       workspaceState,
@@ -1542,14 +1708,20 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       appendAndPersistChatMessage,
       upsertSystemModule,
       deleteSystemModule,
+      saveAgentAvatar,
+      resetAgentAvatar,
+      emitIrisNotification,
+      ackIrisNotifications,
       clearTerminalTab,
       refreshTerminals,
       notifyLocalMutation,
     }),
     [
+      ackIrisNotifications,
       activeConvIdState,
       agentsData,
       appendAndPersistChatMessage,
+      avatars,
       clearAllConversationsAndBuffers,
       clearTerminalTab,
       connectMyAi,
@@ -1557,7 +1729,10 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       createConversation,
       deleteConversation,
       deleteSystemModule,
+      emitIrisNotification,
       healthData,
+      irisNotifications,
+      irisUnreadCount,
       isConnectingAi,
       isSyncing,
       kernelData,
@@ -1569,6 +1744,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       reconnectWebSocket,
       refreshDomainModules,
       refreshTerminals,
+      resetAgentAvatar,
+      saveAgentAvatar,
       schemaVersion,
       selectedAgentPanelState,
       serverRevision,

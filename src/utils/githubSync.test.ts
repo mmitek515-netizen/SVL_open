@@ -103,6 +103,7 @@ test('GitHub sync only accepts repository source paths and rejects secrets/autom
   assert.equal(isAllowedGithubSyncPath('deploy/systemd/svl-python-os.service'), true);
   assert.equal(isAllowedGithubSyncPath('.github/workflows/release.yml'), false);
   assert.equal(isAllowedGithubSyncPath('package.json'), true);
+  assert.equal(isAllowedGithubSyncPath('public/assets/avatars/agata.svg'), true);
   assert.equal(isAllowedGithubSyncPath('bun.lock'), true);
   assert.equal(isAllowedGithubSyncPath('bun.lockb'), false);
   assert.equal(isAllowedGithubSyncPath('data/agent-memory.json'), false);

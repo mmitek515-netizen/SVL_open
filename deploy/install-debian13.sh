@@ -4,8 +4,7 @@
 # Installs:
 # - Python 3.12+ & venv (FastAPI, Pydantic, SQLAlchemy, WebSockets)
 # - Local Ollama service + auto-detection of RAM/VRAM for ~14B Vision model
-# - Official OpenAI Codex CLI (@openai/codex) with `codex login --device-auth` support
-# - Dedicated Linux accounts & systemd unit for SVLSystemKernel & 4 Agents
+# - Dedicated Linux accounts & systemd unit for SVLSystemKernel & Agata Agent
 # ============================================================================
 set -euo pipefail
 
@@ -14,7 +13,7 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-echo "=== [1/6] Weryfikacja systemu Debian 13 Trixie i zasobow sprzetowych ==="
+echo "=== [1/5] Weryfikacja systemu Debian 13 Trixie i zasobow sprzetowych ==="
 if [ -f /etc/os-release ]; then
   . /etc/os-release
   echo "Wykryty system: ${PRETTY_NAME:-Linux}"
@@ -23,9 +22,9 @@ fi
 apt-get update -qq
 apt-get install -y python3 python3-venv python3-pip sqlite3 curl git jq polkitd sudo nodejs npm
 
-echo "=== [2/6] Tworzenie uzytkownikow systemowych dla SVL OS i 4 Agentow ==="
+echo "=== [2/5] Tworzenie uzytkownikow systemowych dla SVL OS i Agenta Agata ==="
 getent group svlos >/dev/null 2>&1 || addgroup --system svlos
-for acct in svlos svl-aria svl-alex svl-astyria svl-aurelius; do
+for acct in svlos svl-agata; do
   if ! getent passwd "$acct" >/dev/null 2>&1; then
     adduser --system --ingroup svlos --home "/var/lib/svl-os/$acct" --shell /bin/bash "$acct"
   fi
@@ -35,7 +34,7 @@ install -d -o svlos -g svlos -m 0750 /var/lib/svl-os /var/log/svl-os /etc/svl-os
 cp -r . /opt/svl-python-os/
 chown -R svlos:svlos /opt/svl-python-os
 
-echo "=== [3/6] Konfiguracja srodowiska Python 3.12 i sekretu SVL_OPERATOR_TOKEN ==="
+echo "=== [3/5] Konfiguracja srodowiska Python 3.12 i sekretu SVL_OPERATOR_TOKEN ==="
 python3 -m venv /opt/svl-python-os/venv
 /opt/svl-python-os/venv/bin/pip install --upgrade pip
 /opt/svl-python-os/venv/bin/pip install -r /opt/svl-python-os/backend/requirements.txt
@@ -54,9 +53,8 @@ EOF
   echo "Wygenerowano nowy 64-znakowy SVL_OPERATOR_TOKEN w /etc/svl-os/svl.env"
 fi
 
-echo "=== [4/6] Instalacja i konfiguracja lokalnego silnika Ollama ==="
+echo "=== [4/5] Instalacja i konfiguracja lokalnego silnika Ollama ==="
 if ! command -v ollama >/dev/null 2>&1; then
-  # Keep aligned with Compose; newer Ollama currently rejects the model's mllama architecture.
   curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION=0.24.0 sh
 fi
 systemctl enable --now ollama
@@ -68,11 +66,7 @@ OLLAMA_MODEL="${OLLAMA_PREFERRED_MODEL:-llama3.2-vision:11b}"
 echo "Pobieranie skonfigurowanego modelu Ollama: ${OLLAMA_MODEL}"
 ollama pull "$OLLAMA_MODEL"
 
-echo "=== [5/6] Instalacja oficjalnego OpenAI Codex CLI ==="
-npm install -g @openai/codex || true
-echo "Aby zalogowac Codex CLI przez konto ChatGPT (device flow), wykonaj: codex login --device-auth"
-
-echo "=== [6/6] Rejestracja i uruchomienie uslugi systemd svl-python-os.service ==="
+echo "=== [5/5] Rejestracja i uruchomienie uslugi systemd svl-python-os.service ==="
 install -o root -g root -m 0644 /opt/svl-python-os/deploy/systemd/svl-python-os.service /etc/systemd/system/svl-python-os.service
 systemctl daemon-reload
 systemctl enable --now svl-python-os.service

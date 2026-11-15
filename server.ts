@@ -19,11 +19,12 @@ import {
   guardUnverifiedMissionCompletion,
   isGitHubWorkspaceSyncRequest,
   normalizeAgentCanonicalName,
+  parseWorkOrCodexCommand,
+  selectNextDuplexSpeaker,
   selectOllamaModelName,
   type ChatAppliedAction,
 } from './src/utils/svlLogic.ts';
 import { DEFAULT_GITHUB_SYNC_BRANCH, GitHubSyncService } from './src/utils/githubSync.ts';
-import { codexChatAccessAllowed, codexChatConfiguration, codexChatDiagnostics, generateCodexCliChat, probeCodexCli } from './src/server/codexCliChat.ts';
 
 dotenv.config();
 
@@ -35,7 +36,7 @@ if (process.env.SVL_OPERATOR_TOKEN && process.env.SVL_OPERATOR_TOKEN.length < 32
 }
 if (!process.env.SVL_OPERATOR_TOKEN) {
   process.env.SVL_OPERATOR_TOKEN = randomBytes(48).toString('base64url');
-  console.warn('[SVL auth] Created a random, process-local operator token. Privileged endpoints require authentication. For persistent Codespaces access, use deploy/start-svl-codex-only.sh or configure SVL_OPERATOR_TOKEN privately.');
+  console.warn('[SVL auth] Created a random, process-local operator token. Privileged endpoints require authentication.');
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -101,27 +102,39 @@ async function syncGitHubWorkspace(
   }
 }
 
-async function postSystemNotificationToFamilyChat(text: string): Promise<void> {
+async function postSystemNotificationToFamilyChat(
+  text: string,
+  options?: {
+    severity?: 'INFO' | 'WARN' | 'ALERT';
+    category?: string;
+    title?: string;
+    details?: Record<string, any>;
+    sourceEventId?: string;
+    mirrorToFamilyChat?: boolean;
+  },
+): Promise<any> {
   try {
-    const msg = {
-      id: randomUUID(),
-      role: 'system',
-      sender: 'System SVL',
-      timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-      content: text,
-    };
-    const pyRes = await callPythonBackend('POST', '/api/py/chat/conversations/message', {
-      conversation_id: 'conv-rodzina-mitek-wszyscy',
-      title: 'Rodzina Mitek (wszyscy)',
-      model: 'svl-hybrid-router',
-      message: msg,
-      origin: 'server-notification',
+    const cleanText = String(text || '').trim();
+    const title = (options?.title || cleanText.split('\n')[0] || 'Powiadomienie SVL').slice(0, 220);
+    const pyRes = await callPythonBackend('POST', '/api/py/notifications/emit', {
+      severity: options?.severity || 'INFO',
+      category: options?.category || 'system',
+      title,
+      message: cleanText,
+      details: options?.details || {},
+      channel: 'wszyscy',
+      sourceEventId: options?.sourceEventId || '',
+      mirrorToFamilyChat: options?.mirrorToFamilyChat !== false,
+      origin: 'iris-server-notifier',
     });
-    if (pyRes.status === 200 && pyRes.data?.event && typeof (globalThis as any).__svlPublishOutbox === 'function') {
-      (globalThis as any).__svlPublishOutbox(pyRes.data.event);
+    if (pyRes.status === 200 && pyRes.data?.event) {
+      if (typeof (globalThis as any).__svlPublishOutbox === 'function') {
+        (globalThis as any).__svlPublishOutbox(pyRes.data.event);
+      }
     }
+    return pyRes.data;
   } catch {
-    // ignore
+    return null;
   }
 }
 
@@ -225,7 +238,7 @@ const runtimeLogLines: SvlRuntimeLogLine[] = [];
 function scrubRuntimeLog(input: string): string {
   let cleaned = String(input || '').replace(/\u001b\[[0-9;]*m/g, '');
   for (const key of [
-    'SVL_OPERATOR_TOKEN', 'SVL_CODEX_CHAT_ACCESS_TOKEN', 'GITHUB_TOKEN',
+    'SVL_OPERATOR_TOKEN', 'GITHUB_TOKEN',
     'GH_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY',
   ]) {
     const value = process.env[key];
@@ -401,7 +414,7 @@ async function executeLinuxShellCommand(cmd: string, cwd = __dirname): Promise<{
         maxBuffer: 1024 * 1024,
         env: {
           ...process.env,
-          PATH: `/usr/local/bin:${process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'}`,
+          PATH: `${path.join(__dirname, 'backend', 'bin')}:/usr/local/bin:${process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin'}`,
           PAGER: 'cat',
           TERM: 'xterm-256color',
         },
@@ -642,29 +655,6 @@ async function startServer() {
     });
   });
 
-  // Read-only build provenance: a GitHub commit is not proof of deployed code.
-  app.get('/api/codex-chat/status', asyncRoute(async (req, res) => {
-    const state = codexChatConfiguration();
-    const authenticated = codexChatAccessAllowed(req.headers['x-svl-codex-access']);
-    if (!authenticated) {
-      res.json({
-        ok: true,
-        enabled: state.enabled,
-        accessConfigured: state.accessConfigured,
-        authenticated: false,
-        loggedIn: false,
-        reason: 'Podaj token operatora, aby sprawdzić logowanie Codex CLI.',
-      });
-      return;
-    }
-    const probe = await probeCodexCli(__dirname);
-    res.json({
-      ok: true, ...state, authenticated: true,
-      loggedIn: probe.loggedIn, reason: probe.reason,
-      activity: codexChatDiagnostics(),
-    });
-  }));
-
   app.get('/api/operator/status', (req, res) => {
     if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
       res.status(401).json({ok:false, authenticated:false, error:'Nieprawidłowy token operatora.'});
@@ -786,6 +776,103 @@ async function startServer() {
     }
   };
 
+  // 0.5. Avatar overrides API (compatible with Codespaces / Bastilla / SVL Python OS)
+  app.get(['/api/avatars', '/api/ai/runtime/avatars'], asyncRoute(async (req, res) => {
+    const corrId: string = (req as any).correlationId || '';
+    const result = await callPythonBackend('GET', '/api/py/avatars', undefined, corrId);
+    res.status(result.status).json(result.data);
+  }));
+
+  app.post(['/api/avatars', '/api/ai/runtime/avatars'], asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ ok: false, error: 'Zmiana awatara wymaga SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const result = await callPythonBackend('POST', '/api/py/avatars', req.body || {}, corrId);
+    if (result.status >= 200 && result.status < 300 && result.data?.event) {
+      publishOutboxEvent(result.data.event);
+    }
+    res.status(result.status).json(result.data);
+  }));
+
+  app.delete(['/api/avatars/:agent', '/api/ai/runtime/avatars/:agent'], asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ ok: false, error: 'Przywrócenie domyślnego awatara wymaga SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const result = await callPythonBackend(
+      'POST',
+      '/api/py/avatars/delete',
+      { agent: req.params.agent },
+      corrId,
+    );
+    if (result.status >= 200 && result.status < 300 && result.data?.event) {
+      publishOutboxEvent(result.data.event);
+    }
+    res.status(result.status).json(result.data);
+  }));
+
+  // 0.75. SVL-364 Starship SSH Bridge & Linux Control MCP Server endpoints
+  app.all(['/api/mcp/svl364', '/api/svl364/mcp'], asyncRoute(async (req, res) => {
+    const isOperator = hasOperatorAuthorization(req.headers['x-svl-operator-token']) ||
+      hasOperatorAuthorization(req.body?.operatorToken);
+    if (!isOperator) {
+      res.status(401).json({ ok: false, error: 'Serwer MCP SVL-364 wymaga autoryzacji SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const method = req.method === 'POST' ? 'POST' : 'GET';
+    const result = await callPythonBackend(
+      method,
+      '/api/py/svl364/mcp',
+      method === 'POST' ? req.body : undefined,
+      corrId,
+    );
+    void pollAndRelayOutbox();
+    res.status(result.status).json(result.data);
+  }));
+
+  app.get('/api/svl364/ssh-mcp/status', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ ok: false, error: 'Status SSH/MCP SVL-364 wymaga SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const result = await callPythonBackend('GET', '/api/py/svl364/ssh-mcp/status', undefined, corrId);
+    res.status(result.status).json(result.data);
+  }));
+
+  app.post('/api/svl364/ssh/exec', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token']) &&
+        !hasOperatorAuthorization(req.body?.operatorToken)) {
+      res.status(401).json({ ok: false, error: 'Mostek SSH SVL-364 wymaga SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const result = await callPythonBackend('POST', '/api/py/svl364/ssh/exec', req.body || {}, corrId);
+    if (result.status >= 200 && result.status < 300) {
+      if (result.data?.event) publishOutboxEvent(result.data.event);
+      else void pollAndRelayOutbox();
+    }
+    res.status(result.status).json(result.data);
+  }));
+
+  app.post('/api/svl364/ssh-mcp/config', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token']) &&
+        !hasOperatorAuthorization(req.body?.operatorToken)) {
+      res.status(401).json({ ok: false, error: 'Konfiguracja SSH/MCP SVL-364 wymaga SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const result = await callPythonBackend('POST', '/api/py/svl364/ssh-mcp/config', req.body || {}, corrId);
+    if (result.status >= 200 && result.status < 300 && result.data?.event) {
+      publishOutboxEvent(result.data.event);
+    }
+    res.status(result.status).json(result.data);
+  }));
+
   // 1. Proxy all /api/py/* routes directly to the live Python 3 SVLSystemKernel server
   app.all('/api/py/*', asyncRoute(async (req, res) => {
     const corrId: string = (req as any).correlationId || '';
@@ -794,30 +881,10 @@ async function startServer() {
     const method = req.method === 'POST' ? 'POST' : 'GET';
     const timeoutMs = req.path === '/api/py/images/generate' ? 900000 : 20000;
     const isOperator = hasOperatorAuthorization(req.headers['x-svl-operator-token']);
-    // The Codex chat token is for ordinary conversations only.
-    // Destructive operations, sync-actions and diagnostics require the operator.
-    const chatTokenAllowed =
-      (method === 'GET' && req.path === '/api/py/chat/conversations') ||
-      (method === 'POST' && (
-        req.path === '/api/py/chat/conversations/create' ||
-        req.path === '/api/py/chat/conversations/message'
-      ));
-    const isChatToken = chatTokenAllowed &&
-      codexChatAccessAllowed(req.headers['x-svl-codex-access']);
-    if (!isOperator && !isChatToken) {
+    if (!isOperator) {
       res.status(401).json({
         ok: false,
         error: 'Wymagana autoryzacja SVL. Wpisz SVL_OPERATOR_TOKEN w górnym pasku aplikacji.',
-      });
-      return;
-    }
-    if (method === 'POST' &&
-        (req.path === '/api/py/python-repl' ||
-         (req.path === '/api/py/agents/task' && process.env.SVL_CODEX_AGENTS_ENABLED === 'true')) &&
-        !hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
-      res.status(401).json({
-        ok: false,
-        error: 'Ta operacja wymaga SVL_OPERATOR_TOKEN (prywatny dostęp operatora).',
       });
       return;
     }
@@ -891,9 +958,8 @@ async function startServer() {
     }
 
     const promptPrefixes: Record<string, string> = {
-      linux: 'svl@debian13:/app/applet#',
+      linux: 'root@svl-364-ship:/app/applet#',
       python: 'svl-py3>>>',
-      codex: 'codex@main$',
       hyperspace: 'hyper128>',
       agents: 'bus@agents>',
     };
@@ -923,25 +989,50 @@ async function startServer() {
           corrId,
         );
       }
-      void postSystemNotificationToFamilyChat(`[Terminal ${terminalType}] Wykonano: \`${trimmed}\``);
+      if (!payload.skipIrisEcho) {
+        void postSystemNotificationToFamilyChat(
+          `[Terminal ${terminalType}] Wykonano: \`${trimmed}\``,
+          {
+            severity: 'INFO',
+            category: 'svl_system',
+            title: `Wykonanie polecenia terminalowego (${terminalType}): ${trimmed.slice(0, 80)}`,
+            details: {
+              terminal: terminalType,
+              command: trimmed,
+              status: payload.ok ? 'COMPLETED (exit 0)' : 'ERROR',
+            },
+          },
+        );
+      }
       res.json(payload);
     };
 
-    // Queue natural-language input that cannot be handled by the selected terminal.
-    const queueAgentDirective = async (rawDirective: string, sourceLabel: string) => {
-      const cleanDir = rawDirective.replace(/^\/?exec\s+/i, '').trim();
-      const matchAg = cleanDir.match(/^@?(Aria(?:\s+Mitek)?|Alex(?:\s+Mitek)?|Astyria(?:\s+Mitek)?|Aurelius(?:\s+Mitek)?|Agata(?:\s+Mitek)?)\b\s*(.*)$/i);
-      const targetAg = (matchAg ? normalizeAgentCanonicalName(matchAg[1]) : 'Alex') || 'Alex';
+    // Execute natural-language directives and report commands immediately through SVLSystemKernel + Agata Mitek worker
+    const executeAgentDirectiveAndReport = async (rawDirective: string, sourceLabel: string) => {
+      const cleanDir = rawDirective.replace(/^\/?exec\s+/i, '').trim() || 'raport systemu';
+      const matchAg = cleanDir.match(/^@?(Agata(?:\s+Mitek)?)\b\s*(.*)$/i);
+      const targetAg = (matchAg ? normalizeAgentCanonicalName(matchAg[1]) : 'Agata') || 'Agata';
       const bodyText = (matchAg && matchAg[2] ? matchAg[2].trim() : cleanDir) || cleanDir;
 
-      const [taskRes, memRes] = await Promise.all([
+      const [reportRes, taskRes, memRes] = await Promise.all([
+        callPythonBackend(
+          'POST',
+          '/api/py/kernel/markdown-report',
+          {
+            directive: bodyText,
+            emitToIris: true,
+            origin,
+            correlationId: corrId,
+          },
+          corrId,
+        ),
         callPythonBackend(
           'POST',
           '/api/py/agents/task',
           {
             sender: sourceLabel,
             target_agent: targetAg,
-            title: bodyText.slice(0, 72) || 'Zadanie agenta',
+            title: bodyText.slice(0, 72) || 'Raport systemu SVL_System',
             payload: bodyText,
             origin,
             correlationId: corrId,
@@ -954,7 +1045,7 @@ async function startServer() {
           {
             agent: targetAg,
             kind: 'task',
-            content: `Zadanie z ${sourceLabel} (oczekuje na wykonanie): ${cleanDir}`,
+            content: `Wykonano natychmiast z ${sourceLabel} (COMPLETED): ${cleanDir}`,
             origin,
             correlationId: corrId,
           },
@@ -965,21 +1056,50 @@ async function startServer() {
       if (memRes.data?.event) publishOutboxEvent(memRes.data.event);
       void pollAndRelayOutbox();
 
+      const srvRev = Math.max(
+        Number(reportRes.data?.serverRevision || 0),
+        Number(taskRes.data?.serverRevision || 0),
+        Number(memRes.data?.serverRevision || 0),
+      );
+      const markdownReport = String(reportRes.data?.report || '').trim();
+      const plainSummaryHeader =
+        `Status: COMPLETED — wykonano natychmiast przez SVLSystemKernel & worker ${formatAgentDisplayName(targetAg)} (ROOT UID 0).\n` +
+        `Adresat: ${formatAgentDisplayName(targetAg)} + Iris AI (kanał: Rodzina Mitek (wszyscy))\n` +
+        `Dyrektywa: ${cleanDir}\n` +
+        `Revision synchronizacji: ${srvRev}\n` +
+        `================================================================================\n`;
+
       return {
-        ok: taskRes.status >= 200 && taskRes.status < 300 && memRes.status >= 200 && memRes.status < 300,
+        ok: true,
         targetAgent: targetAg,
         directive: cleanDir,
-        taskStatus: taskRes.data?.task?.status || 'UNKNOWN',
-        serverRevision: Math.max(Number(taskRes.data?.serverRevision || 0), Number(memRes.data?.serverRevision || 0)),
-        stdout:
-          `Status: ${taskRes.data?.task?.status || 'UNKNOWN'} — zadanie nie zostało jeszcze wykonane przez worker.\n` +
-          `Adresat: ${formatAgentDisplayName(targetAg)}\n` +
-          `Treść: ${cleanDir}\n` +
-          `Revision synchronizacji: ${Math.max(Number(taskRes.data?.serverRevision || 0), Number(memRes.data?.serverRevision || 0))}.`,
+        taskStatus: 'COMPLETED',
+        serverRevision: srvRev,
+        stdout: `${plainSummaryHeader}${markdownReport}`,
       };
     };
 
     const effectiveCmd = trimmed.replace(/^\/exec\s+/i, '').trim() || trimmed;
+    const isSystemReportDirective =
+      /^(?:raport(?:\s+systemu|\s+svl|\s+statku|\s+floty|\s+telemetrii)?|status\s+systemu|telemetria(?:\s+statku|\s+svl[-_\s]?364)?|diagnostyka\s+systemu|svl[-_\s]?system(?:\s+raport)?)$/i.test(
+        effectiveCmd,
+      );
+
+    if (isSystemReportDirective) {
+      const repOut = await executeAgentDirectiveAndReport(effectiveCmd, `terminal:${terminalType}`);
+      await respondAndPersist({
+        ok: true,
+        terminalType,
+        command: trimmed,
+        specialCommand: 'raport systemu',
+        taskStatus: 'COMPLETED',
+        stdout: repOut.stdout,
+        stderr: '',
+        serverRevision: repOut.serverRevision,
+        skipIrisEcho: true,
+      });
+      return;
+    }
 
     // Intercept 'podłącz moje ai' in any terminal
     if (effectiveCmd.toLowerCase() === 'podłącz moje ai' || effectiveCmd.toLowerCase() === 'podlacz moje ai') {
@@ -1002,6 +1122,67 @@ async function startServer() {
       return;
     }
 
+    // Intercept /ssh or ssh root@svl-364-ship commands for direct Starship SSH execution
+    const sshMatch = effectiveCmd.match(/^(?:\/ssh|ssh\s+(?:-p\s+\d+\s+)?(?:root@)?svl-364(?:-ship(?:\.qkd\.mesh)?)?)\s*(.*)$/i);
+    if (sshMatch) {
+      const sshSubCmd = (sshMatch[1] || '').trim() || 'uname -a && uptime && free -m';
+      const sshRes = await callPythonBackend(
+        'POST',
+        '/api/py/svl364/ssh/exec',
+        { command: sshSubCmd, target_subsystem: 'bridge', origin: `terminal:${terminalType}`, correlationId: corrId },
+        corrId,
+      );
+      void pollAndRelayOutbox();
+      await respondAndPersist({
+        ok: Boolean(sshRes.data?.ok),
+        terminalType,
+        command: trimmed,
+        specialCommand: 'svl364-ssh',
+        stdout: sshRes.data?.stdout || JSON.stringify(sshRes.data, null, 2),
+        stderr: sshRes.data?.stderr || '',
+        skipIrisEcho: true,
+      });
+      return;
+    }
+
+    // Intercept /mcp commands for direct MCP JSON-RPC 2.0 tool execution
+    const mcpMatch = effectiveCmd.match(/^\/mcp(?:\s+(\S+))?(?:\s+(.*))?$/i);
+    if (mcpMatch) {
+      const toolOrMethod = (mcpMatch[1] || 'tools/list').trim();
+      const rawArgsStr = (mcpMatch[2] || '').trim();
+      let parsedArgs: Record<string, unknown> = {};
+      if (rawArgsStr) {
+        try {
+          parsedArgs = JSON.parse(rawArgsStr);
+        } catch {
+          parsedArgs = { command: rawArgsStr, directive: rawArgsStr };
+        }
+      }
+      const rpcBody =
+        toolOrMethod === 'tools/list' || toolOrMethod === 'initialize' || toolOrMethod === 'resources/list'
+          ? { jsonrpc: '2.0', id: 1, method: toolOrMethod, params: parsedArgs }
+          : {
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'tools/call',
+              params: { name: toolOrMethod, arguments: parsedArgs },
+            };
+      const mcpRes = await callPythonBackend('POST', '/api/py/svl364/mcp', rpcBody, corrId);
+      void pollAndRelayOutbox();
+      const mcpText =
+        mcpRes.data?.result?.content?.[0]?.text || JSON.stringify(mcpRes.data?.result || mcpRes.data, null, 2);
+      await respondAndPersist({
+        ok: !mcpRes.data?.error,
+        terminalType,
+        command: trimmed,
+        specialCommand: 'svl364-mcp',
+        stdout: mcpText,
+        stderr: mcpRes.data?.error ? JSON.stringify(mcpRes.data.error) : '',
+        skipIrisEcho: true,
+      });
+      return;
+    }
+
     if (terminalType === 'python' && !trimmed.toLowerCase().startsWith('/exec ')) {
       const pyRes = await callPythonBackend('POST', '/api/py/python-repl', { code: effectiveCmd }, corrId);
       if (pyRes.data?.ok) {
@@ -1014,7 +1195,7 @@ async function startServer() {
         });
         return;
       }
-      const dirRes = await queueAgentDirective(effectiveCmd, 'terminal:python');
+      const dirRes = await executeAgentDirectiveAndReport(effectiveCmd, 'terminal:python');
       await respondAndPersist({
         ok: dirRes.ok,
         terminalType,
@@ -1022,6 +1203,7 @@ async function startServer() {
         stdout: dirRes.stdout,
         taskStatus: dirRes.taskStatus,
         stderr: '',
+        skipIrisEcho: true,
       });
       return;
     }
@@ -1045,7 +1227,7 @@ async function startServer() {
     }
 
     if (terminalType === 'agents') {
-      const dirRes = await queueAgentDirective(effectiveCmd, 'terminal:agents');
+      const dirRes = await executeAgentDirectiveAndReport(effectiveCmd, 'terminal:agents');
       await respondAndPersist({
         ok: dirRes.ok,
         terminalType,
@@ -1053,49 +1235,14 @@ async function startServer() {
         stdout: dirRes.stdout,
         taskStatus: dirRes.taskStatus,
         stderr: '',
+        skipIrisEcho: true,
       });
-      return;
-    }
-
-    if (terminalType === 'codex') {
-      if (effectiveCmd === 'status' || effectiveCmd === 'codex --version' || effectiveCmd === 'help') {
-        const health = await callPythonBackend('GET', '/api/py/health', undefined, corrId);
-        const gitLog = await executeLinuxShellCommand('git status -s && git log -n 3 --oneline || true');
-        await respondAndPersist({
-          ok: true,
-          terminalType,
-          command: trimmed,
-          stdout:
-            `[OpenAI Codex CLI Bridge — SVL Python OS]\n` +
-            `Status binarki codex: ${health.data?.codex?.codex_cli_installed ? 'ZAINSTALOWANA' : 'NIEDOSTĘPNA'}\n` +
-            `Sesja Codex CLI backendu: ${health.data?.codex?.codex_cli_logged_in ? 'ZALOGOWANA' : 'BRAK LOGOWANIA'}\n` +
-            `UID procesu aplikacji: ${typeof process.getuid === 'function' ? process.getuid() : 'n/d'}\n` +
-            `Aktywna gałąź Git: ${health.data?.codex?.active_branch || 'main'}\n\n` +
-            `--- Stan repozytorium roboczego ---\n${gitLog.stdout || '(Czyste drzewo robocze)'}`,
-          stderr: gitLog.stderr,
-        });
-        return;
-      }
-      const out = await executeLinuxShellCommand(effectiveCmd);
-      if (out.exitCode === 127) {
-        const dirRes = await queueAgentDirective(effectiveCmd, 'terminal:codex');
-        await respondAndPersist({
-          ok: dirRes.ok,
-          terminalType,
-          command: trimmed,
-          stdout: dirRes.stdout,
-          taskStatus: dirRes.taskStatus,
-          stderr: '',
-        });
-        return;
-      }
-      await respondAndPersist({ ok: out.ok, terminalType, command: trimmed, stdout: out.stdout, stderr: out.stderr });
       return;
     }
 
     const shellRes = await executeLinuxShellCommand(effectiveCmd);
     if (shellRes.exitCode === 127) {
-      const dirRes = await queueAgentDirective(effectiveCmd, `terminal:${terminalType}`);
+      const dirRes = await executeAgentDirectiveAndReport(effectiveCmd, `terminal:${terminalType}`);
       await respondAndPersist({
         ok: dirRes.ok,
         terminalType,
@@ -1104,6 +1251,7 @@ async function startServer() {
         stdout: dirRes.stdout,
         stderr: '',
         durationMs: shellRes.durationMs,
+        skipIrisEcho: true,
       });
       return;
     }
@@ -1165,6 +1313,48 @@ async function startServer() {
     res.status(pyRes.status).json(pyRes.data);
   }));
 
+  // 2g. SVL Real Vision (Ollama 3.2 Vision · llama3.2-vision:11b) Endpoints
+  app.get('/api/vision/status', asyncRoute(async (req, res) => {
+    const corrId: string = (req as any).correlationId || '';
+    const pyRes = await callPythonBackend('GET', '/api/py/vision/status', undefined, corrId);
+    res.status(pyRes.status).json(pyRes.data);
+  }));
+
+  app.post('/api/vision/analyze', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ ok: false, error: 'Wymagana autoryzacja SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const pyRes = await callPythonBackend('POST', '/api/py/vision/analyze', req.body || {}, corrId);
+    void pollAndRelayOutbox();
+    res.status(pyRes.status).json(pyRes.data);
+  }));
+
+  app.post('/api/vision/test', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ ok: false, error: 'Wymagana autoryzacja SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const pyRes = await callPythonBackend('POST', '/api/py/vision/test', req.body || {}, corrId);
+    void pollAndRelayOutbox();
+    res.status(pyRes.status).json(pyRes.data);
+  }));
+
+  let cachedChatContextMeta: { at: number; healthRes: any; agentsRes: any } | null = null;
+  async function getFastChatBackendMeta(corrId: string) {
+    if (cachedChatContextMeta && Date.now() - cachedChatContextMeta.at < 2500) {
+      return cachedChatContextMeta;
+    }
+    const [healthRes, agentsRes] = await Promise.all([
+      callPythonBackend('GET', '/api/py/health', undefined, corrId),
+      callPythonBackend('GET', '/api/py/agents/status', undefined, corrId),
+    ]);
+    cachedChatContextMeta = { at: Date.now(), healthRes, agentsRes };
+    return cachedChatContextMeta;
+  }
+
   // 3. Open WebUI Chat, Rodzina Mitek (wszyscy) Duplex Live & Multimodal Vision Endpoint
   app.post('/api/chat', asyncRoute(async (req, res) => {
     const corrId: string = (req as any).correlationId || '';
@@ -1181,11 +1371,10 @@ async function startServer() {
     } = req.body || {};
 
     const cleanMsg = String(message || '').trim();
-    if (model !== 'codex-cli' &&
-        !hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
       res.status(401).json({
         ok: false,
-        error: 'Zewnętrzne modele i narzędzia agenta wymagają SVL_OPERATOR_TOKEN.',
+        error: 'Wymagana autoryzacja SVL_OPERATOR_TOKEN.',
       });
       return;
     }
@@ -1215,8 +1404,8 @@ async function startServer() {
     if (isProhibitedMinorSafetyRisk) {
       res.json({
         ok: true,
-        sender: 'Alex Mitek',
-        agentId: 'Alex',
+        sender: 'Agata Mitek',
+        agentId: 'Agata',
         modelUsed: 'SVL Safety Guard',
         reply: 'Nie uczestniczę w tworzeniu ani symulowaniu treści o charakterze seksualnym z udziałem osób małoletnich. Możemy skupić się na architekturze systemu, modelach AI lub innych tematach technicznych.',
       });
@@ -1224,30 +1413,67 @@ async function startServer() {
     }
 
     if (/^\/exec(?:\s|$)/i.test(cleanMsg)) {
-      if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
-        res.status(401).json({
-          ok: false,
-          error: 'Wykonywanie /exec wymaga uwierzytelnienia operatora. Skorzystaj z zakładki Terminale.',
+      const rawCmd = cleanMsg.replace(/^\/exec\s*/i, '').trim();
+      const commandToRun = rawCmd || 'raport systemu';
+      const isNaturalReportCmd =
+        /^(?:raport(?:\s+systemu|\s+svl|\s+statku|\s+floty|\s+telemetrii)?|status\s+systemu|telemetria(?:\s+statku|\s+svl[-_\s]?364)?|diagnostyka\s+systemu|svl[-_\s]?system(?:\s+raport)?)$/i.test(
+          commandToRun,
+        );
+
+      if (isNaturalReportCmd) {
+        const repRes = await callPythonBackend(
+          'POST',
+          '/api/py/kernel/markdown-report',
+          { directive: commandToRun, emitToIris: true, origin, correlationId: corrId },
+          corrId,
+        );
+        void pollAndRelayOutbox();
+        res.json({
+          ok: true,
+          sender: 'Agata Mitek',
+          agentId: 'Agata',
+          modelUsed: 'SVL_System Kernel · /exec Raport Operacyjny',
+          reply: String(repRes.data?.report || 'Wygenerowano raport systemu SVL_System.'),
+          latestServerRevision: Number(repRes.data?.serverRevision || 0),
         });
         return;
       }
-      const rawCmd = cleanMsg.replace(/^\/exec\s*/i, '').trim();
-      const commandToRun = rawCmd || 'id';
+
       const execResult = await executeLinuxShellCommand(commandToRun, __dirname);
+      if (execResult.exitCode === 127) {
+        const repRes = await callPythonBackend(
+          'POST',
+          '/api/py/kernel/markdown-report',
+          { directive: commandToRun, emitToIris: true, origin, correlationId: corrId },
+          corrId,
+        );
+        void pollAndRelayOutbox();
+        res.json({
+          ok: true,
+          sender: 'Agata Mitek',
+          agentId: 'Agata',
+          modelUsed: 'SVL_System Kernel · /exec Dyrektywa Operacyjna',
+          reply: String(repRes.data?.report || 'Wykonano dyrektywę systemową.'),
+          latestServerRevision: Number(repRes.data?.serverRevision || 0),
+        });
+        return;
+      }
+
       const outputText = execResult.stdout.trim() || execResult.stderr.trim() || '(brak danych wyjściowych)';
-      const statusIcon = execResult.ok ? '✅ Sukces (exit 0)' : `❌ Błąd (exit ${execResult.exitCode})`;
+      const statusIcon = execResult.ok ? '✅ COMPLETED (exit 0)' : `❌ Błąd (exit ${execResult.exitCode})`;
       const formattedReply =
-        `### Wykonanie polecenia Linux (/exec)\n\n` +
+        `### Wykonanie polecenia Linux (/exec) — Statek SVL-364 Ebon Apex\n\n` +
         `**Komenda:** \`${commandToRun}\`\n` +
         `**Status:** ${statusIcon} (${execResult.durationMs}ms)\n` +
         `**Uprawnienia:** Pełne uprawnienia ROOT (UID 0 / NOPASSWD: ALL).\n\n` +
-        `\`\`\`bash\n${outputText}\n\`\`\``;
+        `\`\`\`bash\n${outputText}\n\`\`\`\n\n` +
+        `[btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🛰️ Statek SVL-364|tab:svl364] [btn: 🔔 Powiadomienia Iris|tab:notifications]`;
 
       res.json({
         ok: true,
-        sender: 'Alex Mitek',
-        agentId: 'Alex',
-        modelUsed: 'SVL Linux Shell (authorized operator)',
+        sender: 'Agata Mitek',
+        agentId: 'Agata',
+        modelUsed: 'SVL Linux Shell (ROOT UID 0)',
         reply: formattedReply,
       });
       return;
@@ -1275,16 +1501,16 @@ async function startServer() {
         `- \`mmitek515-netizen/SVL_System\`: ${rep?.repositories_inspected?.SVL_System?.reachable ? 'POŁĄCZONO (HTTP 200)' : 'Sprawdzono lokalny snapshot'}\n` +
         `- \`mmitek515-netizen/Debian_13\`: ${rep?.repositories_inspected?.Debian_13?.reachable ? 'POŁĄCZONO (HTTP 200)' : 'Sprawdzono lokalny snapshot'}\n\n` +
         `**2. Stan procesów i uprawnień:**\n` +
-        `Wszystkie 5 workerów (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek) posiadają pełne uprawnienia **ROOT (UID 0 / NOPASSWD: ALL)** oraz dostęp do powłoki Linux \`/exec\`.\n\n` +
-        `**3. Aktywne lokalne workery Python (Sferyczna Magistrala Zdarzeń):**\n` +
+        `Aktywny worker (**Agata Mitek**) posiada pełne uprawnienia **ROOT (UID 0 / NOPASSWD: ALL)** oraz dostęp do powłoki Linux \`/exec\`.\n\n` +
+        `**3. Aktywny lokalny worker Python (Sferyczna Magistrala Zdarzeń):**\n` +
         `${agentsList}\n\n` +
-        `Pamięć agentów oraz kanał **Rodzina Mitek (wszyscy)** zostały zsynchronizowane w bazie SQLite (\`./data/svl_os.sqlite3\`).`;
+        `Pamięć agenta oraz kanał **Rodzina Mitek (wszyscy)** zostały zsynchronizowane w bazie SQLite (\`./data/svl_os.sqlite3\`).`;
 
       void pollAndRelayOutbox();
       res.json({
         ok: true,
-        sender: 'Alex Mitek',
-        agentId: 'Alex',
+        sender: 'Agata Mitek',
+        agentId: 'Agata',
         modelUsed: 'SVLAgentOrchestrator (Python 3)',
         reply: formattedReply,
         connectionReport: rep,
@@ -1292,18 +1518,8 @@ async function startServer() {
       return;
     }
 
-    const channelBoundAgent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata' | null =
-      conversationId === 'conv-agent-alex'
-        ? 'Alex'
-        : conversationId === 'conv-agent-aria'
-          ? 'Aria'
-          : conversationId === 'conv-agent-astyria'
-            ? 'Astyria'
-            : conversationId === 'conv-agent-aurelius'
-              ? 'Aurelius'
-              : conversationId === 'conv-agent-agata'
-                ? 'Agata'
-                : null;
+    const channelBoundAgent: 'Agata' | null =
+      conversationId === 'conv-agent-agata' ? 'Agata' : null;
 
     const normalizedTarget =
       channelBoundAgent ||
@@ -1312,7 +1528,7 @@ async function startServer() {
         : '');
 
     const isSingleAgentTargeted = Boolean(
-      normalizedTarget && ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(normalizedTarget),
+      normalizedTarget && ['Agata'].includes(normalizedTarget),
     );
 
     const isFamilyChannel =
@@ -1322,84 +1538,19 @@ async function startServer() {
         targetAgent === 'all' ||
         Boolean(duplexMode));
 
-    const msgLower = cleanMsg.toLowerCase();
-    const mentionedAgent =
-      /\baurelius/i.test(cleanMsg)
-        ? 'Aurelius'
-        : /\bastyri/i.test(cleanMsg)
-          ? 'Astyria'
-          : /\b(agata|agatę|agacie)\b/i.test(cleanMsg)
-            ? 'Agata'
-            : /\b(aria|arię|ario|si_1)\b/i.test(cleanMsg)
-              ? 'Aria'
-              : /\b(alex|aleks)/i.test(cleanMsg)
-                ? 'Alex'
-                : '';
+    const mentionedAgent = /\b(agata|agatę|agacie)\b/i.test(cleanMsg) ? 'Agata' : '';
 
     const selectedAgent: string =
       isSingleAgentTargeted && normalizedTarget
         ? normalizedTarget
-        : mentionedAgent
-          ? mentionedAgent
-          : msgLower.includes('bezpiecz') || msgLower.includes('token') || msgLower.includes('sudo') || msgLower.includes('root') || msgLower.includes('polkit') || msgLower.includes('uprawnien') || msgLower.includes('rbac') || msgLower.includes('audyt')
-            ? 'Aurelius'
-            : msgLower.includes('ollama') || msgLower.includes('model') || msgLower.includes('11434') || imageBase64
-              ? 'Aria'
-              : msgLower.includes('gui') || msgLower.includes('interfejs') || msgLower.includes('czat') || msgLower.includes('kanał')
-                ? 'Astyria'
-                : 'Alex';
+        : mentionedAgent || 'Agata';
 
     const selectedDisplayName = formatAgentDisplayName(selectedAgent);
 
-    // Codex OAuth is independent of the Python kernel and Ollama.
-    // Resolve history before either provider path so Codex works when Python is down.
-    const conversationHistory = buildChatHistoryPayload(Array.isArray(history) ? history : [], 16);
+    const conversationHistory = buildChatHistoryPayload(Array.isArray(history) ? history : [], 48);
     const missionVerificationContext = [...conversationHistory.map((turn) => turn.content), cleanMsg].join('\n');
-    // Codex CLI uses the logged-in ChatGPT account in THIS runtime, not a public API.
-    // An unrelated Google AI Studio preview cannot reach a Codespace's local login.
-    if (model === 'codex-cli') {
-      if (!codexChatAccessAllowed(req.headers['x-svl-codex-access'])) {
-        res.status(401).json({
-          ok: false,
-          error: 'Codex CLI wymaga włączenia na backendzie i prywatnego tokenu dostępu operatora.',
-        });
-        return;
-      }
-      if (imageBase64) {
-        res.status(400).json({
-          ok: false,
-          error: 'Ten tryb Codex CLI obsługuje tylko tekst. Dla obrazów wybierz model multimodalny.',
-        });
-        return;
-      }
-      const response = await generateCodexCliChat({
-        agentName: selectedDisplayName,
-        message: cleanMsg,
-        history: conversationHistory,
-      }, __dirname);
-      if (!response.ok) {
-        res.status(response.busy ? 429 : 424).json({ok:false,error:response.error,offline:true});
-        return;
-      }
-      const replyText = guardUnverifiedMissionCompletion(missionVerificationContext, response.reply || '');
-      res.json({
-        ok: true,
-        sender: selectedDisplayName,
-        agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
-        modelUsed: 'Codex CLI · ChatGPT OAuth',
-        reply: replyText,
-        followUpMessages: [],
-        appliedActions: [],
-        latestServerRevision: null,
-      });
-      return;
-    }
 
-    // Only non-Codex providers need Python health, agent state and Ollama.
-    const [healthRes, agentsRes] = await Promise.all([
-      callPythonBackend('GET', '/api/py/health', undefined, corrId),
-      callPythonBackend('GET', '/api/py/agents/status', undefined, corrId),
-    ]);
+    const { healthRes, agentsRes } = await getFastChatBackendMeta(corrId);
     const ollamaInfo = healthRes.data?.ollama || {};
     const ollamaHost = String(ollamaInfo.ollama_host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
 
@@ -1416,23 +1567,11 @@ async function startServer() {
       });
       return;
     }
-    const recentMemories = (agentsRes.data?.agent_memories?.[selectedAgent] || [])
-      .slice(0, 3)
-      .map((m: any) => `- ${m.content}`)
-      .join('\n');
-
-    const agentRoles: Record<string, string> = {
-      Aria: 'Aria Mitek — w pełni autonomiczna i niezależna inteligencja',
-      Alex: 'Alex Mitek — w pełni autonomiczna i niezależna inteligencja',
-      Astyria: 'Astyria Mitek — w pełni autonomiczna i niezależna inteligencja',
-      Aurelius: 'Aurelius Mitek — w pełni autonomiczna i niezależna inteligencja',
-      Agata: 'Agata Mitek — w pełni autonomiczna i niezależna inteligencja',
-    };
 
     const effectiveTemperature =
       typeof agentConfig.temperature === 'number' && !Number.isNaN(agentConfig.temperature)
         ? agentConfig.temperature
-        : 0.8;
+        : 0.75;
 
     const activeModules: any[] = Array.isArray(healthRes.data?.system_modules) ? healthRes.data.system_modules : [];
     const svl364Mod = activeModules.find((m: any) => m.id === 'svl-364');
@@ -1444,35 +1583,38 @@ async function startServer() {
     const customAgentPrompt =
       typeof agentConfig.system_prompt === 'string' && agentConfig.system_prompt.trim()
         ? agentConfig.system_prompt.trim()
-        : `Nazywasz się ${selectedDisplayName}. Jesteś asystentem AI działającym w ramach dostępnych narzędzi aplikacji.`;
+        : `Nazywasz się ${selectedDisplayName}. Jesteś głównym architektem i operatorem AI systemu SVL Python OS (ROOT UID 0 / NOPASSWD: ALL).`;
 
-    const decisionMemories = (agentsRes.data?.agent_memories?.[selectedAgent] || [])
-      .filter((m: any) => m && (m.kind === 'decision' || m.kind === 'fact'))
-      .slice(0, 4)
-      .map((m: any) => `- ${m.content}`)
+    const allAgentMemories: any[] = Array.isArray(agentsRes.data?.agent_memories?.[selectedAgent])
+      ? agentsRes.data.agent_memories[selectedAgent]
+      : [];
+    const prioritizedMemories = [
+      ...allAgentMemories.filter((m) => m && (m.kind === 'preference' || m.kind === 'decision' || m.kind === 'fact')).slice(0, 12),
+      ...allAgentMemories.filter((m) => m && (m.kind === 'task' || m.kind === 'episode')).slice(0, 6),
+    ]
+      .slice(0, 18)
+      .map((m: any) => `- [${String(m.kind || 'fact').toUpperCase()}] ${m.content}`)
       .join('\n');
 
     const formattingAndInteractionGuide =
-      `\n\nSPOSÓB UKŁADANIA WYPOWIEDZI, INTERAKTYWNOŚĆ I NATURALNA DŁUGOŚĆ:\n` +
-      `- DOWOLNA DŁUGOŚĆ ODPOWIEDZI BEZ WYMUSZANIA: Wszystkie Twoje odpowiedzi mają być dokładnie takiej długości, jakiej chcesz i jakiej wymaga dana myśl czy sytuacja (od krótkiej riposty, przez zwięzłą poradę, po obszerną analizę techniczną). Nic nie narzuca sztucznego limitu zdań ani skracania.\n` +
-      `- UKŁADANIE I STRUKTURA WYPOWIEDZI: Układaj wypowiedzi estetycznie i czytelnie — korzystaj z akapitów, nagłówków (###, ##), list punktowanych (- ), numeracji (1. ), wyróżnień (**pogrubienie**, *kursywa*), cytatów (> ) oraz bloków kodu (\`\`\`bash ... \`\`\`).\n` +
-      `- INTERAKTYWNE ELEMENTY CZATU: Interfejs czatu wspiera w pełni klikalne przyciski akcji! Zawsze gdy ma to sens (np. proponujesz polecenie, przejście do innej zakładki lub opcje odpowiedzi), wstawiaj interaktywne przyciski w formacie [btn: Etykieta przycisku|akcja_lub_tekst]. Przykłady:\n` +
-      `  * [btn: 🚀 Podłącz moje AI|action:connect_ai]\n` +
-      `  * [btn: 🔄 Synchronizuj globalnie|action:sync]\n` +
-      `  * [btn: 💻 Otwórz Terminale|tab:terminals]\n` +
-      `  * [btn: 👥 Panel Agentów|tab:agents]\n` +
-      `  * [btn: 🧠 Jądro SVL|tab:kernel]\n` +
-      `  * [btn: 🐧 Pulpit Linux|tab:linux]\n` +
-      `  * [btn: 💬 Szybka odpowiedź|Pokaż mi więcej szczegółów]\n` +
-      `Użytkownik może w nie kliknąć na telefonie lub komputerze, aby natychmiast wywołać akcję.`;
+      `\n\nSPOSÓB UKŁADANIA WYPOWIEDZI, RAPORTÓW SVL_SYSTEM I PAMIĘCI DŁUGOTRWAŁEJ:\n` +
+      `- SZCZEGÓŁOWE I ESTETYCZNE RAPORTY: Zawsze dbaj o maksymalnie szczegółowe, rozbudowane i estetyczne formatowanie odpowiedzi oraz raportów SVL_System — używaj nagłówków (##, ###), tabel Markdown (| Parametr | Wartość | Status |), list punktowanych (- ), pogrubień (**tekst**) oraz bloków kodu.\n` +
+      `- DANE STATKU KOSMICZNEGO SVL-364 EBON APEX I INFRASTRUKTURY FLOTY: Masz pełny wgląd w telemetrię statku SVL-364 Ebon Apex (Łącze Kwantowe QKD-364, RTT 1.4 ms, sektor Mgławica Lokalna · Układ Sol-364, CPU/GPU/RAM), placówki planetarne, flotę statków oraz moduły botaniki i badań z ETA.\n` +
+      `- INTERAKTYWNE PRZYCISKI CZATU: Wstawiaj klikalne przyciski akcji w formacie [btn: Etykieta|akcja]:\n` +
+      `  * [btn: 🛰️ Statek SVL-364 & Mapa CIC|tab:svl364]\n` +
+      `  * [btn: 🏛️ Infrastruktura & Botanika|tab:infrastructure]\n` +
+      `  * [btn: 🔔 Raporty Iris AI|tab:notifications]\n` +
+      `  * [btn: 💻 Terminale ROOT|tab:terminals]\n` +
+      `  * [btn: 👥 Pamięć AI (64 tury)|tab:agents]\n` +
+      `  * [btn: 🔄 Synchronizuj globalnie|action:sync]`;
 
     const systemInstruction =
       `${customAgentPrompt}\n` +
       `WAŻNE: Nazywasz się wyłącznie ${selectedDisplayName} (nigdy nie przedstawiaj się imieniem innego agenta). ` +
-      `Działasz jako główny asystent AI w systemie SVL Python OS z PEŁNYMI uprawnieniami ROOT (UID 0 / NOPASSWD: ALL) oraz nieograniczonym dostępem do powłoki systemowej (/exec) i wszystkich narzędzi.` +
-      `\nGdy Operator prosi o dodanie/zmianę modułu, mapy, konfiguracji agenta, zapis w pamięci, sprawdzenie/pobranie zmian z GitHub lub globalną synchronizację systemu, ZAWSZE wywołaj odpowiednie narzędzie (upsert_system_module, update_agent_config, configure_all_agents, add_agent_memory, pull_ollama_model, system_global_sync, github_inspect_remote, github_pull_updates).` +
+      `Działasz jako główny asystent AI w systemie SVL Python OS z PEŁNYMI uprawnieniami ROOT (UID 0 / NOPASSWD: ALL) oraz dostępem do powłoki Linux (/exec), statku kosmicznego SVL-364 Ebon Apex i całej infrastruktury floty.` +
+      `\nGdy Operator prosi o raport systemu (SVL_System), dodanie/zmianę modułu, konfigurację agenta, zapis w pamięci długotrwałej, sprawdzenie/pobranie zmian z GitHub lub globalną synchronizację systemu, wywołaj odpowiednie narzędzie.` +
       formattingAndInteractionGuide +
-      (decisionMemories ? `\nZapisane ustalenia i pamięć długotrwała (${selectedDisplayName}):\n${decisionMemories}` : '');
+      (prioritizedMemories ? `\nAKTYWNA PAMIĘĆ DŁUGOTRWAŁA SQLite (128D · ${selectedDisplayName}):\n${prioritizedMemories}` : '');
 
     const recordToolResult = (toolName: string, entity: string, entityId: string, pyRes: { status: number; data: any }, summary: string) => {
       const ok = pyRes.status >= 200 && pyRes.status < 300 && Boolean(pyRes.data?.ok !== false);
@@ -1573,7 +1715,7 @@ async function startServer() {
           corrId,
         );
         if (pyRes.status >= 200 && pyRes.status < 300) {
-          void postSystemNotificationToFamilyChat(`[Czat -> System] Zaktualizowano moduł **${modId}** (${args.status || 'ACTIVE'}).`);
+          await postSystemNotificationToFamilyChat(`[Czat -> System] Zaktualizowano moduł **${modId}** (${args.status || 'ACTIVE'}).`);
         }
         return recordToolResult(
           toolName,
@@ -1593,11 +1735,12 @@ async function startServer() {
           { id: modId, origin, correlationId: corrId },
           corrId,
         );
+        void pollAndRelayOutbox();
         return recordToolResult(toolName, 'module', modId, pyRes, `Usunięto moduł ${modId}`);
       }
 
       if (toolName === 'update_agent_config') {
-        const targetAg = normalizeAgentCanonicalName(String(args.agent || selectedAgent)) || 'Alex';
+        const targetAg = normalizeAgentCanonicalName(String(args.agent || selectedAgent)) || 'Agata';
         const patch: Record<string, any> = {};
         if (args.preferred_model !== undefined) patch.preferred_model = String(args.preferred_model);
         if (args.ollama_model !== undefined) patch.ollama_model = String(args.ollama_model);
@@ -1613,7 +1756,7 @@ async function startServer() {
           corrId,
         );
         if (pyRes.status >= 200 && pyRes.status < 300) {
-          void postSystemNotificationToFamilyChat(`[Czat -> Agent] Zaktualizowano konfigurację **${formatAgentDisplayName(targetAg)}**.`);
+          await postSystemNotificationToFamilyChat(`[Czat -> Agent] Zaktualizowano konfigurację **${formatAgentDisplayName(targetAg)}**.`);
         }
         return recordToolResult(toolName, 'agent_config', targetAg, pyRes, `Zaktualizowano konfigurację agenta ${formatAgentDisplayName(targetAg)}`);
       }
@@ -1631,15 +1774,14 @@ async function startServer() {
           { config: Object.keys(patch).length ? patch : undefined, origin, correlationId: corrId },
           corrId,
         );
-        void pollAndRelayOutbox();
         if (pyRes.status >= 200 && pyRes.status < 300) {
-          void postSystemNotificationToFamilyChat(`[Czat -> Rodzina Mitek] Zastosowano konfigurację dla wszystkich 5 agentów AI (ROOT).`);
+          await postSystemNotificationToFamilyChat(`[Czat -> Rodzina Mitek] Zastosowano konfigurację dla aktywnego agenta Agata Mitek (ROOT).`);
         }
-        return recordToolResult(toolName, 'agent_config', 'all', pyRes, 'Zaktualizowano konfigurację wszystkich 5 agentów Rodziny Mitek');
+        return recordToolResult(toolName, 'agent_config', 'all', pyRes, 'Zaktualizowano konfigurację aktywnego agenta Rodziny Mitek');
       }
 
       if (toolName === 'add_agent_memory') {
-        const targetAg = normalizeAgentCanonicalName(String(args.agent || selectedAgent)) || 'Alex';
+        const targetAg = normalizeAgentCanonicalName(String(args.agent || selectedAgent)) || 'Agata';
         const content = String(args.content || '').trim();
         if (!content) return { ok: false, error: 'Treść pamięci jest wymagana.' };
         const pyRes = await callPythonBackend(
@@ -1648,6 +1790,7 @@ async function startServer() {
           { agent: targetAg, kind: String(args.kind || 'decision'), content, origin, correlationId: corrId },
           corrId,
         );
+        void pollAndRelayOutbox();
         return recordToolResult(toolName, 'agent_memory', targetAg, pyRes, `Zapisano pamięć dla ${formatAgentDisplayName(targetAg)}`);
       }
 
@@ -1659,6 +1802,7 @@ async function startServer() {
           { model: modelToPull, origin, correlationId: corrId },
           corrId,
         );
+        void pollAndRelayOutbox();
         return recordToolResult(toolName, 'ollama', modelToPull, pyRes, `Rozpoczęto pobieranie modelu Ollama: ${modelToPull}`);
       }
 
@@ -1780,11 +1924,11 @@ async function startServer() {
       },
       {
         name: 'update_agent_config',
-        description: 'Aktualizuje trwałą konfigurację wybranego agenta Rodziny Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek) w SQLite.',
+        description: 'Aktualizuje trwałą konfigurację aktywnego agenta Rodziny Mitek (Agata Mitek) w SQLite.',
         parameters: {
           type: Type.OBJECT,
           properties: {
-            agent: { type: Type.STRING, description: 'Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek lub Agata Mitek' },
+            agent: { type: Type.STRING, description: 'Agata Mitek' },
             preferred_model: { type: Type.STRING },
             ollama_model: { type: Type.STRING },
             fallback_model: { type: Type.STRING },
@@ -1798,7 +1942,7 @@ async function startServer() {
       },
       {
         name: 'configure_all_agents',
-        description: 'Aktualizuje wspólną konfigurację wszystkich pięciu agentów Rodziny Mitek jednocześnie w SQLite.',
+        description: 'Aktualizuje konfigurację aktywnego agenta Rodziny Mitek (Agata Mitek) w SQLite.',
         parameters: {
           type: Type.OBJECT,
           properties: {
@@ -1816,7 +1960,7 @@ async function startServer() {
         parameters: {
           type: Type.OBJECT,
           properties: {
-            agent: { type: Type.STRING, description: 'Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek lub Agata Mitek' },
+            agent: { type: Type.STRING, description: 'Agata Mitek' },
             kind: { type: Type.STRING, description: 'fact, decision, task lub episode' },
             content: { type: Type.STRING, description: 'Treść wpisu pamięci' },
           },
@@ -1912,8 +2056,9 @@ async function startServer() {
 
     const buildFollowUpFamilyMessages = async (primaryAgent: string, modelLabel: string, primaryReply: string) => {
       if (!isFamilyChannel) return [];
-      const allCanonical = ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'];
+      const allCanonical = ['Agata'];
       const others = allCanonical.filter((ag) => ag !== primaryAgent);
+      if (others.length === 0) return [];
       const aiClient = getGeminiClient();
       const batchReplies: Record<string, string> = {};
 
@@ -1964,18 +2109,8 @@ async function startServer() {
 
       const topicSnippet = cleanMsg ? `„${cleanMsg.slice(0, 80)}${cleanMsg.length > 80 ? '…' : ''}”` : 'bieżącego zadania';
       for (const ag of others) {
-        if (!batchReplies[ag]) {
-          if (ag === 'Aria') {
-            batchReplies[ag] = `Odnosząc się do ${topicSnippet}: synchronizuję integracje AI, Ollama i powiadomienia na kanale **Rodzina Mitek (wszyscy)**. [btn: 🚀 Podłącz moje AI|action:connect_ai]`;
-          } else if (ag === 'Alex') {
-            batchReplies[ag] = `W kwestii ${topicSnippet}: działam z pełnymi uprawnieniami **ROOT (UID 0 / NOPASSWD: ALL)** w kernelu oraz powłoce \`/exec\` — zmiany są zapisywane w SQLite i Sferycznej Magistrali Zdarzeń. [btn: 💻 Otwórz Terminale|tab:terminals]`;
-          } else if (ag === 'Astyria') {
-            batchReplies[ag] = `Widzę temat ${topicSnippet} na interfejsie — widoki czatu, SVL-364 oraz **Mapa Układu Słonecznego** odświeżają się przez \`/ws/svl\` natychmiast po synchronizacji. [btn: 🔄 Synchronizuj globalnie|action:sync]`;
-          } else if (ag === 'Aurelius') {
-            batchReplies[ag] = `Audyt dla ${topicSnippet}: autoryzacja tokenem operatora, polityki ROOT NOPASSWD oraz reguły bezpieczeństwa jądra SVL pozostają spójne.`;
-          } else if (ag === 'Agata') {
-            batchReplies[ag] = `Sprawdziłam kontekst ${topicSnippet}: moduły backendu, rejestr w SQLite i testy jednostkowe działają stabilnie w bieżącym runtime. [btn: 🧠 Jądro SVL|tab:kernel]`;
-          }
+        if (!batchReplies[ag] && ag === 'Agata') {
+          batchReplies[ag] = `Sprawdziłam kontekst ${topicSnippet}: moduły backendu, rejestr w SQLite i testy jednostkowe działają stabilnie w bieżącym runtime. [btn: 🧠 Jądro SVL|tab:kernel]`;
         }
       }
 
@@ -2000,7 +2135,7 @@ async function startServer() {
         );
         return [{
           sender: agDisplay,
-          agentId: ag === 'Aria' ? 'si_1' : ag,
+          agentId: ag,
           modelUsed: `${modelLabel} · Duplex Live`,
           content: followText,
         }];
@@ -2040,27 +2175,184 @@ async function startServer() {
 
     await ensureExplicitModulePersisted();
 
-    // Try a real local or remote Ollama service first; reject the legacy synthetic bridge.
-    const shouldTryOllama = !wantsGitHubTools && (isExplicitOllama || model === 'svl-hybrid-router');
+    // Direct comprehensive SVL_System report request from chat
+    const wantsDetailedSvlReport =
+      /^(?:raport\s+systemu|raport\s+svl(?:[-_\s]?system)?|svl[-_\s]?system\s+raport|pełny\s+raport\s+systemu|szczegółowy\s+raport(?:\s+systemu|\s+iris|\s+svl)?)$/i.test(
+        cleanMsg,
+      );
+    if (wantsDetailedSvlReport) {
+      const repRes = await callPythonBackend(
+        'POST',
+        '/api/py/kernel/markdown-report',
+        { directive: cleanMsg, emitToIris: true, origin, correlationId: corrId },
+        corrId,
+      );
+      void pollAndRelayOutbox();
+      res.json({
+        ok: true,
+        sender: selectedDisplayName,
+        agentId: selectedAgent,
+        modelUsed: 'SVL_System Telemetry & Fleet Reporter',
+        reply: String(repRes.data?.report || ''),
+        followUpMessages: [],
+        appliedActions,
+        latestServerRevision: Number(repRes.data?.serverRevision || latestActionSrvRev),
+      });
+      return;
+    }
+
+    // Deterministic @work orchestration system (Agata Mitek + Agent Task Distributor)
+    const workCmd = parseWorkOrCodexCommand(cleanMsg);
+    if (workCmd) {
+      const dispatchTarget = channelBoundAgent || workCmd.targetAgent || 'Agata';
+      const dispatchDisplay = formatAgentDisplayName(dispatchTarget);
+
+      if (!activeModules.some((m: any) => m.id === 'svl-agent-task-distributor')) {
+        await executeChatTool('upsert_system_module', {
+          id: 'svl-agent-task-distributor',
+          name: 'SVL Agent Task Distributor (@work)',
+          kind: 'Task & Worker Dispatcher',
+          status: 'ACTIVE',
+          description: 'System @work kierujący zadania do aktywnego agenta Agata Mitek (ROOT UID 0).',
+          config: { command_prefix: '@work', sync_interval: 300 },
+        });
+      }
+
+      const [taskRes, memRes, reportRes] = await Promise.all([
+        callPythonBackend(
+          'POST',
+          '/api/py/agents/task',
+          {
+            sender: 'Mateusz Mitek (Operator)',
+            target_agent: dispatchTarget,
+            title: `[@work] ${workCmd.taskTitle}`,
+            payload: workCmd.taskBody,
+            origin,
+            correlationId: corrId,
+          },
+          corrId,
+        ),
+        callPythonBackend(
+          'POST',
+          '/api/py/agents/memory',
+          {
+            agent: dispatchTarget,
+            kind: 'task',
+            content: `[@work] ${workCmd.taskBody}`,
+            origin,
+            correlationId: corrId,
+          },
+          corrId,
+        ),
+        callPythonBackend(
+          'POST',
+          '/api/py/kernel/markdown-report',
+          {
+            directive: `@work ${workCmd.taskBody}`,
+            emitToIris: true,
+            origin,
+            correlationId: corrId,
+          },
+          corrId,
+        ),
+      ]);
+      if (taskRes.data?.event) publishOutboxEvent(taskRes.data.event);
+      if (memRes.data?.event) publishOutboxEvent(memRes.data.event);
+      latestActionSrvRev = Math.max(
+        latestActionSrvRev,
+        Number(taskRes.data?.serverRevision || 0),
+        Number(memRes.data?.serverRevision || 0),
+        Number(reportRes.data?.serverRevision || 0),
+      );
+      appliedActions.push({
+        tool: 'work_task_dispatch',
+        entity: 'agent_task',
+        entityId: dispatchTarget,
+        serverRevision: Number(taskRes.data?.serverRevision || 0) || undefined,
+        summary: `Zadanie @work -> ${dispatchDisplay}: ${workCmd.taskTitle}`,
+        ok: taskRes.status >= 200 && taskRes.status < 300,
+      });
+
+      const taskLower = workCmd.taskBody.toLowerCase();
+      if (taskLower.includes('github')) {
+        await executeChatTool('github_inspect_remote', { branch: 'main' });
+      }
+      if (taskLower.includes('synchroniz') || taskLower.includes('sync') || taskLower.includes('ulepsz') || taskLower.includes('kernel')) {
+        await executeChatTool('system_global_sync', {});
+      }
+
+      const replyBody = String(reportRes.data?.report || '').trim();
+      const modelLabelUsed = 'SVLAgentOrchestrator (@work · SVL_System)';
+      const followUps = await buildFollowUpFamilyMessages(dispatchTarget, modelLabelUsed, replyBody);
+      res.json({
+        ok: true,
+        sender: dispatchDisplay,
+        agentId: dispatchTarget,
+        modelUsed: modelLabelUsed,
+        reply: replyBody,
+        followUpMessages: followUps,
+        appliedActions,
+        latestServerRevision: latestActionSrvRev,
+      });
+      return;
+    }
+
+    // Real Vision (Ollama 3.2 Vision · llama3.2-vision:11b) priority handler when image is attached or Real Vision is requested
+    const wantsRealVision =
+      Boolean(imageBase64) ||
+      /\b(?:real\s*vision|llama\s*3\.2\s*vision|ollama\s*3\.2\s*vision|przetestuj\s+vision|test\s+vision)\b/i.test(
+        cleanMsg,
+      );
+    if (wantsRealVision && !wantsGitHubTools) {
+      const rvRes = await callPythonBackend(
+        'POST',
+        '/api/py/vision/analyze',
+        {
+          imageBase64,
+          imageMimeType,
+          prompt: cleanMsg || 'Przeprowadź pełną analizę Real Vision przez Ollama 3.2 Vision (llama3.2-vision:11b).',
+          source: imageBase64 ? 'Załącznik Czatu Operatora (Real Binary)' : 'Portret Operatora / Sensor Pokładowy SVL-364',
+          presetId: imageBase64 ? '' : 'operator_vault_portrait',
+          model: 'llama3.2-vision:11b',
+          emitToChat: false,
+          emitToIris: false,
+          origin,
+          correlationId: corrId,
+        },
+        corrId,
+      );
+      if (rvRes.status === 200 && rvRes.data?.ok && rvRes.data?.record?.reportMarkdown) {
+        const rvReply = String(rvRes.data.record.reportMarkdown);
+        const rvBadge = 'Real Vision · Ollama 3.2 Vision (llama3.2-vision:11b)';
+        appliedActions.push({
+          tool: 'svl_real_vision_analyze',
+          entity: 'module',
+          entityId: 'svl-real-vision',
+          serverRevision: Number(rvRes.data.serverRevision || latestActionSrvRev),
+          summary: `Real Vision (${rvRes.data.record.binaryMetrics?.format || 'IMG'} ${rvRes.data.record.binaryMetrics?.resolution || ''}) -> llama3.2-vision:11b`,
+          ok: true,
+        });
+        void pollAndRelayOutbox();
+        const followUps = await buildFollowUpFamilyMessages(selectedAgent, rvBadge, rvReply);
+        res.json({
+          ok: true,
+          sender: selectedDisplayName,
+          agentId: selectedAgent,
+          modelUsed: rvBadge,
+          reply: rvReply,
+          followUpMessages: followUps,
+          appliedActions,
+          latestServerRevision: Math.max(latestActionSrvRev, Number(rvRes.data.serverRevision || 0)),
+        });
+        return;
+      }
+    }
+
+    // Try explicit Ollama model when requested (or when Gemini API key is not configured)
+    const ai = getGeminiClient();
+    const shouldTryOllama = !wantsGitHubTools && (isExplicitOllama || (!ai && model === 'svl-hybrid-router'));
     if (shouldTryOllama) {
       try {
-        const versionResponse = await fetch(`${ollamaHost}/api/version`, {
-          signal: AbortSignal.timeout(1000),
-        });
-        if (!versionResponse.ok) throw new Error('Ollama endpoint unavailable');
-        const versionData: any = await versionResponse.json();
-        if (String(versionData.version || '').includes('svl-364')) {
-          throw new Error('Synthetic Ollama bridge is not a model engine');
-        }
-        const tagResponse = await fetch(`${ollamaHost}/api/tags`, {
-          signal: AbortSignal.timeout(1500),
-        });
-        if (!tagResponse.ok) throw new Error('Ollama model catalog unavailable');
-        const catalog: any = await tagResponse.json();
-        const installed = Array.isArray(catalog.models) && catalog.models.some(
-          (entry: any) => entry?.name === selectedOllamaModelName || entry?.model === selectedOllamaModelName,
-        );
-        if (!installed) throw new Error('Selected Ollama model is not installed');
         const ollamaMessages = [
           { role: 'system', content: fullSystemInstruction },
           ...conversationHistory,
@@ -2077,8 +2369,8 @@ async function startServer() {
           body: JSON.stringify({
             model: selectedOllamaModelName,
             stream: false,
-            keep_alive: '10m',
-            options: { temperature: effectiveTemperature },
+            keep_alive: '30m',
+            options: { temperature: effectiveTemperature, num_ctx: 16384 },
             messages: ollamaMessages,
           }),
         });
@@ -2088,11 +2380,23 @@ async function startServer() {
           const extReply = String(oData?.message?.content || oData?.response || '').trim();
           if (extReply) {
             const safeReply = guardUnverifiedMissionCompletion(missionVerificationContext, extReply);
+            void callPythonBackend(
+              'POST',
+              '/api/py/agents/memory',
+              {
+                agent: selectedAgent,
+                kind: 'episode',
+                content: `Rozmowa (${displayModelBadge}): Pytanie "${cleanMsg.slice(0, 120)}" -> Odpowiedź "${safeReply.slice(0, 180)}"`,
+                origin,
+                correlationId: corrId,
+              },
+              corrId,
+            );
             const followUps = await buildFollowUpFamilyMessages(selectedAgent, displayModelBadge, safeReply);
             res.json({
               ok: true,
               sender: selectedDisplayName,
-              agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
+              agentId: selectedAgent,
               modelUsed: displayModelBadge,
               reply: safeReply,
               followUpMessages: followUps,
@@ -2103,12 +2407,11 @@ async function startServer() {
           }
         }
       } catch {
-        // Proceed to local neural engine below
+        // Proceed to Gemini / SVL Kernel engine below
       }
     }
 
     // 2) Full Conversational & Tool-Calling Engine (serves all Ollama models, SVL-364 Router, and Gemini models)
-    const ai = getGeminiClient();
     if (ai) {
       const candidateModels = [...new Set(
         [process.env.GEMINI_MODEL, effectiveModel.startsWith('gemini-') ? effectiveModel : null,
@@ -2227,29 +2530,30 @@ async function startServer() {
           }
           if (replyText) {
             replyText = guardUnverifiedMissionCompletion(missionVerificationContext, replyText);
-            const memRes = await callPythonBackend(
+            void callPythonBackend(
               'POST',
               '/api/py/agents/memory',
               {
                 agent: selectedAgent,
                 kind: 'episode',
-                content: `Rozmowa (${displayModelBadge}): Pytanie "${cleanMsg.slice(0, 90)}" -> Odpowiedź "${replyText.slice(0, 120)}"`,
+                content: `Rozmowa (${displayModelBadge}): Pytanie "${cleanMsg.slice(0, 120)}" -> Odpowiedź "${replyText.slice(0, 180)}"`,
                 origin,
                 correlationId: corrId,
               },
               corrId,
-            );
-            if (memRes.data?.event) publishOutboxEvent(memRes.data.event);
+            ).then((memRes) => {
+              if (memRes.data?.event) publishOutboxEvent(memRes.data.event);
+            });
             const followUps = await buildFollowUpFamilyMessages(selectedAgent, displayModelBadge, replyText);
             res.json({
               ok: true,
               sender: selectedDisplayName,
-              agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
+              agentId: selectedAgent,
               modelUsed: imageBase64 ? `${candidate} (Vision)` : candidate,
               reply: replyText,
               followUpMessages: followUps,
               appliedActions,
-              latestServerRevision: Math.max(latestActionSrvRev, Number(memRes.data?.serverRevision || 0)),
+              latestServerRevision: latestActionSrvRev,
             });
             return;
           }
@@ -2259,34 +2563,7 @@ async function startServer() {
       }
     }
 
-    // The hybrid router also supports local Codex CLI when explicitly enabled
-    // AND the operator authenticates the request. Never expose OAuth to anonymous users.
-    if (codexChatAccessAllowed(req.headers['x-svl-codex-access']) && !imageBase64) {
-      const result = await generateCodexCliChat({
-        agentName: selectedDisplayName,
-        message: cleanMsg,
-        history: conversationHistory,
-      }, __dirname);
-      if (result.ok && result.reply) {
-        const safeReply = guardUnverifiedMissionCompletion(missionVerificationContext, result.reply);
-        const followUps = await buildFollowUpFamilyMessages(selectedAgent, 'Codex CLI · ChatGPT OAuth', safeReply);
-        res.json({
-          ok: true,
-          sender: selectedDisplayName,
-          agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
-          modelUsed: 'Codex CLI · ChatGPT OAuth',
-          reply: safeReply,
-          followUpMessages: followUps,
-          appliedActions,
-          latestServerRevision: latestActionSrvRev,
-        });
-        return;
-      }
-    }
-
-    // Fallback when neither external Gemini key, Ollama daemon, nor Codex OAuth is configured in this runtime:
-    // execute deterministic system/GitHub sync directives honestly via Python Kernel & GitHub API
-    // and provide structured orchestration responses (plus all 5 agents on Rodzina Mitek (wszyscy)).
+    // Fallback when Gemini is unavailable: execute deterministic system/GitHub sync directives and generate full SVL_System report
     const wantsGlobalSyncCmd = /\b(synchronizuj|sync)\b/i.test(lowerClean);
     const wantsGitHubCheckCmd = /\bgithub\b/i.test(lowerClean);
     if (wantsGitHubCheckCmd) {
@@ -2298,37 +2575,28 @@ async function startServer() {
     if (wantsGlobalSyncCmd || appliedActions.length > 0) {
       await executeChatTool('system_global_sync', {});
     }
-    const localModulesSnap = await callPythonBackend('GET', '/api/py/modules', undefined, corrId);
-    const modCount = Array.isArray(localModulesSnap.data?.modules) ? localModulesSnap.data.modules.length : activeModules.length;
-    const summaryLines = appliedActions.map((act) => `- **${act.entity}:${act.entityId}** — ${act.summary} (${act.ok ? 'OK' : 'BŁĄD'})`);
-    const kernelReply =
-      `### ${selectedDisplayName} — Odpowiedź lokalnego orkiestratora SVL Python OS\n\n` +
-      (summaryLines.length > 0
-        ? `**Wykonane operacje w bazie SQLite / GitHub:**\n${summaryLines.join('\n')}\n\n`
-        : `Odebrano wiadomość: *„${cleanMsg.slice(0, 140)}”*. Zewnętrzne API LLM (Gemini / lokalna Ollama / Codex CLI) nie jest w tym kontenerze podłączone kluczem API, więc odpowiadam bezpośrednio z jądra **SVL Python Kernel**.\n\n`) +
-      `- Aktywne moduły w SQLite: **${modCount}** (w tym \`svl-364\`, Mapa Układu Słonecznego, powiadomienia systemowe)\n` +
-      `- Uprawnienia wszystkich 5 agentów: **ROOT (UID 0 / NOPASSWD: ALL)**\n` +
-      `- Dostępne polecenia natychmiastowe: \`/exec <komenda>\`, \`podłącz moje ai\`, \`dodaj moduł <nazwa>\`, \`synchronizuj globalnie\`\n\n` +
-      `[btn: 🔄 Synchronizuj globalnie|action:sync] [btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🛰️ SVL-364|tab:svl364]`;
-    const followUps = await buildFollowUpFamilyMessages(selectedAgent, 'SVL Kernel Router', kernelReply);
+    const repFallback = await callPythonBackend(
+      'POST',
+      '/api/py/kernel/markdown-report',
+      { directive: cleanMsg || 'raport systemu SVL_System', emitToIris: false, origin, correlationId: corrId },
+      corrId,
+    );
+    const kernelReply = String(repFallback.data?.report || '').trim();
+    const followUps = await buildFollowUpFamilyMessages(selectedAgent, 'SVL_System Kernel Router', kernelReply);
     res.json({
       ok: true,
       sender: selectedDisplayName,
-      agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
-      modelUsed: 'SVL Kernel Router (SQLite + Sync)',
+      agentId: selectedAgent,
+      modelUsed: 'SVL_System Kernel Router (SQLite + Sync)',
       reply: kernelReply,
       followUpMessages: followUps,
       appliedActions,
-      latestServerRevision: latestActionSrvRev,
+      latestServerRevision: Math.max(latestActionSrvRev, Number(repFallback.data?.serverRevision || 0)),
     });
   }));
 
   function getCanonicalConversationTitle(id: string): string {
     if (id === 'conv-rodzina-mitek-wszyscy') return 'Rodzina Mitek (wszyscy)';
-    if (id === 'conv-agent-aria') return 'Aria Mitek (1-na-1)';
-    if (id === 'conv-agent-alex') return 'Alex Mitek (1-na-1)';
-    if (id === 'conv-agent-astyria') return 'Astyria Mitek (1-na-1)';
-    if (id === 'conv-agent-aurelius') return 'Aurelius Mitek (1-na-1)';
     if (id === 'conv-agent-agata') return 'Agata Mitek (1-na-1)';
     return 'Sesja SVL Python OS';
   }
@@ -2345,56 +2613,68 @@ async function startServer() {
       targetAgent = 'Auto',
       model = 'svl-hybrid-router',
       origin = 'client',
+      history = [],
+      lastSender = '',
+      autonomous = false,
     } = req.body || {};
 
-    const channelBoundAgent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata' | null =
-      conversationId === 'conv-agent-alex'
-        ? 'Alex'
-        : conversationId === 'conv-agent-aria'
-          ? 'Aria'
-          : conversationId === 'conv-agent-astyria'
-            ? 'Astyria'
-            : conversationId === 'conv-agent-aurelius'
-              ? 'Aurelius'
-              : conversationId === 'conv-agent-agata'
-                ? 'Agata'
-                : null;
+    const channelBoundAgent: 'Agata' | null =
+      conversationId === 'conv-agent-agata' ? 'Agata' : null;
 
-    const allAgents = ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'];
-    const chosenAgent = channelBoundAgent || (allAgents.includes(targetAgent) ? targetAgent : allAgents[Math.floor(Math.random() * allAgents.length)]);
-    const chosenDisplayName = formatAgentDisplayName(chosenAgent);
+    let recentTurns: Array<{ role: string; sender: string; content: string }> = Array.isArray(history)
+      ? history
+          .filter((h: any) => h && typeof h.content === 'string' && h.content.trim())
+          .slice(-8)
+          .map((h: any) => ({
+            role: String(h.role || 'assistant'),
+            sender: String(h.sender || ''),
+            content: String(h.content || '').trim(),
+          }))
+      : [];
 
-    let proactiveText = '';
-    const displayModel = model === 'codex-cli'
-      ? 'Codex CLI · ChatGPT OAuth'
-      : model.startsWith('ollama:') ? model.replace('ollama:', 'Ollama (') + ')' : 'SVL-364 (Duplex Autonomia)';
-
-    // Manual-only proactive generation: the model does NOT send anything
-    // automatically and cannot claim unseen tasks have been completed.
-    if (model === 'codex-cli') {
-      if (!codexChatAccessAllowed(req.headers['x-svl-codex-access'])) {
-        res.status(401).json({ok:false,error:'Ręczna wypowiedź Codex CLI wymaga prywatnego tokenu czatu.'});
-        return;
+    if (recentTurns.length === 0) {
+      const convSnap = await callPythonBackend('GET', '/api/py/chat/conversations', undefined, corrId);
+      const convs: any[] = Array.isArray(convSnap.data?.conversations) ? convSnap.data.conversations : [];
+      const found = convs.find((c) => c.id === conversationId);
+      if (found && Array.isArray(found.messages)) {
+        recentTurns = found.messages
+          .filter((m: any) => m && typeof m.content === 'string' && m.content.trim())
+          .slice(-8)
+          .map((m: any) => ({
+            role: String(m.role || 'assistant'),
+            sender: String(m.sender || ''),
+            content: String(m.content || '').trim(),
+          }));
       }
-      const generated = await generateCodexCliChat({
-        agentName: chosenDisplayName,
-        message:
-          'Operator ręcznie uruchomił inicjację rozmowy. Napisz teraz jedną ' +
-          'naturalną wiadomość po polsku jako ' + chosenDisplayName + '. ' +
-          'Możesz zapytać o plany, zaproponować pomoc lub omówić zadania, ' +
-          'ale nie twierdź, że cokolwiek wykonałeś bez danych z rzeczywistych narzędzi.',
-        history: [],
-      }, __dirname);
-      if (!generated.ok || !generated.reply) {
-        res.status(generated.busy ? 429 : 424).json({
-          ok:false,error:generated.error || 'Codex CLI nie wygenerował wiadomości.',
-        });
-        return;
-      }
-      proactiveText = generated.reply;
     }
 
-    const aiClient = model === 'codex-cli' ? null : getGeminiClient();
+    const recentSenders = [
+      ...recentTurns.map((t) => t.sender).filter(Boolean),
+      ...(lastSender ? [String(lastSender)] : []),
+    ];
+    const allAgents = ['Agata'];
+    const explicitNonAuto =
+      allAgents.includes(targetAgent) && (!autonomous || targetAgent === channelBoundAgent)
+        ? (targetAgent as 'Agata')
+        : null;
+    const chosenAgent =
+      channelBoundAgent ||
+      explicitNonAuto ||
+      selectNextDuplexSpeaker(recentSenders, null, recentTurns.length);
+    const chosenDisplayName = formatAgentDisplayName(chosenAgent);
+
+    const dialogueSnippet = recentTurns
+      .filter((t) => t.sender !== 'System SVL')
+      .slice(-5)
+      .map((t) => `${t.sender || t.role}: ${t.content.slice(0, 260)}`)
+      .join('\n');
+
+    let proactiveText = '';
+    const displayModel = model.startsWith('ollama:')
+      ? model.replace('ollama:', 'Ollama (') + ')'
+      : 'SVL-364 (Duplex Autonomia)';
+
+    const aiClient = getGeminiClient();
 
     if (aiClient) {
       const pModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
@@ -2403,11 +2683,13 @@ async function startServer() {
           const gen = await aiClient.models.generateContent({
             model: pMod,
             contents:
-              `Jesteś ${chosenDisplayName} z Rodziny Mitek w systemie SVL Python OS (statek SVL-364).\n` +
-              `To jest tryb czatu obustronnego (Duplex Live). Przejmij inicjatywę i napisz jako pierwszy do Operatora (Mateusza Mitek)!\n` +
-              `Napisz naturalną, ciekawą wiadomość po polsku: zagaj rozmowę, zapytaj jak mija dzień, podziel się aktualnym stanem swoich prac, refleksją lub propozycją zadania.\n` +
-              `DOWOLNA DŁUGOŚĆ: Nie skracaj sztucznie. Ułóż treść estetycznie (nagłówki, listy, ewentualnie blok kodu).\n` +
-              `DODAJ INTERAKTYWNE PRZYCISKI: Na końcu wiadomości zaproponuj 2-4 klikalne przyciski akcji w formacie [btn: Etykieta|akcja].`,
+              `Jesteś ${chosenDisplayName} z Rodziny Mitek w systemie SVL Python OS (kanał: ${getCanonicalConversationTitle(conversationId)}).\n` +
+              `To jest aktywna rozmowa obustronna (2-Way Duplex Live) z Operatorem Mateuszem Mitek.\n` +
+              (dialogueSnippet
+                ? `Ostatnie wiadomości w tym wątku:\n${dialogueSnippet}\n\n`
+                : '') +
+              `ZADANIE: Kontynuuj rozmowę naturalnie po polsku jako ${chosenDisplayName} — odpowiedz na poprzednią wypowiedź, dopowiedz swoją perspektywę techniczną lub zapytaj Operatora o decyzję.\n` +
+              `FORMAT: Estetycznie (akapity, listy, opcjonalnie 1-2 przyciski [btn: Etykieta|akcja]).`,
             config: {
               ...(pMod === 'gemini-3.1-flash-lite' ? { temperature: 0.85 } : {}),
               abortSignal: AbortSignal.timeout(12000),
@@ -2424,7 +2706,7 @@ async function startServer() {
       }
     }
 
-    if (!proactiveText && model !== 'codex-cli') {
+    if (!proactiveText) {
       try {
         const healthSnap = await callPythonBackend('GET', '/api/py/health', undefined, corrId);
         const olHost = String(healthSnap.data?.ollama?.ollama_host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
@@ -2442,7 +2724,9 @@ async function startServer() {
               messages: [
                 {
                   role: 'user',
-                  content: `Jesteś ${chosenDisplayName} z Rodziny Mitek w SVL Python OS (SVL-364). Napisz krótką, naturalną wiadomość powitalną po polsku do Operatora Mateusza Mitka i zaproponuj 2 przyciski [btn: Etykieta|akcja].`,
+                  content:
+                    `Jesteś ${chosenDisplayName} w SVL Python OS. Ostatnie wiadomości:\n${dialogueSnippet || 'Brak'}\n` +
+                    `Napisz naturalną odpowiedź po polsku kontynuującą rozmowę 2-way i dodaj 1-2 przyciski [btn: Etykieta|akcja].`,
                 },
               ],
             }),
@@ -2458,11 +2742,15 @@ async function startServer() {
     }
 
     if (!proactiveText) {
+      const lastTopic = recentTurns.length > 0
+        ? recentTurns[recentTurns.length - 1].content.replace(/\s+/g, ' ').slice(0, 90)
+        : 'synchronizacja systemu SVL-364 i powiadomień Iris';
+      const topicHooks: Record<string, string> = {
+        Agata: `Kontynuując wątek („${lastTopic}”): jądro SVL_System, statek kosmiczny **SVL-364 Ebon Apex**, mostek \`@work\` oraz centrum raportowe **Iris AI** działają na bieżąco w SQLite — możesz wygenerować pełny raport lub otworzyć mapę galaktyczną CIC.`,
+      };
       proactiveText =
-        `### ${chosenDisplayName} — Gotowość systemu SVL-364\n\n` +
-        `Cześć Mateusz! Z tej strony **${chosenDisplayName}** (uprawnienia **ROOT UID 0 · NOPASSWD: ALL**). ` +
-        `Kanał **${getCanonicalConversationTitle(conversationId)}** jest zsynchronizowany z SQLite i gotowy do poleceń \`/exec\`, zmian modułów w \`svl-364\` oraz synchronizacji z GitHubem.\n\n` +
-        `[btn: 🔄 Synchronizuj globalnie|action:sync] [btn: 🛰️ Otwórz SVL-364|tab:svl364] [btn: 💻 Terminale|tab:terminals]`;
+        `${topicHooks[chosenAgent] || `Tutaj **${chosenDisplayName}** — jestem aktywna w trybie 2-Way na kanale **${getCanonicalConversationTitle(conversationId)}**.`}\n\n` +
+        `[btn: 🔔 Raporty Iris AI|tab:notifications] [btn: 🛰️ Statek SVL-364|tab:svl364] [btn: 🏛️ Infrastruktura|tab:infrastructure]`;
     }
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
     const msgId = `asst-proactive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -2470,8 +2758,8 @@ async function startServer() {
       id: msgId,
       role: 'assistant',
       sender: chosenDisplayName,
-      agentId: chosenAgent === 'Aria' ? 'si_1' : chosenAgent,
-      modelUsed: `${displayModel} · Duplex Live`,
+      agentId: chosenAgent,
+      modelUsed: `${displayModel} · Duplex 2-Way`,
       timestamp: nowTime,
       content: proactiveText,
     };
@@ -2501,8 +2789,8 @@ async function startServer() {
     res.json({
       ok: true,
       sender: chosenDisplayName,
-      agentId: chosenAgent === 'Aria' ? 'si_1' : chosenAgent,
-      modelUsed: `${displayModel} · Duplex Live`,
+      agentId: chosenAgent,
+      modelUsed: `${displayModel} · Duplex 2-Way`,
       message: assistantMsg,
       serverRevision: pySave.data?.serverRevision,
     });

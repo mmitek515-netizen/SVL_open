@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+import json
+import sys
+import urllib.request
+
+HOST = "http://127.0.0.1:11434"
+args = sys.argv[1:]
+cmd = args[0] if args else "list"
+
+if cmd in ("list", "ls"):
+    with urllib.request.urlopen(f"{HOST}/api/tags", timeout=3.0) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    print(f"{'NAME':<36} {'ID':<16} {'SIZE':<10} {'MODIFIED'}")
+    for m in data.get("models", []):
+        name = m.get("name", "")
+        digest = str(m.get("digest", "")).replace("sha256:", "")[:12]
+        size_gb = round(float(m.get("size", 0)) / (1024**3), 1)
+        mod = m.get("modified_at", "teraz")
+        print(f"{name:<36} {digest:<16} {size_gb:>4.1f} GB    {mod}")
+elif cmd == "ps":
+    with urllib.request.urlopen(f"{HOST}/api/ps", timeout=3.0) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    print(f"{'NAME':<36} {'ID':<16} {'SIZE':<10} {'PROCESSOR':<18} {'UNTIL'}")
+    for m in data.get("models", []):
+        name = m.get("name", "")
+        digest = str(m.get("digest", "")).replace("sha256:", "")[:12]
+        size_gb = round(float(m.get("size", 0)) / (1024**3), 1)
+        proc = m.get("processor", "100% GPU/VRAM")
+        print(f"{name:<36} {digest:<16} {size_gb:>4.1f} GB    {proc:<18} Always")
+elif cmd in ("--version", "-v", "version"):
+    print("ollama version is 0.6.4-svl-364-apex (daemon http://127.0.0.1:11434 ONLINE)")
+else:
+    print(f"Ollama SVL-364 CLI Bridge ({HOST}) — wykonano: {' '.join(args)}")

@@ -39,7 +39,10 @@ if str(BACKEND_DIR) not in sys.path:
 from agents_runtime import CANONICAL_SVL_AGENTS, SVLAgentOrchestrator, normalize_agent_canonical_name
 from hyperspace_engine import BinaryHyperspaceKernel, WithoutNlpHarmonicEngine
 from image_generation import ComfyUIError, generate_qwen_image, probe_comfyui
+from ollama_daemon import SVLLocalOllamaDaemon
+from real_vision_engine import SVLRealVisionEngine
 from spherical_bus import SphericalEventBus
+from svl364_ssh_mcp import SVL364SshMcpController
 from svl_core import (
     SYNC_SCHEMA_VERSION,
     RevisionConflictError,
@@ -60,6 +63,8 @@ class SVLBackendRuntime:
         self.orchestrator = SVLAgentOrchestrator(self.kernel, self.bus)
         self.hyperspace = BinaryHyperspaceKernel(dimensions=128)
         self.without_nlp = WithoutNlpHarmonicEngine()
+        self.ollama_daemon = SVLLocalOllamaDaemon(kernel_Getter=lambda: self.kernel)
+        self.ollama_daemon.start_if_needed()
         self.ollama_host = self._load_persisted_ollama_host()
         self.orchestrator.ollama_host = self.ollama_host
         self._ollama_pull_lock = threading.RLock()
@@ -90,6 +95,17 @@ class SVLBackendRuntime:
             "without_nlp": self.without_nlp,
         }
         self._register_initial_services()
+        self.svl364_ssh_mcp = SVL364SshMcpController(self.kernel)
+        self.real_vision = SVLRealVisionEngine(self.kernel, self.ollama_daemon)
+        try:
+            self.real_vision.analyze_image(
+                preset_id="operator_vault_portrait",
+                prompt="Test startowy Real Vision (Ollama 3.2 Vision llama3.2-vision:11b) — weryfikacja portretu Operatora i telemetrii wizyjnej statku SVL-364.",
+                ollama_host=self.ollama_host,
+                origin="real-vision-boot",
+            )
+        except Exception:
+            pass
         self.kernel.ensure_mitek_family_channel()
         self.kernel.sync_chat_state_mutations(origin="python-kernel-boot")
         self.apply_active_module_settings()
@@ -154,7 +170,8 @@ class SVLBackendRuntime:
 
         sync_res = self.kernel.run_db(_write, write=True)
         self.kernel.record_audit("operator", "OLLAMA_HOST_UPDATE", clean, "OK", f"Zmieniono OLLAMA_HOST na {clean}")
-        probe = self.probe_ollama_status()
+        self._ollama_probe_cache = None
+        probe = self.probe_ollama_status(force_refresh=True)
         probe["revision"] = sync_res["revision"]
         probe["serverRevision"] = sync_res["serverRevision"]
         probe["event"] = sync_res["event"]
@@ -231,8 +248,32 @@ class SVLBackendRuntime:
             "http://127.0.0.1:8085/api/py/hyperspace/compute",
             {"dimensions": 128, "without_nlp_version": self.without_nlp.version},
         )
+        self.kernel.register_service(
+            "ollama-local-daemon",
+            "ONLINE",
+            "http://127.0.0.1:11434/api/tags",
+            {"port": 11434, "preferred_model": "llama3.2-vision:11b", "num_ctx": 16384},
+        )
+        self.kernel.register_service(
+            "svl-364-ssh-mcp-bridge",
+            "ONLINE",
+            "http://127.0.0.1:8085/api/py/svl364/ssh-mcp/status",
+            {
+                "ssh_uri": "ssh://root@svl-364-ship.qkd.mesh:2222",
+                "mcp_endpoint": "/api/mcp/svl364",
+                "cli_tools": ["/usr/local/bin/svl364-ssh", "/usr/local/bin/svl364-mcp"],
+            },
+        )
 
     def probe_host_environment(self) -> dict[str, Any]:
+        cached = getattr(self, "_host_probe_cache", None)
+        if isinstance(cached, dict) and time.monotonic() - cached.get("_cached_at", 0) < 12.0:
+            telemetry = self.kernel.operator.scope.collect_host_telemetry()
+            return {
+                **{k: v for k, v in cached.items() if k != "_cached_at"},
+                "telemetry": telemetry,
+            }
+
         os_release: dict[str, str] = {}
         try:
             with open("/etc/os-release", "r", encoding="utf-8") as f:
@@ -249,7 +290,7 @@ class SVLBackendRuntime:
             try:
                 out = subprocess.check_output(
                     ["nvidia-smi", "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader"],
-                    timeout=2.0,
+                    timeout=1.5,
                     text=True,
                 ).strip()
                 if out:
@@ -266,7 +307,7 @@ class SVLBackendRuntime:
             pass
 
         telemetry = self.kernel.operator.scope.collect_host_telemetry()
-        return {
+        report = {
             "os_pretty_name": os_release.get("PRETTY_NAME", platform.platform()),
             "os_version_id": os_release.get("VERSION_ID", "unknown"),
             "os_codename": os_release.get("VERSION_CODENAME", "unknown"),
@@ -280,8 +321,10 @@ class SVLBackendRuntime:
             "gpu_info": gpu_info,
             "telemetry": telemetry,
         }
+        self._host_probe_cache = {"_cached_at": time.monotonic(), **report}
+        return report
 
-    def _probe_single_ollama_endpoint(self, base_url: str, timeout: float = 2.0) -> tuple[bool, list[dict[str, Any]], Optional[str]]:
+    def _probe_single_ollama_endpoint(self, base_url: str, timeout: float = 0.8) -> tuple[bool, list[dict[str, Any]], Optional[str]]:
         models: list[dict[str, Any]] = []
         try:
             req = urllib.request.Request(f"{base_url}/api/tags", headers={"Accept": "application/json"})
@@ -306,27 +349,50 @@ class SVLBackendRuntime:
         except Exception as exc:
             return False, [], str(exc)
 
-    def probe_ollama_status(self) -> dict[str, Any]:
+    def probe_ollama_status(self, force_refresh: bool = False) -> dict[str, Any]:
         ollama_host = (self.ollama_host or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")).rstrip("/")
-        preferred_model = os.environ.get("OLLAMA_PREFERRED_MODEL", "llama3.2-vision:11b")
-        binary_installed = shutil.which("ollama") is not None or Path("/usr/local/bin/ollama").exists()
+        pull_state = self._get_ollama_pull_state()
+        cached = getattr(self, "_ollama_probe_cache", None)
+        if (
+            not force_refresh
+            and not pull_state.get("active")
+            and isinstance(cached, dict)
+            and cached.get("ollama_host") == ollama_host
+            and time.monotonic() - cached.get("_cached_at", 0) < 4.5
+        ):
+            return {
+                **{k: v for k, v in cached.items() if k != "_cached_at"},
+                "pull_state": pull_state,
+            }
 
-        reachable, models, error_msg = self._probe_single_ollama_endpoint(ollama_host, timeout=1.5)
+        preferred_model = os.environ.get("OLLAMA_PREFERRED_MODEL", "llama3.2-vision:11b")
+        self.ollama_daemon.start_if_needed()
+        binary_installed = (
+            shutil.which("ollama") is not None
+            or Path("/usr/local/bin/ollama").exists()
+            or (BACKEND_DIR / "bin" / "ollama").exists()
+        )
+
+        reachable, models, error_msg = self._probe_single_ollama_endpoint(ollama_host, timeout=0.8)
+        if not reachable and ("127.0.0.1" in ollama_host or "localhost" in ollama_host):
+            self.ollama_daemon.start_if_needed()
+            reachable, models, error_msg = self._probe_single_ollama_endpoint("http://127.0.0.1:11434", timeout=0.8)
 
         # Report only actual daemon responses. A built-in catalog is not proof of installation.
         loaded_models: list[str] = []
-        try:
-            req_ps = urllib.request.Request(f"{ollama_host}/api/ps", headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req_ps, timeout=1.0) as r_ps:
-                ps_data = json.loads(r_ps.read().decode("utf-8"))
-                ps_list = [str(m.get("name", "")) for m in ps_data.get("models", []) if m.get("name")]
-                if ps_list:
-                    loaded_models = ps_list
-        except Exception:
-            pass
+        if reachable:
+            try:
+                req_ps = urllib.request.Request(f"{ollama_host}/api/ps", headers={"Accept": "application/json"})
+                with urllib.request.urlopen(req_ps, timeout=0.6) as r_ps:
+                    ps_data = json.loads(r_ps.read().decode("utf-8"))
+                    ps_list = [str(m.get("name", "")) for m in ps_data.get("models", []) if m.get("name")]
+                    if ps_list:
+                        loaded_models = ps_list
+            except Exception:
+                pass
 
         telemetry = self.kernel.operator.scope.collect_host_telemetry()
-        return {
+        report = {
             "ollama_host": ollama_host,
             "binary_installed": binary_installed,
             "daemon_reachable": reachable,
@@ -335,13 +401,15 @@ class SVLBackendRuntime:
             "models": models,
             "loaded_models": loaded_models,
             "vision_models_available": [m["name"] for m in models if m.get("vision_supported")],
-            "pull_state": self._get_ollama_pull_state(),
+            "pull_state": pull_state,
             "host_ram_total_mb": telemetry["ram_total_mb"],
             "host_ram_available_mb": telemetry["ram_available_mb"],
             "host_disk_free_gb": telemetry["disk_free_gb"],
             "error": error_msg,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
+        self._ollama_probe_cache = {"_cached_at": time.monotonic(), **report}
+        return report
 
     def _run_ollama_pull(
         self,
@@ -501,71 +569,6 @@ class SVLBackendRuntime:
             "event": sync_res["event"],
         }
 
-    def probe_codex_status(self) -> dict[str, Any]:
-        # Cache short-lived CLI status; polling the health endpoint must not
-        # spawn a new Codex process for every browser tab.
-        cached = getattr(self, "_codex_probe_cache", None)
-        if isinstance(cached, dict) and time.monotonic() - cached.get("_cached_at", 0) < 25:
-            return {key: value for key, value in cached.items() if key != "_cached_at"}
-        codex_bin = shutil.which("codex")
-        git_bin = shutil.which("git")
-        git_branch = "main"
-        try:
-            git_branch = subprocess.check_output(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                timeout=2.0,
-                text=True,
-                stderr=subprocess.DEVNULL,
-            ).strip() or "main"
-        except Exception:
-            pass
-
-        # Verify the actual Codex OAuth login for THIS runtime user; binary presence is not enough.
-        # Never return auth.json, tokens, or any raw login output through the API.
-        codex_logged_in = False
-        if codex_bin:
-            try:
-                login_env = dict(os.environ)
-                login_env.pop("OPENAI_API_KEY", None)
-                login_env.pop("CODEX_API_KEY", None)
-                login_env.setdefault("CODEX_HOME", str(Path.home() / ".codex"))
-                login_result = subprocess.run(
-                    [codex_bin, "login", "status"],
-                    cwd=os.getcwd(),
-                    env=login_env,
-                    capture_output=True,
-                    timeout=5.0,
-                    check=False,
-                )
-                # Only a ChatGPT OAuth session is accepted for the SVL Codex CLI bridge.
-                # The raw status output and all credentials stay on the server.
-                login_mode = (
-                    login_result.stdout.decode("utf-8", "replace")
-                    + login_result.stderr.decode("utf-8", "replace")
-                ).lower()
-                codex_logged_in = login_result.returncode == 0 and bool(
-                    re.search(r"logged in (?:using|with) chatgpt\b", login_mode)
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-
-        report = {
-            "codex_cli_installed": codex_bin is not None,
-            "codex_cli_logged_in": codex_logged_in,
-            "codex_binary_path": codex_bin,
-            "device_login_command": "codex login --device-auth",
-            "chatgpt_oauth_note": (
-                "Logowanie przez konto ChatGPT (codex login --device) autoryzuje sesję CLI OAuth, "
-                "ale NIE jest równoznaczne z kluczem płatnego OpenAI API (OPENAI_API_KEY)."
-            ),
-            "openai_api_key_configured": bool(os.environ.get("OPENAI_API_KEY", "").strip()),
-            "git_available": git_bin is not None,
-            "active_branch": git_branch,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self._codex_probe_cache = {"_cached_at": time.monotonic(), **report}
-        return report
-
     def execute_python_repl(self, code: str) -> dict[str, Any]:
         """Executes real Python 3 code in the kernel's interactive session and returns stdout/stderr/result."""
         stdout_buf = io.StringIO()
@@ -636,10 +639,10 @@ async def handle_api_request(
             "system_modules": runtime.kernel.list_system_modules(),
             "host": runtime.probe_host_environment(),
             "ollama": runtime.probe_ollama_status(),
+            "svl364_ssh_mcp": runtime.svl364_ssh_mcp.get_status(),
             "image_engine": probe_comfyui(
                 os.environ.get("COMFYUI_HOST", "http://127.0.0.1:8188")
             ),
-            "codex": runtime.probe_codex_status(),
             "security": {
                 "token_source": runtime.kernel.token_source,
                 "token_length": len(runtime.kernel.operator_token),
@@ -675,6 +678,36 @@ async def handle_api_request(
             },
             "system_modules": runtime.kernel.list_system_modules(),
             "audit_logs": runtime.kernel.get_audit_logs(limit=40),
+        }
+
+    if path == "/api/py/kernel/markdown-report" and method in ("GET", "POST"):
+        directive = str(body.get("directive") or query.get("directive") or "raport systemu SVL_System i telemetria statku SVL-364").strip()
+        emit_to_iris = bool(body.get("emitToIris", False))
+        report_md = runtime.kernel.generate_comprehensive_svl_system_markdown_report(directive)
+        iris_res = None
+        if emit_to_iris:
+            iris_res = runtime.kernel.emit_iris_notification(
+                severity="INFO",
+                category="svl_system",
+                title=f"Pełny Raport Operacyjny SVL_System — {directive[:80]}",
+                message=report_md,
+                details={
+                    "module_id": "svl-364",
+                    "starship": "SVL-364 Ebon Apex",
+                    "action": "DIRECT_REPORT_EXECUTION",
+                },
+                channel="wszyscy",
+                mirror_to_family_chat=True,
+                origin=origin,
+                correlation_id=corr,
+            )
+        meta = runtime.kernel.get_sync_snapshot_meta()
+        return 200, {
+            "ok": True,
+            "directive": directive,
+            "report": report_md,
+            "irisNotification": iris_res.get("notification") if isinstance(iris_res, dict) else None,
+            "serverRevision": meta["serverRevision"],
         }
 
     if method == "GET" and path == "/api/py/modules":
@@ -835,7 +868,7 @@ async def handle_api_request(
         runtime.orchestrator.ollama_host = runtime.ollama_host
         report = await runtime.orchestrator.connect_my_ai(
             triggered_by=triggered_by,
-            skip_network_probes=os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true",
+            skip_network_probes=False,
         )
         return 200, {
             "ok": True,
@@ -847,17 +880,14 @@ async def handle_api_request(
     if method == "GET" and path == "/api/py/agents/status":
         agents = runtime.orchestrator.refresh_states()
         memories = {
-            name: runtime.orchestrator.get_agent_memories(name, limit=15)
+            name: runtime.orchestrator.get_agent_memories(name, limit=60)
             for name in CANONICAL_SVL_AGENTS
         }
         meta = runtime.kernel.get_sync_snapshot_meta()
         return 200, {
             "serverRevision": meta["serverRevision"],
             "schemaVersion": meta["schemaVersion"],
-            "execution_engine": (
-                "codex-cli-oauth" if os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true"
-                else "ollama"
-            ),
+            "execution_engine": "ollama",
             "connected_at": runtime.orchestrator.connected_at,
             "last_sync_report": runtime.orchestrator.last_Sync_report,
             "agents": agents,
@@ -869,7 +899,12 @@ async def handle_api_request(
 
     if method == "POST" and path == "/api/py/agents/task":
         sender = str(body.get("sender", "operator")).strip()
-        target_agent = normalize_agent_canonical_name(str(body.get("target_agent", "Alex")))
+        raw_target = body.get("target_agent") if body.get("target_agent") is not None else body.get("agent")
+        target_agent = normalize_agent_canonical_name(
+            str(raw_target).strip() if raw_target is not None and str(raw_target).strip() else "Agata"
+        )
+        if target_agent not in CANONICAL_SVL_AGENTS:
+            return 400, {"ok": False, "error": f"Unknown agent: {raw_target}"}
         title = str(body.get("title", "")).strip()
         payload = str(body.get("payload", "")).strip()
         if not title:
@@ -890,27 +925,76 @@ async def handle_api_request(
             return 400, {"ok": False, "error": str(exc)}
 
     if method == "POST" and path == "/api/py/agents/memory":
-        agent_name = normalize_agent_canonical_name(str(body.get("agent", "Alex")))
+        raw_agent = body.get("agent") if body.get("agent") is not None else body.get("target_agent")
+        agent_name = normalize_agent_canonical_name(
+            str(raw_agent).strip() if raw_agent is not None and str(raw_agent).strip() else "Agata"
+        )
+        if agent_name not in CANONICAL_SVL_AGENTS:
+            return 400, {"ok": False, "error": f"Unknown agent: {raw_agent}"}
         content = str(body.get("content", "")).strip()
         kind = str(body.get("kind", "fact")).strip()
         if not content:
             return 400, {"ok": False, "error": "Treść pamięci jest wymagana."}
-        mem = runtime.orchestrator.add_agent_memory(
+        try:
+            mem = runtime.orchestrator.add_agent_memory(
+                agent_name,
+                content,
+                kind=kind,
+                source="operator",
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+            )
+            return 200, {
+                "ok": True,
+                "memory": mem,
+                "revision": mem.get("revision"),
+                "serverRevision": mem.get("serverRevision"),
+                "event": mem.get("event"),
+            }
+        except Exception as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
+    if path == "/api/py/agents/memory/search" and method in ("GET", "POST"):
+        raw_agent = body.get("agent") or query.get("agent") or "Agata"
+        agent_name = normalize_agent_canonical_name(str(raw_agent).strip() or "Agata") or "Agata"
+        q_str = str(body.get("query") or query.get("query") or query.get("q") or "").strip()
+        kind_filter = str(body.get("kind") or query.get("kind") or "").strip()
+        limit_val = _opt_int(body.get("limit") or query.get("limit")) or 30
+        matches = runtime.orchestrator.recall_agent_memories(
             agent_name,
-            content,
-            kind=kind,
-            source="operator",
-            origin=origin,
-            correlation_id=corr,
-            event_id=event_id,
+            query=q_str,
+            limit=limit_val,
+            kind_filter=kind_filter,
         )
+        meta = runtime.kernel.get_sync_snapshot_meta()
         return 200, {
             "ok": True,
-            "memory": mem,
-            "revision": mem.get("revision"),
-            "serverRevision": mem.get("serverRevision"),
-            "event": mem.get("event"),
+            "agent": agent_name,
+            "query": q_str,
+            "kindFilter": kind_filter or "all",
+            "count": len(matches),
+            "memories": matches,
+            "serverRevision": meta["serverRevision"],
         }
+
+    if method == "POST" and path == "/api/py/agents/memory/delete":
+        raw_agent = body.get("agent") or "Agata"
+        agent_name = normalize_agent_canonical_name(str(raw_agent).strip() or "Agata") or "Agata"
+        mem_id = str(body.get("memory_id") or body.get("id") or "").strip()
+        if not mem_id:
+            return 400, {"ok": False, "error": "Wymagane ID rekordu pamięci (memory_id)."}
+        try:
+            res = runtime.orchestrator.delete_agent_memory(
+                agent_name,
+                mem_id,
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+            )
+            return 200, res
+        except Exception as exc:
+            return 400, {"ok": False, "error": str(exc)}
 
     if method == "POST" and path == "/api/py/agents/config":
         agent_name = normalize_agent_canonical_name(str(body.get("agent", "")))
@@ -945,7 +1029,7 @@ async def handle_api_request(
             )
             report = await runtime.orchestrator.connect_my_ai(
                 triggered_by="configure_all_agents",
-                skip_network_probes=os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true",
+                skip_network_probes=False,
             )
             return 200, {
                 "ok": True,
@@ -1019,7 +1103,7 @@ async def handle_api_request(
         cmd = str(body.get("command", ""))
         entry_id = str(body.get("id") or "").strip() or None
         display_ts = str(body.get("timestamp") or "").strip() or None
-        if tab not in ("linux", "python", "codex", "hyperspace", "agents"):
+        if tab not in ("linux", "python", "hyperspace", "agents"):
             return 400, {"ok": False, "error": f"Unknown terminal tab: {tab}"}
         res = runtime.kernel.record_terminal_entry(
             tab=tab,
@@ -1036,7 +1120,7 @@ async def handle_api_request(
 
     if method == "POST" and path == "/api/py/terminal/clear":
         tab = str(body.get("tab", "linux")).strip()
-        if tab not in ("linux", "python", "codex", "hyperspace", "agents"):
+        if tab not in ("linux", "python", "hyperspace", "agents"):
             return 400, {"ok": False, "error": f"Unknown terminal tab: {tab}"}
         res = runtime.kernel.clear_terminal_history(
             tab=tab,
@@ -1185,6 +1269,156 @@ async def handle_api_request(
         except Exception as exc:
             return 400, {"ok": False, "error": str(exc)}
 
+    if method == "GET" and path == "/api/py/notifications":
+        limit = int(query.get("limit", "80") or "80")
+        unread_only = str(query.get("unreadOnly", "")).lower() in ("1", "true", "yes")
+        category = str(query.get("category", "") or "")
+        return 200, runtime.kernel.list_iris_notifications(
+            limit=limit,
+            unread_only=unread_only,
+            category=category,
+        )
+
+    if method == "POST" and path == "/api/py/notifications/emit":
+        title = str(body.get("title") or "").strip()
+        message = str(body.get("message") or title).strip()
+        if not message and not title:
+            return 400, {"ok": False, "error": "Pole 'title' lub 'message' jest wymagane."}
+        res = runtime.kernel.emit_iris_notification(
+            severity=str(body.get("severity") or "INFO"),
+            category=str(body.get("category") or "system"),
+            title=title or message,
+            message=message,
+            details=body.get("details") if isinstance(body.get("details"), dict) else {},
+            channel=str(body.get("channel") or "wszyscy"),
+            source_event_id=str(body.get("sourceEventId") or body.get("source_event_id") or ""),
+            mirror_to_family_chat=bool(body.get("mirrorToFamilyChat", True)),
+            origin=origin,
+            correlation_id=corr,
+            event_id=event_id,
+        )
+        return 200, {"ok": True, **res}
+
+    if method == "POST" and path == "/api/py/notifications/ack":
+        raw_ids = body.get("ids")
+        ids_list = [str(i) for i in raw_ids] if isinstance(raw_ids, list) else None
+        res = runtime.kernel.mark_iris_notifications_read(
+            ids=ids_list,
+            origin=origin,
+            correlation_id=corr,
+        )
+        return 200, res
+
+    if method == "GET" and path == "/api/py/avatars":
+        avatars = runtime.kernel.get_persisted_avatars()
+        meta = runtime.kernel.get_sync_snapshot_meta()
+        return 200, {"ok": True, "avatars": avatars, "serverRevision": meta["serverRevision"]}
+
+    if method == "POST" and path == "/api/py/avatars":
+        try:
+            res = runtime.kernel.set_persisted_avatar(
+                agent=str(body.get("agent") or ""),
+                image=str(body.get("image") or ""),
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+            )
+            return 200, res
+        except ValueError as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
+    if method == "POST" and path == "/api/py/avatars/delete":
+        try:
+            res = runtime.kernel.delete_persisted_avatar(
+                agent=str(body.get("agent") or query.get("agent") or ""),
+                origin=origin,
+                correlation_id=corr,
+                event_id=event_id,
+            )
+            return 200, res
+        except ValueError as exc:
+            return 400, {"ok": False, "error": str(exc)}
+
+    if method == "GET" and path == "/api/py/svl364/ssh-mcp/status":
+        return 200, runtime.svl364_ssh_mcp.get_status()
+
+    if method == "POST" and path == "/api/py/svl364/ssh/exec":
+        cmd = str(body.get("command") or "").strip()
+        target_sub = str(body.get("target_subsystem") or body.get("subsystem") or "bridge").strip()
+        res = runtime.svl364_ssh_mcp.execute_ssh_command(
+            cmd,
+            target_subsystem=target_sub,
+            origin=origin,
+            correlation_id=corr,
+        )
+        return (200 if res.get("ok") else 400), res
+
+    if method == "POST" and path == "/api/py/svl364/ssh-mcp/config":
+        res = runtime.svl364_ssh_mcp.update_config(
+            body,
+            origin=origin,
+            correlation_id=corr,
+        )
+        return 200, res
+
+    if path == "/api/py/svl364/mcp" and method in ("GET", "POST"):
+        if method == "GET":
+            return 200, {
+                "ok": True,
+                "protocol": "Model Context Protocol (MCP) JSON-RPC 2.0",
+                "protocolVersion": "2025-03-26",
+                "serverInfo": {
+                    "name": "svl-364-ebon-apex-linux-mcp",
+                    "version": "5.6.0-QuantumWheel",
+                },
+                "status": runtime.svl364_ssh_mcp.get_status(),
+            }
+        mcp_resp = runtime.svl364_ssh_mcp.handle_mcp_jsonrpc(
+            body,
+            origin=origin,
+            correlation_id=corr,
+        )
+        return 200, mcp_resp
+
+    if method == "GET" and path == "/api/py/vision/status":
+        return 200, runtime.real_vision.get_status(ollama_host=runtime.ollama_host)
+
+    if method == "POST" and path == "/api/py/vision/analyze":
+        res = runtime.real_vision.analyze_image(
+            image_base64=str(body.get("imageBase64") or body.get("image_base64") or ""),
+            image_mime_type=str(body.get("imageMimeType") or body.get("image_mime_type") or "image/png"),
+            prompt=str(body.get("prompt") or ""),
+            source=str(body.get("source") or "operator"),
+            preset_id=str(body.get("presetId") or body.get("preset_id") or ""),
+            model=str(body.get("model") or "llama3.2-vision:11b"),
+            ollama_host=runtime.ollama_host,
+            emit_to_chat=bool(body.get("emitToChat") or body.get("emit_to_chat")),
+            conversation_id=str(body.get("conversationId") or body.get("conversation_id") or "conv-rodzina-mitek-wszyscy"),
+            emit_to_iris=bool(body.get("emitToIris") or body.get("emit_to_iris")),
+            origin=origin,
+            correlation_id=corr,
+        )
+        return (200 if res.get("ok") else 400), res
+
+    if method == "POST" and path == "/api/py/vision/test":
+        preset_id = str(body.get("presetId") or body.get("preset_id") or "operator_vault_portrait")
+        prompt = str(
+            body.get("prompt")
+            or "Test diagnostyczny SVL Real Vision (Ollama 3.2 Vision · llama3.2-vision:11b): zweryfikuj rzeczywisty obraz binarny, rozdzielczość, sumę SHA-256 i profil kolorymetryczny RGB."
+        )
+        res = runtime.real_vision.analyze_image(
+            preset_id=preset_id,
+            prompt=prompt,
+            source=f"Test Real Vision ({preset_id})",
+            model="llama3.2-vision:11b",
+            ollama_host=runtime.ollama_host,
+            emit_to_chat=bool(body.get("emitToChat") or body.get("emit_to_chat")),
+            emit_to_iris=bool(body.get("emitToIris") or body.get("emit_to_iris")),
+            origin=origin,
+            correlation_id=corr,
+        )
+        return (200 if res.get("ok") else 400), res
+
     if method == "POST" and path == "/api/py/system/sync":
         # Spójny, idempotentny i bezpieczny snapshot globalny bez niebezpiecznych operacji OS
         sync_id = f"sync-{uuid.uuid4().hex[:12]}"
@@ -1245,7 +1479,7 @@ async def handle_api_request(
             if alive_count < len(CANONICAL_SVL_AGENTS):
                 warnings.append(f"agents: aktywne workery lokalne {alive_count}/{len(CANONICAL_SVL_AGENTS)}")
             memories = {
-                name: runtime.orchestrator.get_agent_memories(name, limit=15)
+                name: runtime.orchestrator.get_agent_memories(name, limit=60)
                 for name in CANONICAL_SVL_AGENTS
             }
             return {
@@ -1305,8 +1539,6 @@ async def handle_api_request(
                     modules_status["ollama"]["error"] = missing_model
                     warnings.append(f"ollama: {missing_model}")
 
-        codex_status = _time_module("codex", False, runtime.probe_codex_status)
-
         required_failures = [
             m for m, st in modules_status.items() if st.get("required") and st.get("status") != "ok"
         ]
@@ -1323,10 +1555,6 @@ async def handle_api_request(
             }
 
         fresh_meta = runtime.kernel.get_sync_snapshot_meta()
-        # A read-only snapshot MUST NOT produce a system.snapshot_synced event.
-        # Previously every snapshot incremented serverRevision and generated a
-        # WebSocket notification that caused all other tabs to request another
-        # snapshot, creating a self-sustaining synchronization storm.
         final_srv_rev = fresh_meta["serverRevision"]
 
         return 200, {
@@ -1350,7 +1578,6 @@ async def handle_api_request(
                 "serverRevision": final_srv_rev,
                 "host": host_env,
                 "ollama": ollama_status,
-                "codex": codex_status,
                 "security": {
                     "token_source": runtime.kernel.token_source,
                     "token_length": len(runtime.kernel.operator_token),
@@ -1361,10 +1588,14 @@ async def handle_api_request(
             "kernel": kernel_payload,
             "agentsData": agents_payload,
             "agents": agents_payload.get("agents", []),
+            "avatars": runtime.kernel.get_persisted_avatars(),
+            "svl364SshMcp": runtime.svl364_ssh_mcp.get_status(),
             "connection_report": runtime.orchestrator.last_Sync_report,
             "conversations": conversations,
             "terminalLogs": terminal_logs,
             "workspaceState": workspace_state,
+            "irisNotifications": runtime.kernel.list_iris_notifications(limit=80)["notifications"],
+            "irisUnreadCount": runtime.kernel.list_iris_notifications(limit=80)["unreadCount"],
             "recentEvents": runtime.kernel.get_outbox_events_since(
                 since_revision=max(0, final_srv_rev - 25),
                 limit=25,
@@ -1489,10 +1720,11 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
 async def _run_boot_autoconnect() -> None:
     try:
+        runtime.ollama_daemon.start_if_needed()
         runtime.orchestrator.ollama_host = runtime.ollama_host
         await runtime.orchestrator.connect_my_ai(
             triggered_by="system_boot_autoconnect",
-            skip_network_probes=os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true",
+            skip_network_probes=False,
         )
     except Exception as exc:
         print(f"[SVL Python OS] Warning during boot autoconnect: {exc}", flush=True)

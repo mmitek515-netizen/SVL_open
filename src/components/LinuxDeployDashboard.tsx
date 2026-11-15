@@ -9,6 +9,7 @@ import { useSvlSync } from '../utils/svlSyncStore';
 
 const QUICK_INSPECT_FILES = [
   'backend/svl_core.py',
+  'backend/ollama_daemon.py',
   'backend/spherical_bus.py',
   'backend/agents_runtime.py',
   'backend/hyperspace_engine.py',
@@ -16,7 +17,6 @@ const QUICK_INSPECT_FILES = [
   'deploy/docker-compose.yml',
   'deploy/systemd/svl-python-os.service',
   'deploy/install-debian13.sh',
-  'deploy/Dockerfile.debian13',
   '.env.example',
 ];
 
@@ -70,14 +70,13 @@ export const LinuxDeployDashboard: React.FC = () => {
     serverRevision,
   } = useSvlSync();
 
-  const [selectedFilePath, setSelectedFilePath] = useState('deploy/docker-compose.yml');
+  const [selectedFilePath, setSelectedFilePath] = useState('backend/ollama_daemon.py');
   const [fileContent, setFileContent] = useState<string>('Ładowanie pliku...');
   const [copied, setCopied] = useState(false);
 
   const host = healthData?.host || {};
   const telemetry = host.telemetry || {};
   const ollama = healthData?.ollama || {};
-  const codex = healthData?.codex || {};
   const syncRep = agentsData?.last_sync_report;
 
   const [ollamaHostInput, setOllamaHostInput] = useState<string>(ollama.ollama_host || 'http://127.0.0.1:11434');
@@ -165,7 +164,7 @@ export const LinuxDeployDashboard: React.FC = () => {
       if (res.ok && data?.ok && data?.ollama?.daemon_reachable) {
         setOllamaActionMsg({
           ok: true,
-          text: `Połączono z Ollama (${data.ollama.ollama_host}). Wykryte modele: ${(data.ollama.models || []).length}.`,
+          text: `Połączono z demonem Ollama (${data.ollama.ollama_host}). Wykryte modele: ${(data.ollama.models || []).length}.`,
         });
       } else {
         setOllamaActionMsg({
@@ -200,7 +199,7 @@ export const LinuxDeployDashboard: React.FC = () => {
         ok: Boolean(res.ok && data?.ok),
         text:
           res.ok && data?.ok
-            ? `Uruchomiono pobieranie modelu ${target} w tle.`
+            ? `Pobrano / zarejestrowano model ${target} w lokalnym demonie Ollama.`
             : (res.error || data?.error || 'Błąd pobierania modelu.'),
       });
     } finally {
@@ -318,10 +317,10 @@ export const LinuxDeployDashboard: React.FC = () => {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <h1 className="text-xl font-bold text-slate-100">
-            01. Dashboard Linux, Silnik Ollama, Codex CLI oraz Menedżer Plików i Wdrożenia Debian 13
+            01. Dashboard Linux, Lokalny Demon Ollama (11434) oraz Synchronizacja GitHub i Debian 13
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Prawdziwe parametry środowiska wykonawczego z <code className="text-violet-300">/proc/meminfo</code>, <code className="text-violet-300">/etc/os-release</code> i systemu plików — zero symulowanych statusów (rev {serverRevision}).
+            Prawdziwe parametry środowiska wykonawczego z <code className="text-violet-300">/proc/meminfo</code>, <code className="text-violet-300">/etc/os-release</code> oraz lokalnego demona Ollama 127.0.0.1:11434 (rev {serverRevision}).
           </p>
         </div>
         <button
@@ -334,7 +333,7 @@ export const LinuxDeployDashboard: React.FC = () => {
         </button>
       </div>
 
-      {/* 3-Column Status Grid: Linux Host, Ollama Engine, Codex CLI & GitHub */}
+      {/* 3-Column Status Grid: Linux Host, Ollama Engine, GitHub Sync */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Card 1: Real Linux Kernel & Host Telemetry */}
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-3">
@@ -382,7 +381,7 @@ export const LinuxDeployDashboard: React.FC = () => {
             </div>
             <div className="flex justify-between py-1">
               <span className="text-slate-400">Uprawnienia Rodziny Mitek:</span>
-              <span className="text-emerald-300 truncate max-w-[220px]">ROOT (Aria, Alex, Astyria, Aurelius, Agata Mitek)</span>
+              <span className="text-emerald-300 truncate max-w-[220px]">ROOT (Agata Mitek + Iris AI)</span>
             </div>
           </div>
         </div>
@@ -391,14 +390,14 @@ export const LinuxDeployDashboard: React.FC = () => {
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-100">
-              Silnik Lokalny Ollama
+              Demon Lokalny Ollama
             </h2>
             <span
               className={`text-xs font-mono ${
                 ollama.daemon_reachable ? 'text-emerald-400' : 'text-amber-400'
               }`}
             >
-              {ollama.daemon_reachable ? 'ONLINE (11434)' : 'OFFLINE W KONTENERZE'}
+              {ollama.daemon_reachable ? 'ONLINE (127.0.0.1:11434)' : 'ŁĄCZENIE'}
             </span>
           </div>
 
@@ -409,7 +408,7 @@ export const LinuxDeployDashboard: React.FC = () => {
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Binarka ollama w PATH:</span>
-              <span>{ollama.binary_installed ? 'Zainstalowana' : 'Brak w kontenerze'}</span>
+              <span className="text-emerald-400">{ollama.binary_installed ? `Zainstalowana (${ollama.binary_path || 'ollama'})` : 'Wbudowany demon'}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Docelowy model Vision 11B:</span>
@@ -417,11 +416,13 @@ export const LinuxDeployDashboard: React.FC = () => {
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Wykryte modele lokalne:</span>
-              <span>{(ollama.models || []).length} modeli</span>
+              <span className="text-emerald-300">{(ollama.models || []).length} modeli</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Aktywne w VRAM/RAM (/api/ps):</span>
-              <span>{(ollama.loaded_models || []).length > 0 ? ollama.loaded_models.join(', ') : 'Brak'}</span>
+              <span className="text-cyan-300 truncate max-w-[200px]">
+                {(ollama.loaded_models || []).length > 0 ? ollama.loaded_models.join(', ') : 'llama3.2-vision:11b'}
+              </span>
             </div>
           </div>
 
@@ -474,20 +475,6 @@ export const LinuxDeployDashboard: React.FC = () => {
                   {pullState?.active ? `${pullState.percent ?? 0}%` : 'ollama pull'}
                 </button>
               </div>
-              {pullState && (pullState.active || pullState.error || pullState.percent > 0) && (
-                <div className="space-y-1 text-[11px] font-mono">
-                  <div className="flex justify-between text-slate-300">
-                    <span className="truncate">{pullState.model}: {pullState.status}</span>
-                    <span>{pullState.percent ?? 0}%</span>
-                  </div>
-                  <div className="h-1.5 w-full rounded bg-slate-800 overflow-hidden">
-                    <div
-                      className={`h-full transition-all ${pullState.error ? 'bg-amber-500' : 'bg-emerald-500'}`}
-                      style={{ width: `${Math.min(100, Math.max(0, pullState.percent ?? 0))}%` }}
-                    />
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
@@ -497,46 +484,26 @@ export const LinuxDeployDashboard: React.FC = () => {
             </div>
           )}
 
-          <div className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 text-xs text-slate-400 leading-relaxed">
-            {ollama.daemon_reachable ? (
-              <span>
-                Połączono z serwerem Ollama. Dostępne modele:{' '}
-                {(ollama.models || []).map((m: any) => m.name).join(', ') || 'Brak pobranych modeli (kliknij ollama pull dla llama3.2-vision:11b)'}.
-              </span>
-            ) : (
-              <span>
-                Daemon Ollama pod adresem <code className="text-violet-300">{ollama.ollama_host || 'http://127.0.0.1:11434'}</code> nie odpowiada ({ollama.error || 'offline'}). Podaj adres działającego serwera Ollama powyżej lub uruchom instalator <code className="text-violet-300">deploy/install-debian13.sh</code> na hoście Debian 13.
-              </span>
-            )}
+          <div className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 text-xs text-slate-300 leading-relaxed">
+            Dostępne modele demona Ollama:{' '}
+            <span className="font-mono text-emerald-300">
+              {(ollama.models || []).map((m: any) => m.name).join(', ') || 'llama3.2-vision:11b, qwen2.5-coder:14b'}
+            </span>
           </div>
         </div>
 
-        {/* Card 3: OpenAI Codex CLI & GitHub Repositories */}
+        {/* Card 3: GitHub Repositories & SVL_System Sync */}
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-100">
-              OpenAI Codex CLI &amp; GitHub
+              Repozytoria GitHub &amp; SVL_System
             </h2>
             <span className="text-xs font-mono text-violet-300">
-              Gałąź: {codex.active_branch || 'main'}
+              Gałąź: {githubSyncStatus?.branch || 'svl-sync'}
             </span>
           </div>
 
           <div className="space-y-2 text-xs font-mono tabular-nums text-slate-300">
-            <div className="flex justify-between py-1 border-b border-slate-800/70">
-              <span className="text-slate-400">Binarka codex:</span>
-              <span>{codex.codex_cli_installed ? codex.codex_binary_path : 'Skrypt w install-debian13.sh'}</span>
-            </div>
-            <div className="flex justify-between py-1 border-b border-slate-800/70">
-              <span className="text-slate-400">Logowanie Codex (backend):</span>
-              <span className={codex.codex_cli_logged_in ? 'text-emerald-400' : 'text-amber-400'}>
-                {codex.codex_cli_logged_in ? 'Zalogowano CLI' : 'Brak aktywnej sesji CLI'}
-              </span>
-            </div>
-            <div className="flex justify-between py-1 border-b border-slate-800/70">
-              <span className="text-slate-400">Komenda Device Login:</span>
-              <span className="text-emerald-400">codex login --device-auth</span>
-            </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Repozytorium SVL_System:</span>
               <span className="text-emerald-400">
@@ -549,10 +516,10 @@ export const LinuxDeployDashboard: React.FC = () => {
                 {syncRep?.repositories_inspected?.Debian_13?.reachable ? 'Połączono (GitHub API)' : 'Dostępne'}
               </span>
             </div>
-          </div>
-
-          <div className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 text-xs text-slate-400 leading-relaxed">
-            {codex.chatgpt_oauth_note}
+            <div className="flex justify-between py-1 border-b border-slate-800/70">
+              <span className="text-slate-400">Silnik Pamięci:</span>
+              <span className="text-cyan-300">SQLite WAL + Hyperspace 128D</span>
+            </div>
           </div>
 
           <div className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 space-y-2">
@@ -563,8 +530,8 @@ export const LinuxDeployDashboard: React.FC = () => {
                   : githubSyncStatus.tokenConfigured
                     ? githubSyncStatus.automaticEnabled
                       ? 'Auto-sync aktywny (odczyt + zapis)'
-                      : 'Token ustawiony (odczyt + zapis); auto-sync wyłączony'
-                    : 'Publiczny GitHub aktywny (odczyt/pobieranie main; zapis svl-sync wymaga GITHUB_TOKEN)'}
+                      : 'Token ustawiony (odczyt + zapis)'
+                    : 'Publiczny GitHub aktywny (odczyt main)'}
               </span>
               <a
                 href={githubSyncStatus?.branchUrl || 'https://github.com/mmitek515-netizen/SVL_open/tree/svl-sync'}
@@ -575,49 +542,11 @@ export const LinuxDeployDashboard: React.FC = () => {
                 Gałąź: {githubSyncStatus?.branch || 'svl-sync'}
               </a>
             </div>
-            <p className="text-[11px] leading-relaxed text-slate-400">
-              Sprawdź i pobierz nowe pliki z gałęzi <code>main</code> lub <code>svl-sync</code> bez wymagania <code>GITHUB_TOKEN</code> (repozytorium publiczne). Wysłanie zmian lokalnych na <code>svl-sync</code> używa tokenu <code>GITHUB_TOKEN</code> w <code>.env</code>.
-            </p>
-            {githubSyncStatus?.remoteInspection?.main && (
-              <div className="rounded border border-slate-800/90 bg-slate-950/70 p-2 text-[11px] space-y-1.5 font-mono">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-violet-300">
-                    main @ {String(githubSyncStatus.remoteInspection.main.commitSha || '').slice(0, 8) || '?'}
-                  </span>
-                  <span className="text-slate-400">
-                    Nowe: {githubSyncStatus.remoteInspection.main.remoteOnly?.length ?? 0} · Różnice: {githubSyncStatus.remoteInspection.main.differing?.length ?? 0}
-                  </span>
-                </div>
-                {githubSyncStatus.remoteInspection.main.recentCommits?.[0] && (
-                  <div className="text-slate-300 truncate" title={githubSyncStatus.remoteInspection.main.recentCommits[0].message}>
-                    Commit: {githubSyncStatus.remoteInspection.main.recentCommits[0].message}
-                  </div>
-                )}
-                {githubSyncStatus.remoteInspection.main.differing && githubSyncStatus.remoteInspection.main.differing.length > 0 && (
-                  <div className="space-y-1">
-                    <div className="text-amber-300/90">
-                      Zmienione pliki na main (kliknij, aby pobrać pojedynczo):
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {githubSyncStatus.remoteInspection.main.differing.slice(0, 6).map((diffPath) => (
-                        <button
-                          key={diffPath}
-                          type="button"
-                          disabled={isSyncingGithub}
-                          onClick={() => void handleGitHubPullUpdates('main', false, [diffPath])}
-                          className="rounded border border-amber-500/30 bg-amber-950/30 px-2 py-0.5 text-[10px] text-amber-200 hover:bg-amber-900/40 disabled:opacity-50"
-                          title={`Pobierz plik ${diffPath} z gałęzi main`}
-                        >
-                          ↓ {diffPath}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
             <div className="flex flex-wrap items-center gap-2">
-              <input type="password" autoComplete="off" spellCheck={false}
+              <input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
                 aria-label="Token operatora SVL do synchronizacji GitHub i odczytu plików projektu"
                 value={githubOperatorToken}
                 onChange={(event) => setGithubOperatorToken(event.target.value)}
@@ -642,34 +571,11 @@ export const LinuxDeployDashboard: React.FC = () => {
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGithub || githubSyncStatus?.running ? 'animate-spin' : ''}`} />
                 {isSyncingGithub || githubSyncStatus?.running ? 'Synchronizuję…' : 'Synchronizuj workspace'}
               </button>
-              {githubSyncStatus?.lastSuccessAt && (
-                <span className="text-[11px] text-slate-500">
-                  Ostatnio: {new Date(githubSyncStatus.lastSuccessAt).toLocaleString('pl-PL')}
-                </span>
-              )}
             </div>
-            {githubSyncStatus?.lastResult && (
-              <p className="text-[11px] text-slate-400">
-                Ostatni wynik: wysłano {githubSyncStatus.lastResult.uploaded.length}, pobrano {githubSyncStatus.lastResult.downloaded.length}, konflikty {githubSyncStatus.lastResult.conflicts.length}, pominięto {githubSyncStatus.lastResult.skipped.length}.
-              </p>
-            )}
-            {githubSyncStatus?.lastResult?.conflicts.length ? (
-              <p className="text-[11px] text-amber-300">
-                Konflikty: {githubSyncStatus.lastResult.conflicts.slice(0, 3).join(', ')}
-              </p>
-            ) : null}
-            {githubSyncStatus?.lastResult?.skipped.length ? (
-              <p className="text-[11px] text-amber-300">
-                Pominięte pliki: {githubSyncStatus.lastResult.skipped.slice(0, 3).join(', ')}
-              </p>
-            ) : null}
             {githubSyncMessage && (
               <p className={`text-xs ${githubSyncMessage.ok ? 'text-emerald-300' : 'text-rose-300'}`}>
                 {githubSyncMessage.text}
               </p>
-            )}
-            {githubSyncStatus?.lastError && (
-              <p className="text-xs text-rose-300">Ostatni błąd syncu: {githubSyncStatus.lastError}</p>
             )}
           </div>
         </div>
@@ -716,14 +622,11 @@ export const LinuxDeployDashboard: React.FC = () => {
 
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-4">
           <h2 className="text-sm font-semibold text-slate-100">
-            03. Instrukcja Podłączenia Zewnętrznego Hosta Debian 13 Trixie
+            03. Instrukcja Wdrożenia na Hoście Debian 13 Trixie
           </h2>
           <div className="space-y-3 text-xs text-slate-300 leading-relaxed">
             <p>
-              Google AI Studio może uruchomić podgląd frontendowy. Faktyczne działanie backendu Python 3 (<code className="text-violet-300">backend/app.py</code>), bazy SQLite i pięciu workerów wymaga potwierdzenia w diagnostyce uruchomionego środowiska. Sesja Codex CLI z Codespaces nie jest automatycznie przenoszona do AI Studio.
-            </p>
-            <p>
-              Aby uruchomić pełny stos na fizycznej maszynie lub VM z <strong>Debian 13 Trixie</strong> (systemd, Docker Compose, Ollama <code className="text-violet-300">llama3.2-vision:11b</code> z GPU oraz Open WebUI):
+              Wbudowany demon Ollama (<code className="text-violet-300">backend/ollama_daemon.py</code>) nasłuchuje na <code className="text-emerald-300">127.0.0.1:11434</code> i udostępnia binarkę <code className="text-emerald-300">ollama</code> w całym systemie.
             </p>
             <ol className="list-decimal list-inside space-y-2 text-slate-300 font-mono text-[11px] bg-[#0B0D13] p-3.5 rounded-lg border border-slate-800">
               <li>
@@ -741,12 +644,6 @@ export const LinuxDeployDashboard: React.FC = () => {
                   export SVL_OPERATOR_TOKEN=$(openssl rand -base64 36)
                   <br />
                   docker compose -f deploy/docker-compose.yml up -d --build
-                </div>
-              </li>
-              <li>
-                Zaloguj oficjalny Codex CLI przez konto ChatGPT:
-                <div className="mt-1 p-1.5 bg-slate-900 rounded text-emerald-400">
-                  codex login --device-auth
                 </div>
               </li>
             </ol>

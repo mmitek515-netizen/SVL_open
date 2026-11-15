@@ -1,7 +1,7 @@
 {
-  "name": "react-example",
+  "name": "svl-python-os",
   "private": true,
-  "version": "0.0.0",
+  "version": "5.6.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -11,8 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test:python": "python3 -m unittest discover -s backend/tests -p 'test_*.py' -v",
-    "test:unit": "npx --yes tsx --test src/utils/svlLogic.test.ts src/utils/githubSync.test.ts",
-    "test:mcp": "node --test mcp/codex-bridge.test.mjs"
+    "test:unit": "npx --yes tsx --test src/utils/svlLogic.test.ts src/utils/githubSync.test.ts"
   },
   "dependencies": {
     "@google/genai": "^3.2.0",

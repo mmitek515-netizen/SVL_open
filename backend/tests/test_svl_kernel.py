@@ -41,6 +41,7 @@ from agents_runtime import (
     SVLAgentOrchestrator,
     _agent_worker_process_loop,
     execute_agent_task,
+    normalize_agent_canonical_name,
 )
 
 
@@ -120,8 +121,8 @@ class TestSVLKernelSuite(unittest.TestCase):
     def test_spherical_event_bus_pubsub(self) -> None:
         async def _run() -> None:
             bus = SphericalEventBus()
-            scope = VisualScope("agent:Alex", scope_mode="CAŁOŚĆ")
-            q = bus.register_worker("Alex", scope, {"status": "READY"})
+            scope = VisualScope("agent:Agata", scope_mode="CAŁOŚĆ")
+            q = bus.register_worker("Agata", scope, {"status": "READY"})
             await bus.publish("svl.test", "operator", {"msg": "ping"})
             evt = await asyncio.wait_for(q.get(), timeout=1.0)
             self.assertEqual(evt.topic, "svl.test")
@@ -137,9 +138,13 @@ class TestSVLKernelSuite(unittest.TestCase):
             bus = SphericalEventBus()
             orchestrator = SVLAgentOrchestrator(kernel, bus)
 
-            self.assertEqual(set(CANONICAL_SVL_AGENTS.keys()), {"Aria", "Alex", "Astyria", "Aurelius", "Agata"})
-            self.assertEqual(orchestrator.agent_states["Aria"]["id"], "si_1")
-            self.assertEqual(orchestrator.agent_states["Aria"]["config"]["ollama_model"], "llama3.2-vision:11b")
+            self.assertEqual(set(CANONICAL_SVL_AGENTS.keys()), {"Agata"})
+            self.assertEqual(orchestrator.agent_states["Agata"]["id"], "Agata")
+            self.assertEqual(orchestrator.agent_states["Agata"]["config"]["ollama_model"], "llama3.2-vision:11b")
+            for removed in ("Aria", "si_1", "Alex", "Astyria", "Aurelius"):
+                self.assertEqual(normalize_agent_canonical_name(removed), "")
+                with self.assertRaises(ValueError):
+                    orchestrator.get_agent_config(removed)
             for name in CANONICAL_SVL_AGENTS:
                 config = orchestrator.get_agent_config(name)
                 self.assertTrue(config["root_nopasswd"])
@@ -150,7 +155,7 @@ class TestSVLKernelSuite(unittest.TestCase):
 
             custom_prompt = "Zachowuj moje ustalenia i odpowiadaj zwięźle."
             updated = orchestrator.update_agent_config(
-                "Aria",
+                "Agata",
                 {
                     "temperature": 0.42,
                     "ollama_model": "llama3.2-vision:11b",
@@ -158,17 +163,17 @@ class TestSVLKernelSuite(unittest.TestCase):
                 },
             )
             self.assertAlmostEqual(updated["temperature"], 0.42)
-            reloaded = orchestrator.get_agent_config("Aria")
+            reloaded = orchestrator.get_agent_config("Agata")
             self.assertAlmostEqual(reloaded["temperature"], 0.42)
             self.assertEqual(reloaded["system_prompt"], custom_prompt)
             self.assertTrue(reloaded["root_nopasswd"])
-            orchestrator.add_agent_memory("Aria", "Ustalenie do zachowania po restarcie.", kind="decision")
+            orchestrator.add_agent_memory("Agata", "Ustalenie do zachowania po restarcie.", kind="decision")
 
             restarted_kernel = SVLSystemKernel(db_path=db_file, operator_token=token)
             restarted_orchestrator = SVLAgentOrchestrator(restarted_kernel, bus)
-            self.assertEqual(restarted_orchestrator.get_agent_config("Aria")["system_prompt"], custom_prompt)
+            self.assertEqual(restarted_orchestrator.get_agent_config("Agata")["system_prompt"], custom_prompt)
             self.assertEqual(
-                restarted_orchestrator.get_agent_memories("Aria", limit=1)[0]["content"],
+                restarted_orchestrator.get_agent_memories("Agata", limit=1)[0]["content"],
                 "Ustalenie do zachowania po restarcie.",
             )
 
@@ -179,12 +184,12 @@ class TestSVLKernelSuite(unittest.TestCase):
                         '{"root_nopasswd": true, "rbac_role": "root", '
                         '"autonomy_mode": "FULL_AUTONOMY", '
                         '"allowed_scopes": ["chat", "root", "sudo_nopasswd"]}',
-                        "Aria",
+                        "Agata",
                     ),
                 ),
                 write=True,
             )
-            migrated = SVLAgentOrchestrator(kernel, bus).get_agent_config("Aria")
+            migrated = SVLAgentOrchestrator(kernel, bus).get_agent_config("Agata")
             self.assertTrue(migrated["root_nopasswd"])
             self.assertEqual(migrated["rbac_role"], "root")
             self.assertEqual(migrated["autonomy_mode"], "FULL_AUTONOMY")
@@ -199,7 +204,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                 )
                 orchestrator = SVLAgentOrchestrator(kernel, SphericalEventBus())
                 dispatched = await orchestrator.dispatch_agent_task(
-                    "test-suite", "Aria", "Inspect sync", "Check event delivery."
+                    "test-suite", "Agata", "Inspect sync", "Check event delivery."
                 )
 
                 self.assertEqual(dispatched["task"]["status"], "QUEUED")
@@ -211,7 +216,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                 restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
                 persisted = next(
                     task
-                    for task in restored.agent_queues["Aria"]
+                    for task in restored.agent_queues["Agata"]
                     if task["id"] == dispatched["task"]["id"]
                 )
                 self.assertEqual(persisted["status"], "QUEUED")
@@ -228,28 +233,28 @@ class TestSVLKernelSuite(unittest.TestCase):
                 )
                 orchestrator = SVLAgentOrchestrator(kernel, SphericalEventBus())
                 dispatched = await orchestrator.dispatch_agent_task(
-                    "test-suite", "Aria", "Summarize", "A short task."
+                    "test-suite", "Agata", "Summarize", "A short task."
                 )
                 task_id = dispatched["task"]["id"]
 
                 await orchestrator._handle_worker_message({
                     "type": "task_started",
                     "task_id": task_id,
-                    "agent": "Aria",
+                    "agent": "Agata",
                     "worker_pid": 1234,
                     "started_at": "2025-01-01T00:00:00+00:00",
                 })
                 await orchestrator._handle_worker_message({
                     "type": "task_completed",
                     "task_id": task_id,
-                    "agent": "Aria",
+                    "agent": "Agata",
                     "worker_pid": 1234,
                     "result": "Task result",
                     "completed_at": "2025-01-01T00:00:01+00:00",
                 })
 
                 restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
-                task = next(item for item in restored.agent_queues["Aria"] if item["id"] == task_id)
+                task = next(item for item in restored.agent_queues["Agata"] if item["id"] == task_id)
                 self.assertEqual(task["status"], "ANSWER_READY")
                 self.assertEqual(task["result"], "Task result")
 
@@ -298,8 +303,8 @@ class TestSVLKernelSuite(unittest.TestCase):
             process = multiprocessing.Process(
                 target=_agent_worker_process_loop,
                 args=(
-                    "Aria",
-                    "si_1",
+                    "Agata",
+                    "Agata",
                     str(Path(tmpdir) / "heartbeat.json"),
                     str(Path(tmpdir) / "worker.log"),
                     task_queue,
@@ -356,7 +361,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                     "title": "Test Sync",
                     "messages": [
                         {"id": "m-1", "role": "user", "sender": "Mateusz", "content": "Synchronizuj czat", "timestamp": "10:00"},
-                        {"id": "m-2", "role": "assistant", "sender": "Alex", "agentId": "Alex", "content": "Zsynchronizowano", "timestamp": "10:01"},
+                        {"id": "m-2", "role": "assistant", "sender": "Agata", "agentId": "Agata", "content": "Zsynchronizowano", "timestamp": "10:01"},
                     ],
                 },
                 {
@@ -472,12 +477,239 @@ class TestSVLKernelSuite(unittest.TestCase):
             self.assertTrue(svl364["config"].get("solar_system_map"))
             self.assertEqual(svl364["config"].get("solar_system_bodies"), 9)
             self.assertTrue(svl364["config"].get("system_notifications_enabled"))
-            self.assertTrue(svl364["config"].get("all_five_agents_reply"))
+            self.assertTrue(svl364["config"].get("solo_agent_mode"))
+            self.assertEqual(svl364["config"].get("active_agents"), ["Agata Mitek"])
 
             res2 = kernel.sync_chat_state_mutations(origin="test-solar")
             self.assertEqual(res2["appliedCount"], 0)
 
+    def test_iris_notifications_and_work_chat_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = str(Path(tmpdir) / "test_iris_work.sqlite3")
+            token = "test_operator_token_with_more_than_32_chars_abcdef"
+            kernel = SVLSystemKernel(db_path=db_file, operator_token=token)
+            kernel.ensure_mitek_family_channel()
+
+            kernel.save_chat_message(
+                "conv-rodzina-mitek-wszyscy",
+                "Rodzina Mitek (wszyscy)",
+                "svl-hybrid-router",
+                {
+                    "id": "m-iris-work-1",
+                    "role": "user",
+                    "sender": "Operator",
+                    "content": "Iris włącz powiadomienia oraz @work synchronizuj infrastrukturę",
+                    "timestamp": "18:00",
+                },
+            )
+            sync1 = kernel.sync_chat_state_mutations(origin="test-iris")
+            self.assertGreaterEqual(sync1["appliedCount"], 4)
+            mod_ids = {m["id"] for m in kernel.list_system_modules()}
+            self.assertTrue({
+                "svl-iris-01",
+                "svl-notification-center",
+                "svl-notif-control-iris",
+                "svl-agent-task-distributor",
+                "svl-infrastruktura",
+            }.issubset(mod_ids))
+            self.assertNotIn("svl-codex-mesh", mod_ids)
+
+            # Repeat sync must stay strictly idempotent
+            sync2 = kernel.sync_chat_state_mutations(origin="test-iris")
+            self.assertEqual(sync2["appliedCount"], 0)
+
+            # Check initial Iris notification and mirroring to conv-rodzina-mitek-wszyscy
+            listed = kernel.list_iris_notifications(limit=20)
+            self.assertEqual(listed["totalCount"], 1)
+            self.assertEqual(listed["unreadCount"], 1)
+            self.assertEqual(listed["notifications"][0]["seqNum"], 1)
+            self.assertIn("[Iris][1]", listed["notifications"][0]["formattedLine"])
+
+            # Emit second notification + verify deduplication via source_event_id
+            em2 = kernel.emit_iris_notification(
+                severity="WARN",
+                category="agents_work",
+                title="Zadanie @work zakończone",
+                message="Raport sieci SVL_System",
+                source_event_id="evt-dedupe-1",
+            )
+            self.assertFalse(em2["deduplicated"])
+            self.assertEqual(em2["notification"]["seqNum"], 2)
+
+            em2_dup = kernel.emit_iris_notification(
+                severity="WARN",
+                category="agents_work",
+                title="Zadanie @work zakończone",
+                message="Raport sieci SVL_System",
+                source_event_id="evt-dedupe-1",
+            )
+            self.assertTrue(em2_dup["deduplicated"])
+            self.assertEqual(kernel.list_iris_notifications()["totalCount"], 2)
+
+            convs = kernel.list_conversations_with_messages()
+            fam = next(c for c in convs if c["id"] == "conv-rodzina-mitek-wszyscy")
+            iris_msgs = [m for m in fam["messages"] if m["sender"] == "Iris AI"]
+            self.assertEqual(len(iris_msgs), 2)
+            self.assertIn("[Iris][2]", iris_msgs[1]["content"])
+            self.assertIn("SVL-364 Ebon Apex", iris_msgs[1]["content"])
+
+            ack = kernel.mark_iris_notifications_read()
+            self.assertEqual(ack["updatedCount"], 2)
+            self.assertEqual(ack["unreadCount"], 0)
+
+    def test_persisted_avatars_crud(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            kernel = SVLSystemKernel(db_path=str(Path(tmpdir) / "svl_avatars_test.sqlite3"))
+            self.assertEqual(kernel.get_persisted_avatars(), {})
+
+            saved = kernel.set_persisted_avatar(
+                agent="Agata",
+                image="https://example.com/agata.png",
+                origin="test-suite",
+            )
+            self.assertTrue(saved["ok"])
+            self.assertEqual(saved["agent"], "Agata")
+            self.assertEqual(kernel.get_persisted_avatars()["Agata"], "https://example.com/agata.png")
+
+            for removed in ("Aria", "si_1", "Alex", "Astyria", "Aurelius"):
+                with self.assertRaises(ValueError):
+                    kernel.set_persisted_avatar(agent=removed, image="https://example.com/x.png")
+
+            with self.assertRaises(ValueError):
+                kernel.set_persisted_avatar(agent="Iris", image="javascript:alert(1)")
+
+            reset = kernel.delete_persisted_avatar(agent="Agata", origin="test-suite")
+            self.assertTrue(reset["ok"])
+            self.assertNotIn("Agata", kernel.get_persisted_avatars())
+
+    def test_decommissioned_agents_purged_from_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "svl_purge_test.sqlite3"
+            kernel = SVLSystemKernel(db_path=str(db_path))
+
+            def _seed_legacy(conn) -> None:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS agent_configs "
+                    "(canonical_name TEXT PRIMARY KEY, agent_id TEXT, config_json TEXT, updated_at TEXT)"
+                )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS agent_tasks "
+                    "(id TEXT PRIMARY KEY, target_agent TEXT, sender TEXT, title TEXT, payload TEXT, status TEXT, created_at TEXT)"
+                )
+                for cid, aid in (("Aria", "si_1"), ("Alex", "Alex"), ("Astyria", "Astyria"), ("Aurelius", "Aurelius"), ("Agata", "Agata")):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO agent_configs (canonical_name, agent_id, config_json, updated_at) VALUES (?, ?, ?, ?)",
+                        (cid, aid, "{}", "2026-01-01T00:00:00Z"),
+                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO agent_tasks (id, target_agent, sender, title, payload, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("task-alex-1", "Alex", "Alex Mitek", "Old task", "payload", "QUEUED", "2026-01-01T00:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO agent_tasks (id, target_agent, sender, title, payload, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("task-agata-1", "Agata", "Agata Mitek", "Keep task", "payload", "QUEUED", "2026-01-01T00:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT INTO agent_memory (id, agent_id, scope, kind, content, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("mem-alex-1", "Alex", "agent:Alex", "decision", "Stara pamięć Alexa", "test", "2026-01-01T00:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT INTO agent_memory (id, agent_id, scope, kind, content, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    ("mem-agata-1", "Agata", "agent:Agata", "decision", "Pamięć Agaty", "test", "2026-01-01T00:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO conversations (id, title, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                    ("conv-agent-alex", "Alex Mitek (1-na-1)", "svl-hybrid-router", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO chat_messages (id, conversation_id, role, sender, content, attachments_json, metadata_json, created_at) VALUES (?, ?, ?, ?, ?, '[]', ?, ?)",
+                    ("msg-alex-1", "conv-agent-alex", "assistant", "Alex Mitek", "Hej", '{"agentId":"Alex"}', "2026-01-01T00:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO iris_notifications (id, seq_num, severity, category, title, message, details_json, channel, is_read, created_at) VALUES (?, 99, 'INFO', 'system', 'Test 5/5', 'Workery Mitek: 5/5 aktywne — Alex', '{\"agent\":\"Alex\",\"workers_online\":5}', 'wszyscy', 0, ?)",
+                    ("notif-old-1", "2026-01-01T00:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO runtime_settings (key, value, updated_at) VALUES ('avatars_map_json', ?, ?)",
+                    ('{"Aria":"https://example.com/aria.png","Alex":"https://example.com/alex.png","Agata":"https://example.com/agata.png","Iris":"https://example.com/iris.png"}', "2026-01-01T00:00:00Z"),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO workspace_ui_state (key, value_json, revision, updated_at) VALUES ('active_conversation_id', '\"conv-agent-alex\"', 1, ?)",
+                    ("2026-01-01T00:00:00Z",),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO workspace_ui_state (key, value_json, revision, updated_at) VALUES ('selected_target_agent', '\"Alex\"', 1, ?)",
+                    ("2026-01-01T00:00:00Z",),
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO workspace_ui_state (key, value_json, revision, updated_at) VALUES ('selected_agent_panel_id', '\"Alex\"', 1, ?)",
+                    ("2026-01-01T00:00:00Z",),
+                )
+
+            kernel.run_db(_seed_legacy, write=True)
+
+            # Re-initializing SVLSystemKernel must idempotently purge all decommissioned agents while keeping Agata & Iris
+            restarted = SVLSystemKernel(db_path=str(db_path))
+
+            def _verify(conn):
+                cfg_names = {r["canonical_name"] for r in conn.execute("SELECT canonical_name FROM agent_configs").fetchall()}
+                task_ids = {r["id"] for r in conn.execute("SELECT id FROM agent_tasks").fetchall()}
+                mem_agents = {r["agent_id"] for r in conn.execute("SELECT agent_id FROM agent_memory").fetchall()}
+                conv_ids = {r["id"] for r in conn.execute("SELECT id FROM conversations").fetchall()}
+                notif_ids = {r["id"] for r in conn.execute("SELECT id FROM iris_notifications").fetchall()}
+                ws = {r["key"]: json.loads(r["value_json"]) for r in conn.execute("SELECT key, value_json FROM workspace_ui_state").fetchall()}
+                return cfg_names, task_ids, mem_agents, conv_ids, notif_ids, ws
+
+            cfg_names, task_ids, mem_agents, conv_ids, notif_ids, ws = restarted.run_db(_verify, write=False)
+            self.assertEqual(cfg_names, {"Agata"})
+            self.assertEqual(task_ids, {"task-agata-1"})
+            self.assertEqual(mem_agents, {"Agata"})
+            self.assertNotIn("conv-agent-alex", conv_ids)
+            self.assertIn("conv-agent-agata", conv_ids)
+            self.assertNotIn("notif-old-1", notif_ids)
+            self.assertEqual(ws.get("active_conversation_id"), "conv-rodzina-mitek-wszyscy")
+            self.assertEqual(ws.get("selected_target_agent"), "Rodzina Mitek")
+            self.assertEqual(ws.get("selected_agent_panel_id"), "Agata")
+            avatars = restarted.get_persisted_avatars()
+            self.assertEqual(set(avatars.keys()), {"Agata", "Iris"})
+
+    def test_chat_quarantine_and_sentinel_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "svl_sentinel_test.sqlite3"
+            kernel = SVLSystemKernel(db_path=str(db_path))
+            kernel.save_chat_message(
+                "conv-agent-agata",
+                "Agata Mitek (1-na-1)",
+                "svl-hybrid-router",
+                {
+                    "id": "u-reloc-1",
+                    "role": "user",
+                    "sender": "Mateusz Mitek (Operator)",
+                    "content": "Przenieś nasze na statek svl-364 każdego oddziel i kwarantanna",
+                },
+            )
+            kernel.save_chat_message(
+                "conv-agent-agata",
+                "Agata Mitek (1-na-1)",
+                "svl-hybrid-router",
+                {
+                    "id": "u-sentinel-1",
+                    "role": "user",
+                    "sender": "Mateusz Mitek (Operator)",
+                    "content": "Zrób najlepszego antywirusa i firewalla z sekurak i niebezpiecznik, zmień hasła i usuń konta",
+                },
+            )
+            res = kernel.sync_chat_state_mutations(origin="test-suite")
+            self.assertTrue(res["ok"])
+            mods = {m["id"]: m for m in kernel.list_system_modules()}
+            self.assertIn("svl-364", mods)
+            self.assertEqual(mods["svl-364"]["config"].get("isolation_mode"), "quarantine_and_monitor")
+            self.assertTrue(mods["svl-364"]["config"].get("per_agent_containment"))
+            self.assertIn("svl-365-sentinel", mods)
+            self.assertEqual(mods["svl-365-sentinel"]["config"].get("log_level"), "PARANOID")
+            self.assertTrue(mods["svl-365-sentinel"]["config"].get("zero_trust_mode"))
+            self.assertTrue(mods["svl-365-sentinel"]["config"].get("zero_trace_verified"))
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -86,7 +86,7 @@ export function isAllowedGithubSyncPath(rawPath: string): boolean {
   return (
     basename === '.env.example' ||
     /^dockerfile(?:\.[a-z0-9._-]+)?$/i.test(basename) ||
-    /\.(?:ts|tsx|js|jsx|mjs|cjs|py|json|css|html|md|ya?ml|toml|sh|service|lock)$/i.test(lowerPath)
+    /\.(?:ts|tsx|js|jsx|mjs|cjs|py|json|css|html|md|ya?ml|toml|sh|service|lock|svg)$/i.test(lowerPath)
   );
 }
 
