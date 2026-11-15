@@ -1079,12 +1079,82 @@ async def handle_api_request(
                 expected_revision=expected_rev,
             )
             module_warning = None
+            chat_mutations = None
             if not saved.get("deduplicated") and msg.get("role") == "user":
                 try:
-                    runtime.kernel.sync_chat_state_mutations(origin=origin, correlation_id=corr)
+                    chat_mutations = runtime.kernel.sync_chat_state_mutations(
+                        origin=origin,
+                        correlation_id=corr,
+                    )
                     runtime.apply_active_module_settings()
                 except Exception as exc:
                     module_warning = f"Zmiany modułów z czatu nie zostały zastosowane: {exc}"
+
+            if chat_mutations and chat_mutations.get("appliedCount", 0) > 0:
+                modules_by_id = {
+                    str(module.get("id")): module
+                    for module in chat_mutations.get("modules", [])
+                    if isinstance(module, dict) and module.get("id")
+                }
+                changed_module_ids = list(dict.fromkeys(
+                    str(module_id)
+                    for module_id in chat_mutations.get("materializedModules", [])
+                    if module_id
+                ))
+                applied_actions = []
+                for module_id in changed_module_ids:
+                    module = modules_by_id.get(module_id, {})
+                    module_name = str(module.get("name") or module_id)
+                    applied_actions.append({
+                        "tool": "sync_chat_state_mutations",
+                        "entity": "module",
+                        "entityId": module_id,
+                        "revision": module.get("revision"),
+                        "serverRevision": chat_mutations.get("serverRevision"),
+                        "summary": f"Zapisano zmianę w module {module_name} na podstawie polecenia czatu.",
+                        "ok": True,
+                    })
+
+                if applied_actions:
+                    source_message_id = str(msg.get("id") or uuid.uuid4().hex)[:80]
+                    report_message = {
+                        "id": f"chat-mutation-{source_message_id}",
+                        "role": "system",
+                        "sender": "SVL System",
+                        "modelUsed": "SVL Chat Sync",
+                        "timestamp": datetime.now(timezone.utc).strftime("%H:%M"),
+                        "content": (
+                            f"Zastosowano {len(applied_actions)} zmian(y) wynikających z polecenia czatu."
+                            + (f"\n\nOstrzeżenie: {module_warning}" if module_warning else "")
+                        ),
+                        "appliedActions": applied_actions,
+                    }
+                    runtime.kernel.save_chat_message(
+                        cid,
+                        title,
+                        model,
+                        report_message,
+                        origin=origin,
+                        correlation_id=corr,
+                        event_id=f"chat-mutation-{source_message_id}",
+                    )
+            elif module_warning:
+                warning_message = {
+                    "id": f"chat-mutation-warning-{str(msg.get('id') or uuid.uuid4().hex)[:64]}",
+                    "role": "system",
+                    "sender": "SVL System",
+                    "modelUsed": "SVL Chat Sync",
+                    "timestamp": datetime.now(timezone.utc).strftime("%H:%M"),
+                    "content": module_warning,
+                }
+                runtime.kernel.save_chat_message(
+                    cid,
+                    title,
+                    model,
+                    warning_message,
+                    origin=origin,
+                    correlation_id=corr,
+                )
             return 200, {
                 **saved,
                 "conversations": runtime.kernel.list_conversations_with_messages(),
