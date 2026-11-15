@@ -30,6 +30,10 @@ if ! command -v codex >/dev/null 2>&1; then
   echo 'Install official Codex first: sudo npm install -g @openai/codex' >&2
   exit 1
 fi
+if ! command -v flock >/dev/null 2>&1; then
+  echo 'util-linux flock is required to serialize the shared Codex account.' >&2
+  exit 1
+fi
 
 install -d -o root -g svlos -m 0750 /etc/svl-os
 install -d -o svlos -g svlos -m 0700 /var/lib/svl-os/svlos
