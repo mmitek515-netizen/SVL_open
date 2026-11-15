@@ -34,6 +34,7 @@ import {
   parseChatInteractiveToken,
   safeFetchJson,
   getSvlOperatorAccessToken,
+  setSvlOperatorAccessToken,
   setSvlCodexAccessToken,
   validateOllamaHostUrl,
 } from '../utils/svlLogic';
@@ -998,7 +999,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               if (window.confirm('Czy na pewno chcesz wyczyścić wszystkie wiadomości i odetkać bufory czatu?')) {
                 const credential = getSvlOperatorAccessToken() ||
                   window.prompt('Podaj SVL_OPERATOR_TOKEN, aby wyczyścić historię wszystkich rozmów:') || '';
-                const cleared = await clearAllConversationsAndBuffers(credential);
+                if (credential) setSvlOperatorAccessToken(credential);
+                const cleared = await clearAllConversationsAndBuffers();
                 if (cleared.ok) setMobileSidebarOpen(false);
                 else setChatActionError(cleared.error || 'Nie udało się wyczyścić rozmów w SQLite.');
               }

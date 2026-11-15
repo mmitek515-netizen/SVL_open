@@ -1348,7 +1348,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [activeConvIdState, notifyLocalMutation, setActiveConvId, tabOrigin],
   );
 
-  const clearAllConversationsAndBuffers = useCallback(async (accessToken = '') => {
+  const clearAllConversationsAndBuffers = useCallback(async () => {
+    const accessToken = getSvlOperatorAccessToken();
     // SQLite is authoritative. Until the server confirms the destructive action
     // do NOT erase messages or the pending-write tracking sets.
     const eventId = createUniqueId('evt-clear-all');

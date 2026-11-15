@@ -213,12 +213,18 @@ test('GitHub update rejects merge conflicts without attempting a file write', as
     if (url.endsWith('/merges')) {
       return Response.json({ message: 'Conflict' }, { status: 409 });
     }
-    if (init.method === 'PUT') writeAttempted = true;
-    return Response.json({ message: 'Unexpected request' }, { status: 500 });
+    if (url.includes('/contents/')) {
+      if (init.method === 'PUT') {
+        writeAttempted = true;
+        return Response.json({ commit: { sha: 'write-sha' } }, { status: 201 });
+      }
+      return Response.json({ message: 'Not Found' }, { status: 404 });
+    }
+    return Response.json({ message: 'Unexpected' }, { status: 500 });
   };
   const service = new GitHubSyncService({ token: 'test-token', fetcher });
 
-  await assert.rejects(service.updateFile('src/utils/sample.ts', 'export const value = 1;'), /Merge conflict/);
+  await assert.rejects(service.syncDefaultBranch(), /Merge conflict/);
   assert.equal(writeAttempted, false);
 });
 
@@ -234,7 +240,7 @@ test('automatic sync downloads remote-only changes into clean local files', asyn
       }),
     });
 
-    const result = await service.syncWorkspace(root);
+    const result = await service.syncWorkspace(root, { applyRemoteChanges: true });
 
     assert.deepEqual(result.downloaded, ['src/sample.ts']);
     assert.deepEqual(result.conflicts, []);
@@ -264,7 +270,7 @@ test('automatic sync pulls default-branch updates instead of uploading a stale c
     };
     const service = new GitHubSyncService({ token: 'test-token', fetcher: aheadFetcher });
 
-    const result = await service.syncWorkspace(root);
+    const result = await service.syncWorkspace(root, { applyRemoteChanges: true });
 
     assert.deepEqual(result.downloaded, ['src/sample.ts']);
     assert.equal(requests.some((request) => request.method === 'PUT'), false);

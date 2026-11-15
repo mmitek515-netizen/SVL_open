@@ -112,12 +112,12 @@ async function runCodex(
       if (stream === 'stdout') stdout += buf.toString('utf8');
       else stderr += buf.toString('utf8');
     };
-    child.stdout.on('data', (b: Buffer) => consume(b, 'stdout'));
-    child.stderr.on('data', (b: Buffer) => consume(b, 'stderr'));
+    child.stdout?.on('data', (b: Buffer) => consume(b, 'stdout'));
+    child.stderr?.on('data', (b: Buffer) => consume(b, 'stderr'));
     child.on('error', () => complete(127));
     child.on('close', code => complete(code ?? 1));
-    child.stdin.on('error', () => {});
-    child.stdin.end(stdin);
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(stdin);
   });
 }
 
