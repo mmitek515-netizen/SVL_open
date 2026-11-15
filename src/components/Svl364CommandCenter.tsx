@@ -153,6 +153,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const [diagnosticsCheckedAt, setDiagnosticsCheckedAt] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isEmittingReport, setIsEmittingReport] = useState(false);
+  const [isScanningAv, setIsScanningAv] = useState(false);
   const [reportFeedback, setReportFeedback] = useState<string | null>(null);
   const [logAccessToken, setLogAccessToken] = useState('');
   const [runtimeLogs, setRuntimeLogs] = useState<
@@ -214,6 +215,40 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
       }
     } finally {
       setIsEmittingReport(false);
+    }
+  };
+
+  const handleRunAntivirusScan = async () => {
+    if (isScanningAv) return;
+    setIsScanningAv(true);
+    setReportFeedback(null);
+    try {
+      const res = await safeFetchJson<{
+        ok: boolean;
+        filesScanned?: number;
+        totalThreatsRemoved?: number;
+        serverRevision?: number;
+        error?: string;
+      }>('/api/security/antivirus/scan', {
+        method: 'POST',
+        timeoutMs: 25000,
+        body: JSON.stringify({
+          emitToChat: true,
+          emitToIris: true,
+          origin: 'svl364-command-center-av',
+        }),
+      });
+      await triggerFullSync('svl364_antivirus_scan');
+      await refreshDomainModules(['notifications', 'chat', 'health', 'kernel', 'modules']);
+      if (res.ok && res.data?.ok) {
+        setReportFeedback(
+          `SVL-365 Sentinel AV: przeskanowano ${res.data.filesScanned || 0} plików (SHA-256), usunięto zagrożenia: ${res.data.totalThreatsRemoved || 0}, status: CLEAN_VERIFIED · rev ${res.data.serverRevision || serverRevision}`,
+        );
+      } else {
+        setReportFeedback(res.error || res.data?.error || 'Błąd skanowania SVL-365 Sentinel AV.');
+      }
+    } finally {
+      setIsScanningAv(false);
     }
   };
 
@@ -482,6 +517,15 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleRunAntivirusScan()}
+              disabled={isScanningAv}
+              className="flex items-center gap-2 rounded-lg border border-emerald-500/50 bg-emerald-500/15 px-3 py-2 text-xs sm:text-sm font-medium text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-40 cursor-pointer"
+            >
+              <Shield size={15} className={isScanningAv ? 'animate-spin' : ''} />
+              {isScanningAv ? 'Skanowanie SVL-365 AV...' : 'Skanuj i Usuń Wirusy (SVL-365 AV)'}
+            </button>
             <button
               type="button"
               onClick={() => void handleEmitDetailedReport()}

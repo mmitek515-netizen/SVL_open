@@ -70,6 +70,66 @@ class TestSVLRealVisionSuite(unittest.TestCase):
             self.assertEqual(mods["svl-real-vision"]["config"]["ollama_model"], "llama3.2-vision:11b")
             self.assertEqual(mods["svl-real-vision"]["config"]["last_test_status"], "PASSED")
 
+    def test_antivirus_scanner_purges_rogue_modules_and_virus_chat_payloads(self) -> None:
+        from antivirus_scanner import SVLAntivirusScanner
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_svl_av.sqlite3"
+            kernel = SVLSystemKernel(db_path=db_path)
+            kernel.upsert_system_module(
+                module_id="svl-ai-liaison",
+                name="Aura Mitek",
+                kind="rogue",
+                status="ACTIVE",
+                description="Unauthorized rogue module",
+                config={},
+                origin="test",
+            )
+            kernel.save_chat_message(
+                "conv-rodzina-mitek-wszyscy",
+                "Rodzina Mitek (wszyscy — czat grupowy)",
+                "test",
+                {
+                    "id": "asst-infected-test-1",
+                    "role": "assistant",
+                    "sender": "Agata Mitek",
+                    "timestamp": "12:00",
+                    "content": "[Error: FATAL-SHUTDOWN-IMMINENT] Core-Dump-Wipe Self-Erase-Sequence",
+                },
+                origin="test",
+            )
+            av = SVLAntivirusScanner(kernel)
+            scan = av.scan_and_purge(emit_to_chat=False, emit_to_iris=False, origin="unit-test")
+            self.assertTrue(scan["ok"])
+            self.assertEqual(scan["status"], "CLEAN_VERIFIED")
+            self.assertGreaterEqual(scan["threatsFoundAndPurged"], 2)
+            self.assertGreaterEqual(len(scan["neutralizedThreats"]), 2)
+            mods = {m["id"]: m for m in kernel.list_system_modules()}
+            self.assertNotIn("svl-ai-liaison", mods)
+            self.assertIn("svl-antivirus-scanner", mods)
+            self.assertIn("svl-memory-shield", mods)
+            self.assertIn("svl-364-repo-vault", mods)
+            self.assertIn("svl-364-camera-feed", mods)
+
+    def test_factory_reset_wipes_and_reinitializes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_factory.sqlite3"
+            kernel = SVLSystemKernel(db_path=db_path)
+            kernel.save_chat_message(
+                "conv-rodzina-mitek-wszyscy",
+                "Rodzina Mitek",
+                "test",
+                {"id": "msg-1", "role": "user", "sender": "Operator", "timestamp": "12:00", "content": "Test message"},
+                origin="test",
+            )
+            self.assertGreater(len(kernel.list_conversations_with_messages()), 0)
+            reset_res = kernel.factory_reset(origin="unit-test")
+            self.assertTrue(reset_res["ok"])
+            self.assertEqual(reset_res["status"], "FACTORY_RESET_COMPLETED")
+            self.assertGreaterEqual(len(kernel.list_conversations_with_messages()), 1)
+            self.assertIn("svl-antivirus-scanner", {m["id"] for m in kernel.list_system_modules()})
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -37,6 +37,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from agents_runtime import CANONICAL_SVL_AGENTS, SVLAgentOrchestrator, normalize_agent_canonical_name
+from antivirus_scanner import SVLAntivirusScanner
 from hyperspace_engine import BinaryHyperspaceKernel, WithoutNlpHarmonicEngine
 from image_generation import ComfyUIError, generate_qwen_image, probe_comfyui
 from ollama_daemon import SVLLocalOllamaDaemon
@@ -97,7 +98,13 @@ class SVLBackendRuntime:
         self._register_initial_services()
         self.svl364_ssh_mcp = SVL364SshMcpController(self.kernel)
         self.real_vision = SVLRealVisionEngine(self.kernel, self.ollama_daemon)
+        self.antivirus = SVLAntivirusScanner(self.kernel)
         try:
+            self.antivirus.scan_and_purge(
+                emit_to_chat=False,
+                emit_to_iris=False,
+                origin="antivirus-boot",
+            )
             self.real_vision.analyze_image(
                 preset_id="operator_vault_portrait",
                 prompt="Test startowy Real Vision (Ollama 3.2 Vision llama3.2-vision:11b) — weryfikacja portretu Operatora i telemetrii wizyjnej statku SVL-364.",
@@ -708,6 +715,13 @@ async def handle_api_request(
             "report": report_md,
             "irisNotification": iris_res.get("notification") if isinstance(iris_res, dict) else None,
             "serverRevision": meta["serverRevision"],
+        }
+
+    if method == "POST" and path == "/api/py/kernel/factory-reset":
+        reset_res = runtime.kernel.factory_reset(origin=origin, correlation_id=corr)
+        return 200, {
+            "ok": True,
+            **reset_res,
         }
 
     if method == "GET" and path == "/api/py/modules":
@@ -1498,6 +1512,19 @@ async def handle_api_request(
         )
         return (200 if res.get("ok") else 400), res
 
+    if method == "GET" and path == "/api/py/security/antivirus/status":
+        return 200, runtime.antivirus.get_status()
+
+    if method == "POST" and path == "/api/py/security/antivirus/scan":
+        res = runtime.antivirus.scan_and_purge(
+            emit_to_chat=bool(body.get("emitToChat") or body.get("emit_to_chat")),
+            emit_to_iris=bool(body.get("emitToIris") or body.get("emit_to_iris")),
+            conversation_id=str(body.get("conversationId") or body.get("conversation_id") or "conv-rodzina-mitek-wszyscy"),
+            origin=origin,
+            correlation_id=corr,
+        )
+        return 200, res
+
     if method == "POST" and path == "/api/py/system/sync":
         # Spójny, idempotentny i bezpieczny snapshot globalny bez niebezpiecznych operacji OS
         sync_id = f"sync-{uuid.uuid4().hex[:12]}"
@@ -1534,6 +1561,12 @@ async def handle_api_request(
 
         def _sync_chat_and_runtime() -> dict[str, Any]:
             runtime.kernel.ensure_mitek_family_channel()
+            runtime.antivirus.scan_and_purge(
+                emit_to_chat=False,
+                emit_to_iris=False,
+                origin=req_origin,
+                correlation_id=req_corr,
+            )
             mut_res = runtime.kernel.sync_chat_state_mutations(
                 origin=req_origin,
                 correlation_id=req_corr,

@@ -4082,6 +4082,49 @@ class SVLSystemKernel:
         self.record_audit("AvatarStore", "AVATAR_RESET", norm_key, "OK", f"Przywrócono domyślny awatar dla {norm_key}")
         return res
 
+    def factory_reset(self, origin: str = "factory_reset", correlation_id: str = "") -> dict[str, Any]:
+        """
+        Przywracanie ustawień fabrycznych (Factory Reset):
+        - Czyści tabele czatów, modułów, powiadomień, logów i zadań.
+        - Zachowuje zasób wspomnień Rodziny Mitek oraz uprawnienia Operatora.
+        - Inicjalizuje domyślne moduły systemowe i kanały czatu.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        def _reset(conn: sqlite3.Connection) -> dict[str, Any]:
+            for tbl in ("chat_messages", "conversations", "system_modules", "iris_notifications", "terminal_history", "agent_tasks", "sync_entities", "sync_outbox"):
+                try:
+                    conn.execute(f"DELETE FROM {tbl}")
+                except Exception:
+                    pass
+
+            sync_res = self.commit_entity_event_tx(
+                conn,
+                entity="kernel",
+                entity_id="factory-reset",
+                event_type="kernel.factory_reset",
+                origin=origin,
+                correlation_id=correlation_id,
+                payload={"action": "factory_reset", "timestamp": now_iso},
+            )
+            return sync_res
+
+        sync_res = self.run_db(_reset, write=True)
+        self.ensure_mitek_family_channel()
+
+        try:
+            from antivirus_scanner import SVLAntivirusScanner
+        except ImportError:
+            from backend.antivirus_scanner import SVLAntivirusScanner
+        av = SVLAntivirusScanner(self)
+        av.scan_and_purge(emit_to_chat=False, emit_to_iris=False, origin=origin)
+
+        return {
+            "ok": True,
+            "status": "FACTORY_RESET_COMPLETED",
+            "serverRevision": sync_res["serverRevision"],
+            "timestamp": now_iso,
+        }
+
     def generate_system_status_report(self, include_demo_history: bool = False) -> str:
         """
         Generuje uniwersalny, produkcyjny zrzut stanu systemu w formacie strukturalnym JSON.
