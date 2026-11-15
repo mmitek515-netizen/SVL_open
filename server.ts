@@ -1171,12 +1171,8 @@ async function startServer() {
 
     const selectedDisplayName = formatAgentDisplayName(selectedAgent);
 
-    const [healthRes, agentsRes] = await Promise.all([
-      callPythonBackend('GET', '/api/py/health', undefined, corrId),
-      callPythonBackend('GET', '/api/py/agents/status', undefined, corrId),
-    ]);
-    const ollamaInfo = healthRes.data?.ollama || {};
-    const ollamaHost = String(ollamaInfo.ollama_host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
+    // Codex OAuth is independent of the Python kernel and Ollama.
+    // Resolve history before either provider path so Codex works when Python is down.
     const conversationHistory = buildChatHistoryPayload(Array.isArray(history) ? history : [], 16);
     const missionVerificationContext = [...conversationHistory.map((turn) => turn.content), cleanMsg].join('\n');
     // Codex CLI uses the logged-in ChatGPT account in THIS runtime, not a public API.
@@ -1214,11 +1210,18 @@ async function startServer() {
         reply: replyText,
         followUpMessages: [],
         appliedActions: [],
-        latestServerRevision: Number(healthRes.data?.serverRevision || 0),
+        latestServerRevision: null,
       });
       return;
     }
 
+    // Only non-Codex providers need Python health, agent state and Ollama.
+    const [healthRes, agentsRes] = await Promise.all([
+      callPythonBackend('GET', '/api/py/health', undefined, corrId),
+      callPythonBackend('GET', '/api/py/agents/status', undefined, corrId),
+    ]);
+    const ollamaInfo = healthRes.data?.ollama || {};
+    const ollamaHost = String(ollamaInfo.ollama_host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
 
     const agentState = (agentsRes.data?.agents || []).find((a: any) => a.canonical_name === selectedAgent) || {};
     const agentConfig = agentState.config || {};
