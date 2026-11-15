@@ -264,13 +264,22 @@ def create_report(port: int, logs: bool, limit: int, mcp_port: int = 8787) -> di
         report["note"] = "SVL gateway not reachable on this local port; GitHub main is not proof of deployment"
         return report
 
+    # Explicitly detect older unsafe gateway builds that accepted an empty token.
+    anonymous_status = local_api("/api/operator/status", port=port)
     operator_status = local_api(
         "/api/operator/status", port=port,
         token=operator, header="X-SVL-Operator-Token",
     )
+    anonymous_accepted = (
+        anonymous_status.get("httpStatus") == 200
+        and bool((anonymous_status.get("data") or {}).get("authenticated"))
+    )
     report["operator"] = {
         "authenticated": bool((operator_status.get("data") or {}).get("authenticated")),
         "httpStatus": operator_status.get("httpStatus"),
+        "anonymousDenied": anonymous_status.get("httpStatus") == 401,
+        "securityWarning": "CRITICAL: gateway accepts requests without operator token"
+        if anonymous_accepted else None,
     }
 
     codex = local_api(
