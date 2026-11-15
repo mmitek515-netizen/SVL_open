@@ -750,6 +750,7 @@ async function callPythonBackend(
   body?: Record<string, unknown>,
   correlationId?: string,
   maxConnectAttempts = 6,
+  timeoutMs = 20000,
 ): Promise<{ status: number; data: any }> {
   const url = `${PYTHON_BASE_URL}${endpoint}`;
   const headers: Record<string, string> = { Accept: 'application/json' };
@@ -762,7 +763,7 @@ async function callPythonBackend(
         method,
         headers,
         body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(20000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       const rawText = await resp.text();
       const trimmed = rawText.trim();
@@ -1021,7 +1022,15 @@ async function startServer() {
     const queryStr = new URLSearchParams(req.query as Record<string, string>).toString();
     const fullEndpoint = queryStr ? `${req.path}?${queryStr}` : req.path;
     const method = req.method === 'POST' ? 'POST' : 'GET';
-    const result = await callPythonBackend(method, fullEndpoint, method === 'POST' ? req.body : undefined, corrId);
+    const timeoutMs = req.path === '/api/py/images/generate' ? 900000 : 20000;
+    const result = await callPythonBackend(
+      method,
+      fullEndpoint,
+      method === 'POST' ? req.body : undefined,
+      corrId,
+      6,
+      timeoutMs,
+    );
     if (method === 'POST' && result.status >= 200 && result.status < 300) {
       if (result.data?.event) {
         publishOutboxEvent(result.data.event);

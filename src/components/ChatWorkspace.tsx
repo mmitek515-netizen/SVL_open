@@ -742,6 +742,76 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     }
   };
 
+  const handleGenerateImage = async () => {
+    const prompt = input.trim();
+    const targetConvObj = activeConv;
+    if (!prompt || sendingRef.current || !targetConvObj) return;
+
+    sendingRef.current = true;
+    setIsSending(true);
+    setChatActionError(null);
+    const targetTitle = targetConvObj.messages.length <= 1
+      ? prompt.slice(0, 42)
+      : targetConvObj.title;
+    const timestamp = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+
+    try {
+      const userMsg: ChatMessage = {
+        id: createUniqueId('user-image'),
+        role: 'user',
+        sender: 'Mateusz Mitek (Operator)',
+        timestamp,
+        content: `[Generowanie obrazu] ${prompt}`,
+      };
+      const savedPrompt = await appendAndPersistChatMessage(
+        targetConvObj.id,
+        targetTitle,
+        selectedModel,
+        userMsg,
+      );
+      if (!savedPrompt.ok) {
+        setChatActionError(`Błąd zapisu promptu: ${savedPrompt.error || 'Nie zapisano wiadomości.'}`);
+        return;
+      }
+
+      setInput('');
+      const result = await safeFetchJson<any>('/api/py/images/generate', {
+        method: 'POST',
+        timeoutMs: 900000,
+        body: JSON.stringify({ prompt, origin: tabOrigin }),
+      });
+      if (!result.ok || !result.data?.ok || !result.data?.image) {
+        setChatActionError(result.error || result.data?.error || 'Silnik graficzny nie zwrócił obrazu.');
+        return;
+      }
+
+      const imageMsg: ChatMessage = {
+        id: createUniqueId('assistant-image'),
+        role: 'assistant',
+        sender: 'SVL Image Engine',
+        modelUsed: 'ComfyUI · Qwen Image 2.1',
+        timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+        content: 'Wygenerowano obraz przez Qwen Image 2.1.',
+        imagePreview: result.data.image,
+      };
+      const savedImage = await appendAndPersistChatMessage(
+        targetConvObj.id,
+        targetTitle,
+        selectedModel,
+        imageMsg,
+      );
+      if (!savedImage.ok) {
+        setChatActionError(`Obraz wygenerowano, ale nie zapisano go w czacie: ${savedImage.error || 'błąd SQLite.'}`);
+      }
+      await refreshDomainModules(['chat', 'health']);
+    } catch (error: any) {
+      setChatActionError(`Błąd generowania obrazu: ${error?.message || String(error)}`);
+    } finally {
+      sendingRef.current = false;
+      setIsSending(false);
+    }
+  };
+
   const handleInteractiveAction = async (actionValue: string, label?: string) => {
     const val = actionValue.trim();
     if (!val) return;
@@ -1538,6 +1608,23 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               >
                 <Sparkles className={`w-3.5 h-3.5 ${isProactiveLoading ? 'animate-spin' : ''}`} />
                 <span>{isProactiveLoading ? 'AI myśli i pisze...' : '🎙️ Swobodna rozmowa AI'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleGenerateImage()}
+                disabled={isSending || !input.trim()}
+                aria-label="Wygeneruj obraz z wpisanego promptu"
+                title={healthData?.image_engine?.reachable
+                  ? 'Generuj obraz za pomocą Qwen Image 2.1'
+                  : `ComfyUI offline: ${healthData?.image_engine?.error || 'uruchom silnik graficzny na hoście'}`}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 active:scale-95 border border-cyan-500/40 text-cyan-200 text-xs font-semibold transition-all disabled:opacity-50 cursor-pointer whitespace-nowrap"
+              >
+                <ImageIcon className={`w-3.5 h-3.5 ${isSending ? 'animate-pulse' : ''}`} />
+                <span>{isSending ? 'Generowanie...' : 'Generuj obraz'}</span>
+                <span className="text-[10px] text-cyan-300/70">
+                  {healthData?.image_engine?.reachable ? 'online' : 'offline'}
+                </span>
               </button>
 
               <button

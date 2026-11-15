@@ -37,6 +37,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from agents_runtime import CANONICAL_SVL_AGENTS, SVLAgentOrchestrator, normalize_agent_canonical_name
 from hyperspace_engine import BinaryHyperspaceKernel, WithoutNlpHarmonicEngine
+from image_generation import ComfyUIError, generate_qwen_image, probe_comfyui
 from spherical_bus import SphericalEventBus
 from svl_core import (
     SYNC_SCHEMA_VERSION,
@@ -62,6 +63,7 @@ class SVLBackendRuntime:
         self.orchestrator.ollama_host = self.ollama_host
         self._ollama_pull_lock = threading.RLock()
         self._ollama_pull_thread: Optional[threading.Thread] = None
+        self._image_generation_lock = threading.Lock()
         self.ollama_pull_state: dict[str, Any] = {
             "active": False,
             "model": os.environ.get("OLLAMA_PREFERRED_MODEL", "llama3.2-vision:11b"),
@@ -596,6 +598,9 @@ async def handle_api_request(
             "system_modules": runtime.kernel.list_system_modules(),
             "host": runtime.probe_host_environment(),
             "ollama": runtime.probe_ollama_status(),
+            "image_engine": probe_comfyui(
+                os.environ.get("COMFYUI_HOST", "http://127.0.0.1:8188")
+            ),
             "codex": runtime.probe_codex_status(),
             "security": {
                 "token_source": runtime.kernel.token_source,
@@ -695,6 +700,36 @@ async def handle_api_request(
         res = runtime.kernel.sync_chat_state_mutations(origin=origin, correlation_id=corr)
         mods = runtime.apply_active_module_settings()
         return 200, {**res, "modules": mods}
+
+    if method == "POST" and path == "/api/py/images/generate":
+        prompt = str(body.get("prompt") or "")
+        width = body.get("width", 1024)
+        height = body.get("height", 1024)
+        if type(width) is not int or type(height) is not int:
+            return 400, {"ok": False, "error": "Wymiary obrazu muszą być liczbami całkowitymi."}
+        if not runtime._image_generation_lock.acquire(blocking=False):
+            return 429, {"ok": False, "error": "Trwa już generowanie obrazu. Spróbuj ponownie za chwilę."}
+        try:
+            image = await asyncio.to_thread(
+                generate_qwen_image,
+                os.environ.get("COMFYUI_HOST", "http://127.0.0.1:8188"),
+                prompt,
+                width=width,
+                height=height,
+            )
+            return 200, {
+                "ok": True,
+                "model": "Qwen-Image-2.1",
+                **image,
+            }
+        except ValueError as exc:
+            return 400, {"ok": False, "error": str(exc)}
+        except TimeoutError as exc:
+            return 504, {"ok": False, "error": str(exc)}
+        except ComfyUIError as exc:
+            return 502, {"ok": False, "error": str(exc)}
+        finally:
+            runtime._image_generation_lock.release()
 
     if method == "POST" and path == "/api/py/kernel/evaluate-topology":
         raw_start = body.get("x_start", "-inf")

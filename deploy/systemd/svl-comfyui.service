@@ -1,0 +1,23 @@
+[Unit]
+Description=SVL Qwen Image 2.1 generation engine (ComfyUI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=svlos
+Group=svlos
+WorkingDirectory=/opt/svl-comfyui
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/svl-comfyui/venv/bin/python main.py --listen 127.0.0.1 --port 8188 --disable-auto-launch
+Restart=always
+RestartSec=5s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/svl-comfyui
+
+[Install]
+WantedBy=multi-user.target
