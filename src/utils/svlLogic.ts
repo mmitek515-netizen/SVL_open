@@ -587,6 +587,10 @@ export interface SafeFetchJsonOptions extends Omit<RequestInit, 'signal'> {
 
 // In-memory only. Never persist the local SVL operator credential in browser storage.
 let svlOperatorAccessToken = '';
+let svlCodexAccessToken = '';
+export function setSvlCodexAccessToken(value: string): void {
+  svlCodexAccessToken = String(value || '').slice(0, 512);
+}
 export function setSvlOperatorAccessToken(value: string): void {
   svlOperatorAccessToken = String(value || '').slice(0, 512);
 }
@@ -637,9 +641,14 @@ export async function safeFetchJson<T = any>(
     try {
       const mergedHeaders = new Headers(initHeaders || {});
       // Never forward operator credentials to third-party or absolute URLs.
-      if (typeof window !== 'undefined' && url.startsWith('/api/') &&
-          svlOperatorAccessToken && !mergedHeaders.has('X-SVL-Operator-Token')) {
-        mergedHeaders.set('X-SVL-Operator-Token', svlOperatorAccessToken);
+      if (typeof window !== 'undefined' && url.startsWith('/api/')) {
+        if (svlOperatorAccessToken && !mergedHeaders.has('X-SVL-Operator-Token')) {
+          mergedHeaders.set('X-SVL-Operator-Token', svlOperatorAccessToken);
+        }
+        if (url.startsWith('/api/py/chat/') && svlCodexAccessToken &&
+            !mergedHeaders.has('X-SVL-Codex-Access')) {
+          mergedHeaders.set('X-SVL-Codex-Access', svlCodexAccessToken);
+        }
       }
       if (!mergedHeaders.has('Accept')) mergedHeaders.set('Accept', 'application/json');
       if (!mergedHeaders.has('X-Request-Id')) mergedHeaders.set('X-Request-Id', correlationId);

@@ -42,6 +42,15 @@ function SVLWorkspaceShell() {
     }
   }, [activeTab, refreshDomainModules]);
 
+  // Restore domain state after the operator enters the private credential.
+  useEffect(() => {
+    if (!operatorToken) return;
+    const handle = setTimeout(() => {
+      void refreshDomainModules(['chat', 'agents', 'health', 'workspace', 'modules']);
+    }, 850);
+    return () => clearTimeout(handle);
+  }, [operatorToken, refreshDomainModules]);
+
   const agentsList: any[] = agentsData?.agents || [];
   const activeWorkersCount = agentsList.filter((a) =>
     ['ONLINE_LOCAL_WORKER', 'BUSY_LOCAL_WORKER'].includes(a.status),

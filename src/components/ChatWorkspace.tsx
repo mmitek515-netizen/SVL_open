@@ -33,6 +33,7 @@ import {
   isUnsafeChatInteractiveAction,
   parseChatInteractiveToken,
   safeFetchJson,
+  setSvlCodexAccessToken,
   validateOllamaHostUrl,
 } from '../utils/svlLogic';
 import { useSvlSync, getCanonicalConversationTitle } from '../utils/svlSyncStore';
@@ -1190,7 +1191,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                   spellCheck={false}
                   aria-label="Prywatny token dostępu do czatu Codex CLI"
                   value={codexAccessToken}
-                  onChange={(event) => setCodexAccessToken(event.target.value)}
+                  onChange={(event) => {
+                    setCodexAccessToken(event.target.value);
+                    setSvlCodexAccessToken(event.target.value);
+                  }}
                   placeholder="Token operatora"
                   className="w-24 sm:w-36 min-w-0 bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-100"
                 />

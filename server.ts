@@ -645,6 +645,16 @@ async function startServer() {
     const fullEndpoint = queryStr ? `${req.path}?${queryStr}` : req.path;
     const method = req.method === 'POST' ? 'POST' : 'GET';
     const timeoutMs = req.path === '/api/py/images/generate' ? 900000 : 20000;
+    const isOperator = hasOperatorAuthorization(req.headers['x-svl-operator-token']);
+    const isChatToken = req.path.startsWith('/api/py/chat/') &&
+      codexChatAccessAllowed(req.headers['x-svl-codex-access']);
+    if (!isOperator && !isChatToken) {
+      res.status(401).json({
+        ok: false,
+        error: 'Wymagana autoryzacja SVL. Wpisz SVL_OPERATOR_TOKEN w górnym pasku aplikacji.',
+      });
+      return;
+    }
     const chatClearProtected =
       (process.env.SVL_OPERATOR_TOKEN || '').length >= 32 ||
       (process.env.SVL_CODEX_CHAT_ENABLED === 'true' &&
@@ -728,7 +738,8 @@ async function startServer() {
     } = req.body || {};
 
     const trimmed = String(command || '').trim();
-    if (!hasOperatorAuthorization(operatorToken)) {
+    if (!hasOperatorAuthorization(operatorToken) &&
+        !hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
       res.status(401).json({ok: false, error: 'Terminal Linux/Python wymaga prawidłowego SVL_OPERATOR_TOKEN.'});
       return;
     }
@@ -966,6 +977,10 @@ async function startServer() {
 
   // 2b. Ollama Runtime Configuration & Model Pull Endpoints
   app.post('/api/ollama/config', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ok:false,error:'Konfiguracja Ollama wymaga SVL_OPERATOR_TOKEN.'});
+      return;
+    }
     const corrId: string = (req as any).correlationId || '';
     const ollamaHost = String(req.body?.ollamaHost || req.body?.ollama_host || '').trim();
     const origin = String(req.body?.origin || 'client');
@@ -983,6 +998,10 @@ async function startServer() {
   }));
 
   app.post('/api/ollama/pull', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ok:false,error:'Pobieranie modelu wymaga SVL_OPERATOR_TOKEN.'});
+      return;
+    }
     const corrId: string = (req as any).correlationId || '';
     const modelName = String(req.body?.model || process.env.OLLAMA_PREFERRED_MODEL || 'llama3.2-vision:11b').trim();
     const pyRes = await callPythonBackend(
@@ -1019,6 +1038,14 @@ async function startServer() {
     } = req.body || {};
 
     const cleanMsg = String(message || '').trim();
+    if (model !== 'codex-cli' &&
+        !hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({
+        ok: false,
+        error: 'Zewnętrzne modele i narzędzia agenta wymagają SVL_OPERATOR_TOKEN.',
+      });
+      return;
+    }
     const lowerClean = cleanMsg.toLowerCase();
     const wantsGitHubWorkspaceSync = isGitHubWorkspaceSyncRequest(cleanMsg);
     const requestsGitHubTools =
@@ -1030,6 +1057,13 @@ async function startServer() {
     const requestsGitHubWrite =
       wantsGitHubWorkspaceSync ||
       (requestsGitHubTools && /zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|zapisz|commit|push/i.test(cleanMsg));
+    if (requestsGitHubWrite &&
+        !hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({
+        ok: false, error: 'Operacje zapisu GitHub wymagają SVL_OPERATOR_TOKEN.',
+      });
+      return;
+    }
     const isProhibitedMinorSafetyRisk =
       (/\b(1[0-7]|[0-9])\s*(-|\s)?(letni|letnia|lat|latek|latka)\b/i.test(lowerClean) ||
         /\b(dzieck|nieletn|małoletn|córk|syn)\b/i.test(lowerClean)) &&
@@ -2011,6 +2045,10 @@ async function startServer() {
 
   // 3b. Proactive Autonomous Chatter Endpoint — 'Czat obustronny: AI inicjuje rozmowę'
   app.post('/api/chat/proactive', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ok:false,error:'Inicjowanie wiadomości agentów wymaga SVL_OPERATOR_TOKEN.'});
+      return;
+    }
     const corrId: string = (req as any).correlationId || '';
     const {
       conversationId = 'conv-rodzina-mitek-wszyscy',
