@@ -1501,12 +1501,22 @@ class SVLAgentOrchestrator:
                 "capabilities": meta["capabilities"],
                 "source_repository": "https://github.com/mmitek515-netizen/SVL_System",
                 "source_profile_path": meta["source_profile_path"],
-                "source_nature": "SOFTWARE_DEFINITION_ONLY (.github/agents/*.agent.md + src/kernel/agents.ts)",
+                "source_nature": (
+                    "LOCAL_CANONICAL_CONFIGURATION_UNVERIFIED_REMOTE"
+                    if skip_network_probes else
+                    "SOFTWARE_DEFINITION_ONLY (.github/agents/*.agent.md + src/kernel/agents.ts)"
+                ),
                 "external_process_connected": bool(
                     external_probe["external_processes_running"]
                 ) if external_probe.get("checked", True) else False,
-                "instance_origin": "NEW_LOCAL_WORKER_FROM_REPO_CODE",
-                "instance_label": "Nowa instancja lokalna uruchomiona na podstawie kodu z SVL_System",
+                "instance_origin": (
+                    "LOCAL_CODEX_WORKER" if skip_network_probes else "NEW_LOCAL_WORKER_FROM_REPO_CODE"
+                ),
+                "instance_label": (
+                    "Lokalny worker Codex CLI; bez zdalnej weryfikacji agentów"
+                    if skip_network_probes else
+                    "Nowa instancja lokalna uruchomiona na podstawie kodu z SVL_System"
+                ),
                 "status": "ONLINE_LOCAL_WORKER",
                 "pid": proc.pid,
                 "uid": os.getuid(),
@@ -1525,7 +1535,13 @@ class SVLAgentOrchestrator:
             self.append_agent_log(
                 name,
                 "INFO",
-                f"Polecenie 'podłącz moje ai': uruchomiono nową instancję workera (PID={proc.pid}, id={meta['id']}) na bazie definicji z SVL_System.",
+                (
+                    f"Worker lokalny Codex CLI: {name}, PID={proc.pid}, ID={meta['id']}. "
+                    "Nie sprawdzono procesów zdalnych ani oryginalności agentów."
+                ) if skip_network_probes else (
+                    f"Polecenie 'podłącz moje ai': uruchomiono lokalny worker "
+                    f"(PID={proc.pid}, id={meta['id']}) na bazie definicji z SVL_System."
+                ),
             )
             spawned_agents.append(state)
 
@@ -1553,7 +1569,13 @@ class SVLAgentOrchestrator:
             action="CONNECT_MY_AI",
             target=",".join(CANONICAL_SVL_AGENTS),
             status="SUCCESS",
-            details=f"Spawned {len(spawned_agents)} local Python workers from SVL_System definitions (PIDs: {[a['pid'] for a in spawned_agents]})",
+            details=(
+                f"Started {len(spawned_agents)} local Codex-mode workers without remote probes "
+                f"(PIDs: {[a['pid'] for a in spawned_agents]})"
+                if skip_network_probes else
+                f"Started {len(spawned_agents)} local workers with repository inspection "
+                f"(PIDs: {[a['pid'] for a in spawned_agents]})"
+            ),
         )
 
         report = {
@@ -1565,11 +1587,15 @@ class SVLAgentOrchestrator:
             },
             "external_process_probe": external_probe,
             "architectural_finding": (
-                "W repozytorium SVL_System agenci Aria (id: si_1), Alex (id: Alex), Astyria (id: Astyria) "
-                "Aurelius (id: Aurelius) i Agata (id: Agata) istnieją jako definicje programowe (.github/agents/*.agent.md, "
-                "src/kernel/agents.ts) bez działających zdalnych daemonów. Zgodnie ze specyfikacją nie zmodyfikowano "
-                f"repozytorium źródłowego i uruchomiono {len(spawned_agents)} nowych, rzeczywistych procesów workerów Python na lokalnym hoście Linux, "
-                "wyraźnie oznaczone jako nowe instancje lokalne (NEW_LOCAL_WORKER_FROM_REPO_CODE)."
+                (
+                    f"Uruchomiono {len(spawned_agents)} lokalnych workerów Python w trybie Codex CLI. "
+                    "To lokalne instancje korzystające z kanonicznych nazw i konfiguracji SVL_open. "
+                    "Nie wykonano sond GitHub ani procesów zdalnych; połączenia z oryginalnymi agentami "
+                    "spoza tego środowiska nie potwierdzono."
+                ) if skip_network_probes else (
+                    f"Uruchomiono {len(spawned_agents)} lokalnych procesów Python po inspekcji "
+                    "repozytoriów. Proces lokalny nie jest tożsamy ze zdalnym oryginalnym agentem."
+                )
             ),
             "agents": spawned_agents,
         }

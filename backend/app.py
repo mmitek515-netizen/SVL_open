@@ -833,7 +833,10 @@ async def handle_api_request(
     if method == "POST" and path == "/api/py/agents/connect":
         triggered_by = str(body.get("triggered_by", origin or "operator"))
         runtime.orchestrator.ollama_host = runtime.ollama_host
-        report = await runtime.orchestrator.connect_my_ai(triggered_by=triggered_by)
+        report = await runtime.orchestrator.connect_my_ai(
+            triggered_by=triggered_by,
+            skip_network_probes=os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true",
+        )
         return 200, {
             "ok": True,
             "revision": report.get("revision"),
@@ -936,7 +939,10 @@ async def handle_api_request(
             updated = runtime.orchestrator.configure_all_agents(
                 patch, origin=origin, correlation_id=corr
             )
-            report = await runtime.orchestrator.connect_my_ai(triggered_by="configure_all_agents")
+            report = await runtime.orchestrator.connect_my_ai(
+                triggered_by="configure_all_agents",
+                skip_network_probes=os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true",
+            )
             return 200, {
                 "ok": True,
                 "configs": updated,
