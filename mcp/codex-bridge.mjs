@@ -246,7 +246,7 @@ async function handleRpc(msg) {
       }
       const sandbox = write ? 'workspace-write' : 'read-only';
       const result = await runCodex(
-        ['exec', '--json', '--sandbox', sandbox, '--skip-git-repo-check', '-'],
+        ['exec', '--ignore-user-config', '--ephemeral', '--json', '--sandbox', sandbox, '-'],
         prompt,
         TIMEOUT_MS,
       );
