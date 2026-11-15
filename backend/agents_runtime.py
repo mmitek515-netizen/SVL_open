@@ -460,7 +460,7 @@ def _execute_codex_agent_task(task: dict[str, Any]) -> str:
     )
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        deadline = time.monotonic() + 35
+        deadline = time.monotonic() + 12
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -472,9 +472,9 @@ def _execute_codex_agent_task(task: dict[str, Any]) -> str:
 
         auth = subprocess.run(
             [codex, "login", "status"],
-            capture_output=True, text=True, timeout=8, env=env, check=False,
+            capture_output=True, text=True, timeout=6, env=env, check=False,
         )
-        if auth.returncode != 0 or "chatgpt" not in (auth.stdout + auth.stderr).lower():
+        if auth.returncode != 0 or not re.search(r"logged in (?:using|with) chatgpt\b", auth.stdout + "\n" + auth.stderr, re.IGNORECASE):
             raise RuntimeError(
                 "Codex CLI must be signed in with ChatGPT OAuth as the worker Linux user"
             )
@@ -490,7 +490,7 @@ def _execute_codex_agent_task(task: dict[str, Any]) -> str:
                 text=True,
                 cwd=root,
                 env=env,
-                timeout=95,
+                timeout=85,
                 check=False,
             )
         if finished.returncode != 0:
@@ -1661,7 +1661,7 @@ class SVLAgentOrchestrator:
         config = self.get_agent_config(target_agent)
         if ollama_host:
             self.ollama_host = str(ollama_host).strip().rstrip("/")
-        if not self.ollama_host:
+        if not self.ollama_host and os.environ.get("SVL_CODEX_AGENTS_ENABLED") != "true":
             raise RuntimeError("No Ollama endpoint is configured for worker task execution.")
 
         task_id = str(uuid.uuid4())

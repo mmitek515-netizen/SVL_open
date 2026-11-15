@@ -121,7 +121,8 @@ export async function probeCodexCli(cwd: string, force = false): Promise<{logged
     return {loggedIn: lastProbe.loggedIn, reason: lastProbe.reason};
   }
   const result = await runCodex(['login', 'status'], '', 6500, cwd);
-  const loggedIn = result.code === 0 && /chatgpt/i.test(result.stdout + '\n' + result.stderr);
+  const loggedIn = result.code === 0 &&
+    /logged in (?:using|with) chatgpt\b/i.test(result.stdout + '\n' + result.stderr);
   const reason = loggedIn ? 'ChatGPT OAuth active for gateway runtime account'
     : 'Codex CLI missing or not logged into ChatGPT in this runtime/CODEX_HOME';
   lastProbe = {expires: Date.now() + 25000, loggedIn, reason};

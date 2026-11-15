@@ -213,7 +213,7 @@ async function handleRpc(msg) {
     const login = version.code === 0 ? await runCodex(['login', 'status']) : { code: 127, stdout: '', stderr: '' };
     // An active API-key login is NOT ChatGPT OAuth. Reject it rather than silently
     // switching backends or billing modes.
-    const chatgptLogin = login.code === 0 && /chatgpt/i.test(login.stdout + '\n' + login.stderr);
+    const chatgptLogin = login.code === 0 && /logged in (?:using|with) chatgpt\b/i.test(login.stdout + '\n' + login.stderr);
     return reply(id, toolReply({
       installed: version.code === 0,
       loggedIn: chatgptLogin,
@@ -238,7 +238,7 @@ async function handleRpc(msg) {
     try {
       // Enforce explicit ChatGPT CLI mode before allowing any remote MCP task.
       const login = await runCodex(['login', 'status']);
-      if (login.code !== 0 || !/chatgpt/i.test(login.stdout + '\n' + login.stderr)) {
+      if (login.code !== 0 || !/logged in (?:using|with) chatgpt\b/i.test(login.stdout + '\n' + login.stderr)) {
         return reply(id, toolReply({
           error: 'Codex CLI is not logged in with ChatGPT under the svlos service account',
           hint: 'Run codex login --device-auth with the configured CODEX_HOME',
