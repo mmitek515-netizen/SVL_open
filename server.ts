@@ -173,6 +173,45 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
+type SvlRuntimeLogLine = {
+  timestamp: string;
+  service: 'python' | 'gateway';
+  level: 'info' | 'error';
+  message: string;
+};
+const MAX_RUNTIME_LOG_LINES = 180;
+const runtimeLogLines: SvlRuntimeLogLine[] = [];
+
+function scrubRuntimeLog(input: string): string {
+  let cleaned = String(input || '').replace(/\u001b\[[0-9;]*m/g, '');
+  for (const key of [
+    'SVL_OPERATOR_TOKEN', 'SVL_CODEX_CHAT_ACCESS_TOKEN', 'GITHUB_TOKEN',
+    'GH_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'OPENAI_API_KEY',
+  ]) {
+    const value = process.env[key];
+    if (value && value.length >= 8) cleaned = cleaned.split(value).join('[REDACTED]');
+  }
+  cleaned = cleaned.replace(/\bBearer\s+[A-Za-z0-9_.-]{12,}/gi, 'Bearer [REDACTED]');
+  cleaned = cleaned.replace(/(?:authorization|api[_-]?key|password|token)\s*[:=]\s*['"]?[^\s,'"]{12,}/gi, '[REDACTED_CREDENTIAL]');
+  return cleaned.slice(0, 900);
+}
+
+function recordRuntimeLog(
+  service: SvlRuntimeLogLine['service'],
+  level: SvlRuntimeLogLine['level'],
+  chunk: unknown,
+): void {
+  const source = String(chunk ?? '');
+  for (const rawLine of source.split(/\r?\n/)) {
+    const message = scrubRuntimeLog(rawLine.trim());
+    if (!message) continue;
+    runtimeLogLines.push({ timestamp: new Date().toISOString(), service, level, message });
+  }
+  if (runtimeLogLines.length > MAX_RUNTIME_LOG_LINES) {
+    runtimeLogLines.splice(0, runtimeLogLines.length - MAX_RUNTIME_LOG_LINES);
+  }
+}
+
 // Restart Python only with capped exponential backoff. Never restart after shutdown.
 let pythonProc: ChildProcess | null = null;
 let pythonRestartTimer: NodeJS.Timeout | null = null;
@@ -204,13 +243,19 @@ function startPythonBackend(): void {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   pythonProc = proc;
+  proc.on('spawn', () => {
+    recordRuntimeLog('gateway', 'info', `Python backend started (PID=${proc.pid ?? 'unknown'}).`);
+  });
   proc.stdout?.on('data', (chunk) => {
-    process.stdout.write(`[PythonKernel] ${chunk}`);
+    recordRuntimeLog('python', 'info', chunk);
+    process.stdout.write(`[PythonKernel] ${scrubRuntimeLog(String(chunk))}`);
   });
   proc.stderr?.on('data', (chunk) => {
-    process.stderr.write(`[PythonKernel ERR] ${chunk}`);
+    recordRuntimeLog('python', 'error', chunk);
+    process.stderr.write(`[PythonKernel ERR] ${scrubRuntimeLog(String(chunk))}`);
   });
   proc.on('error', (error) => {
+    recordRuntimeLog('gateway', 'error', `Python startup failed: ${error.message}`);
     console.error('[PythonKernel] Process startup error:', error.message);
   });
   proc.on('close', (code, signal) => {
@@ -219,7 +264,9 @@ function startPythonBackend(): void {
     const uptimeMs = Date.now() - startedAt;
     pythonRestartAttempt = uptimeMs >= 60000 ? 0 : Math.min(pythonRestartAttempt + 1, 8);
     const delayMs = Math.min(30000, 1500 * (2 ** Math.min(pythonRestartAttempt - 1, 5)));
-    console.error(`[PythonKernel] Exited (code=${code}, signal=${signal}); retry in ${delayMs}ms (attempt ${pythonRestartAttempt}).`);
+    const restartMessage = `Python exited (code=${code}, signal=${signal}); retry in ${delayMs}ms (attempt ${pythonRestartAttempt}).`;
+    recordRuntimeLog('gateway', 'error', restartMessage);
+    console.error(`[PythonKernel] ${restartMessage}`);
     pythonRestartTimer = setTimeout(() => {
       pythonRestartTimer = null;
       startPythonBackend();
@@ -437,6 +484,26 @@ async function startServer() {
       res.status(status).json({ ok: false, error: message });
     }
   }));
+
+  // Recent logs belong to THIS gateway process, not GitHub Actions.
+  // Never expose the console output of an authenticated runtime to public previews.
+  app.get('/api/runtime/logs', (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ ok: false, error: 'Logi procesu wymagają SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const requested = Number(req.query.limit || 80);
+    const limit = Number.isFinite(requested) ? Math.min(180, Math.max(1, Math.floor(requested))) : 80;
+    res.json({
+      ok: true,
+      source: 'in-memory gateway process',
+      lines: runtimeLogLines.slice(-limit),
+      pythonPid: pythonProc?.pid ?? null,
+      pythonRestartAttempt,
+      stopping: pythonStopping,
+      checkedAt: new Date().toISOString(),
+    });
+  });
 
   // Read-only build provenance: a GitHub commit is not proof of deployed code.
   app.get('/api/codex-chat/status', asyncRoute(async (req, res) => {
