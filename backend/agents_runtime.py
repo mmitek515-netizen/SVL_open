@@ -455,10 +455,10 @@ def _execute_codex_agent_task(task: dict[str, Any]) -> str:
         f"Tytuł: {title}\nSzczegóły:\n{payload}"
     )[:8000]
 
-    lock_path = os.path.join(
-        tempfile.gettempdir(), f"svl-codex-oauth-worker-{os.getuid()}.lock"
-    )
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    lock_dir = os.path.join(os.path.expanduser("~"), ".local", "state", "svl-open")
+    os.makedirs(lock_dir, mode=0o700, exist_ok=True)
+    lock_path = os.path.join(lock_dir, "codex-cli.lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         deadline = time.monotonic() + 12
         while True:

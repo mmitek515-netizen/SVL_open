@@ -8,7 +8,7 @@
  */
 import { spawn } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -54,10 +54,9 @@ async function runCodex(
       resolve({ code, stdout, stderr, timedOut, truncated });
     };
     try {
-      // util-linux flock --no-fork uses the same advisory lock as Python
-      // fcntl.flock() in the five agent worker processes.
-      const lockPath = path.join(os.tmpdir(),
-        'svl-codex-oauth-worker-' + String(typeof process.getuid === 'function' ? process.getuid() : os.userInfo().uid) + '.lock');
+      // util-linux flock and Python fcntl.flock share this user-private lock.
+      // Do not use a predictable filename under a world-writable /tmp directory.
+      const lockPath = path.join(os.homedir(), '.local', 'state', 'svl-open', 'codex-cli.lock');
       const binary = sharedAgentLock ? 'flock' : 'codex';
       const commandArgs = sharedAgentLock
         ? ['--no-fork', '--exclusive', '--wait', '15', '--conflict-exit-code', '75', lockPath, 'codex', ...args]
@@ -181,7 +180,9 @@ export async function generateCodexCliChat(
     // Keep the conversation outside SVL_open's source directory. Read-only
     // Codex must not read the application's checked-out code by default.
     const isolatedRoot = await mkdtemp(path.join(os.tmpdir(), 'svl-codex-chat-'));
+    const lockDir = path.join(os.homedir(), '.local', 'state', 'svl-open');
     try {
+      await mkdir(lockDir, {recursive: true, mode: 0o700});
       const run = await runCodex(
         ['exec', '--ignore-user-config', '--ignore-rules',
          '--skip-git-repo-check', '--ephemeral', '--json',
