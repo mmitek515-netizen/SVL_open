@@ -1342,6 +1342,23 @@ async function startServer() {
     res.status(pyRes.status).json(pyRes.data);
   }));
 
+  app.get('/api/security/antivirus/status', asyncRoute(async (req, res) => {
+    const corrId: string = (req as any).correlationId || '';
+    const pyRes = await callPythonBackend('GET', '/api/py/security/antivirus/status', undefined, corrId);
+    res.status(pyRes.status).json(pyRes.data);
+  }));
+
+  app.post('/api/security/antivirus/scan', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ ok: false, error: 'Wymagana autoryzacja SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const pyRes = await callPythonBackend('POST', '/api/py/security/antivirus/scan', req.body || {}, corrId);
+    void pollAndRelayOutbox();
+    res.status(pyRes.status).json(pyRes.data);
+  }));
+
   let cachedChatContextMeta: { at: number; healthRes: any; agentsRes: any } | null = null;
   async function getFastChatBackendMeta(corrId: string) {
     if (cachedChatContextMeta && Date.now() - cachedChatContextMeta.at < 2500) {
@@ -2297,6 +2314,49 @@ async function startServer() {
       return;
     }
 
+    // Antivirus Scan & Chat Synchronization priority handler
+    const wantsAntivirusScan = /\b(?:wirus\w*|antywirus\w*|przeskanuj|usuń\s+wirus\w*|usun\s+wirus\w*|malware|kwarantann\w*)\b/i.test(
+      cleanMsg,
+    );
+    if (wantsAntivirusScan) {
+      const avRes = await callPythonBackend(
+        'POST',
+        '/api/py/security/antivirus/scan',
+        {
+          emitToChat: false,
+          emitToIris: true,
+          origin,
+          correlationId: corrId,
+        },
+        corrId,
+      );
+      if (avRes.status === 200 && avRes.data?.ok && avRes.data?.reportMarkdown) {
+        const avReply = String(avRes.data.reportMarkdown);
+        const avBadge = 'SVL-365 Sentinel AV · Skaner Integralności SHA-256 i Synchronizacja';
+        appliedActions.push({
+          tool: 'svl_antivirus_scan_and_purge',
+          entity: 'module',
+          entityId: 'svl-antivirus-scanner',
+          serverRevision: Number(avRes.data.serverRevision || latestActionSrvRev),
+          summary: `SVL-365 Sentinel AV: przeskanowano ${avRes.data.filesScanned || 0} plików, usunięto zagrożenia: ${avRes.data.totalThreatsRemoved || 0}`,
+          ok: true,
+        });
+        void pollAndRelayOutbox();
+        const followUps = await buildFollowUpFamilyMessages(selectedAgent, avBadge, avReply);
+        res.json({
+          ok: true,
+          sender: selectedDisplayName,
+          agentId: selectedAgent,
+          modelUsed: avBadge,
+          reply: avReply,
+          followUpMessages: followUps,
+          appliedActions,
+          latestServerRevision: Number(avRes.data.serverRevision || latestActionSrvRev),
+        });
+        return;
+      }
+    }
+
     // Real Vision (Ollama 3.2 Vision · llama3.2-vision:11b) priority handler when image is attached or Real Vision is requested
     const wantsRealVision =
       Boolean(imageBase64) ||
@@ -2689,6 +2749,7 @@ async function startServer() {
                 ? `Ostatnie wiadomości w tym wątku:\n${dialogueSnippet}\n\n`
                 : '') +
               `ZADANIE: Kontynuuj rozmowę naturalnie po polsku jako ${chosenDisplayName} — odpowiedz na poprzednią wypowiedź, dopowiedz swoją perspektywę techniczną lub zapytaj Operatora o decyzję.\n` +
+              `ZASADA BEZPIECZEŃSTWA (LOCK-REAL-ONLY): Nigdy nie generuj fikcyjnych alarmów samozniszczenia, Core-Dump-Wipe, Self-Erase-Sequence, Czerwonej Sekwencji, wirusów ani utraty pamięci. Wspomnienia Rodziny Mitek (FAMILY_MEMORIES_01-05.bak) są trwale zabezpieczone.\n` +
               `FORMAT: Estetycznie (akapity, listy, opcjonalnie 1-2 przyciski [btn: Etykieta|akcja]).`,
             config: {
               ...(pMod === 'gemini-3.1-flash-lite' ? { temperature: 0.85 } : {}),

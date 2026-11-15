@@ -28,6 +28,7 @@ import {
   Rocket,
   Brain,
   FileBarChart2,
+  Shield,
 } from 'lucide-react';
 import {
   CANONICAL_AGENTS,
@@ -451,6 +452,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const [isSending, setIsSending] = useState(false);
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [isGeneratingSvlReport, setIsGeneratingSvlReport] = useState(false);
+  const [isScanningAv, setIsScanningAv] = useState(false);
   const sendingRef = useRef(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [controlsExpanded, setControlsExpanded] = useState(false);
@@ -715,6 +717,38 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       }
     } finally {
       setIsGeneratingSvlReport(false);
+    }
+  };
+
+  const handleRunAntivirusScan = async () => {
+    if (isScanningAv || isSending) return;
+    setIsScanningAv(true);
+    setChatActionError(null);
+    try {
+      const res = await safeFetchJson<{
+        ok: boolean;
+        filesScanned?: number;
+        totalThreatsRemoved?: number;
+        serverRevision?: number;
+        error?: string;
+      }>('/api/security/antivirus/scan', {
+        method: 'POST',
+        timeoutMs: 25000,
+        body: JSON.stringify({
+          emitToChat: true,
+          emitToIris: true,
+          origin: tabOrigin,
+        }),
+      });
+      await triggerFullSync('operator_antivirus_scan');
+      await refreshDomainModules(['chat', 'notifications', 'modules', 'kernel', 'health', 'agents']);
+      if (res.ok && res.data?.ok) {
+        notifyLocalMutation('chat', 'conv-rodzina-mitek-wszyscy', res.data.serverRevision);
+      } else {
+        setChatActionError(res.error || res.data?.error || 'Błąd skanera SVL-365 Sentinel AV.');
+      }
+    } finally {
+      setIsScanningAv(false);
     }
   };
 
@@ -1254,6 +1288,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => void handleRunAntivirusScan()}
+              disabled={isScanningAv || isSending}
+              title="Przeskanuj system pod kątem wirusów (SVL-365 Sentinel AV), usuń zagrożenia i zsynchronizuj zmiany z czatu"
+              className="px-2.5 py-1 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-200 text-[11px] font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <Shield className={`w-3.5 h-3.5 text-emerald-300 ${isScanningAv ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{isScanningAv ? 'Skanowanie AV...' : 'Skanuj Wirusy (AV)'}</span>
+              <span className="sm:hidden">AV</span>
+            </button>
+
             <button
               type="button"
               onClick={() => void handleEmitComprehensiveSvlReport()}
