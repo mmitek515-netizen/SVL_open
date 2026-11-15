@@ -12,18 +12,18 @@ const secret = 'test-only-bearer-token-not-for-production-123456789';
 const mockCodex = String.raw`#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] === '--version') {
-  process.stdout.write('codex-cli MOCK\\n');
+  process.stdout.write('codex-cli MOCK\n');
   process.exit(0);
 }
 if (args[0] === 'login' && args[1] === 'status') {
-  process.stdout.write('Logged in using ChatGPT\\n');
+  process.stdout.write('Logged in using ChatGPT\n');
   process.exit(0);
 }
 if (args[0] === 'exec') {
   let prompt = '';
   process.stdin.on('data', chunk => { prompt += chunk.toString(); });
   process.stdin.on('end', () => {
-    process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Received: '+prompt.trim()}}) + '\\n');
+    process.stdout.write(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'Received: '+prompt.trim()}}) + '\n');
   });
 } else {
   process.exit(2);
