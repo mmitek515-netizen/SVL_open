@@ -101,7 +101,7 @@ test('SVL Codex MCP: initialization, tools, bearer auth and bounded readonly tas
 
   const list = await rpc(port, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   assert.equal(list.status, 200);
-  assert.deepEqual(list.data.result.tools.map(x => x.name), ['codex_status', 'codex_task']);
+  assert.deepEqual(list.data.result.tools.map(x => x.name), ['svl_sync_status', 'svl_agents_status', 'codex_status', 'codex_task']);
 
   const status = await rpc(port, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'codex_status', arguments: {} } });
   assert.equal(status.status, 200);
