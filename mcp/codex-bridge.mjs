@@ -95,7 +95,32 @@ function parseAgentMessage(output) {
   }
   return answer.slice(0, 24000);
 }
+async function getSvlBackend(relativePath) {
+  const port = Number(process.env.SVL_PYTHON_PORT || 8085);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('Invalid configured Python port');
+  }
+  const response = await fetch('http://127.0.0.1:' + port + relativePath, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(3_000),
+  });
+  if (!response.ok) throw new Error('SVL backend returned HTTP ' + response.status);
+  return response.json();
+}
+
 const tools = [
+  {
+    name: 'svl_sync_status',
+    description: 'Read the actual authoritative global synchronization revision from the SVL Python/SQLite backend.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  },
+  {
+    name: 'svl_agents_status',
+    description: 'Read agent names and runtime status in SVL_open without exposing agent memories or credentials.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, destructiveHint: false },
+  },
   {
     name: 'codex_status',
     description: 'Check if Codex CLI is installed and logged in under the MCP service account. Never reveals credentials.',
@@ -148,6 +173,40 @@ async function handleRpc(msg) {
   const args = msg.params?.arguments ?? {};
   if (!args || typeof args !== 'object' || Array.isArray(args)) {
     return rpcError(id, -32602, 'Invalid parameters');
+  }
+  if (name === 'svl_sync_status') {
+    try {
+      const data = await getSvlBackend('/api/py/sync/status');
+      return reply(id, toolReply({
+        ok: data.ok === true,
+        schemaVersion: data.schemaVersion,
+        serverRevision: data.serverRevision,
+        revision: data.revision,
+      }));
+    } catch {
+      return reply(id, toolReply({ error: 'SVL Python backend is not reachable on loopback' }, true));
+    }
+  }
+  if (name === 'svl_agents_status') {
+    try {
+      const data = await getSvlBackend('/api/py/agents/status');
+      const entries = Array.isArray(data.agents)
+        ? data.agents.map(agent => [String(agent?.canonical_name || agent?.name || 'unknown'), agent])
+        : Object.entries(data.agents || {});
+      const agents = entries.slice(0, 25).map(([name, agent]) => ({
+        name,
+        status: typeof agent === 'object' && agent !== null
+          ? String(agent.status || agent.state || 'unknown').slice(0, 80)
+          : String(agent).slice(0, 80),
+      }));
+      return reply(id, toolReply({
+        serverRevision: data.serverRevision,
+        connected_at: data.connected_at,
+        agents,
+      }));
+    } catch {
+      return reply(id, toolReply({ error: 'SVL agents backend is not reachable on loopback' }, true));
+    }
   }
   if (name === 'codex_status') {
     const version = await runCodex(['--version']);
