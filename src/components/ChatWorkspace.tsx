@@ -347,6 +347,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const [selectedModel, setSelectedModel] = useState('codex-cli');
   // Never persist this private gateway access token in browser storage or GitHub.
   const [codexAccessToken, setCodexAccessToken] = useState('');
+  const [codexRuntimeStatus, setCodexRuntimeStatus] = useState<{
+    enabled: boolean;
+    accessConfigured: boolean;
+    authenticated?: boolean;
+    loggedIn?: boolean;
+    reason?: string;
+  } | null>(null);
   const [isSending, setIsSending] = useState(false);
   const sendingRef = useRef(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -375,6 +382,38 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const lastInteractionTimeRef = useRef<number>(Date.now());
 
   const activeConv = conversations.find((c) => c.id === activeConvId) || conversations[0];
+
+  // Inspect this actual backend. A copied GitHub project or AI Studio preview
+  // cannot inherit the login from another Linux/Codespaces runtime.
+  useEffect(() => {
+    if (selectedModel !== 'codex-cli') {
+      setCodexRuntimeStatus(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const result = await safeFetchJson<{
+        ok: boolean; enabled: boolean; accessConfigured: boolean;
+        authenticated: boolean; loggedIn: boolean; reason: string;
+      }>('/api/codex-chat/status', {
+        timeoutMs: 9000,
+        headers: codexAccessToken ? {'X-SVL-Codex-Access': codexAccessToken} : {},
+      });
+      if (cancelled) return;
+      if (result.ok && result.data?.ok) {
+        setCodexRuntimeStatus(result.data);
+      } else {
+        setCodexRuntimeStatus({
+          enabled: false, accessConfigured: false,
+          reason: result.error || 'Brak odpowiedzi aktualnego backendu.',
+        });
+      }
+    }, 650);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [selectedModel, codexAccessToken]);
 
   useEffect(() => {
     if (healthData?.ollama?.ollama_host && !ollamaUrlDirtyRef.current) {
@@ -1177,12 +1216,38 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           </div>
         </div>
 
+        <div className="shrink-0 border-b border-slate-800/70 bg-[#0B0E16] px-3 py-1.5 text-[11px] text-slate-400 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span>Silnik: <span className="text-slate-200 font-medium">
+            {selectedModel === 'codex-cli' ? 'Codex CLI · ChatGPT OAuth' : selectedModel}
+          </span></span>
+          {selectedModel === 'codex-cli' && (
+            <span role="status"
+              className={codexRuntimeStatus?.authenticated && codexRuntimeStatus.loggedIn
+                ? 'text-emerald-300' : 'text-amber-300'}>
+              {!codexRuntimeStatus
+                ? 'Sprawdzanie silnika…'
+                : !codexRuntimeStatus.enabled
+                  ? 'Codex nie jest włączony w tym backendzie. AI Studio nie dziedziczy logowania z Codespaces.'
+                  : !codexRuntimeStatus.accessConfigured
+                    ? 'Brak prywatnej konfiguracji dostępu do Codex CLI.'
+                    : !codexRuntimeStatus.authenticated
+                      ? 'Podaj token dostępu SVL, aby sprawdzić sesję ChatGPT.'
+                      : codexRuntimeStatus.loggedIn
+                        ? 'Codex CLI zalogowany w tym runtime.'
+                        : codexRuntimeStatus.reason || 'Brak zalogowanej sesji ChatGPT w tym runtime.'}
+            </span>
+          )}
+          {selectedModel !== 'codex-cli' && (
+            <span>Nie jest to silnik Codex CLI; odpowiedź nie potwierdza wykonania operacji Linux.</span>
+          )}
+        </div>
+
         {/* Collapsible Secondary Controls (Hidden by default so Chat Window is Maximized) */}
         {controlsExpanded && (
           <div className="border-b border-slate-800/80 bg-[#0D1018] shrink-0">
             <div className="px-3 py-1.5 border-b border-slate-800/60 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 font-mono tabular-nums">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-emerald-400 font-semibold">Tryb: Pełna Autonomia AI</span>
+                <span className="text-violet-300 font-semibold">Tryb: narzędzia wymagają autoryzacji operatora</span>
                 <span aria-hidden="true">·</span>
                 <span>Vision: {selectedModelSupportsVision ? 'Tak' : 'Nie'}</span>
                 <span aria-hidden="true">·</span>
