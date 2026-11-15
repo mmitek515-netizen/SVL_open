@@ -27,6 +27,13 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [codexOperatorAccess, setCodexOperatorAccess] = useState('');
   const [isCheckingCodex, setIsCheckingCodex] = useState(false);
+  const [logAccessToken, setLogAccessToken] = useState('');
+  const [runtimeLogs, setRuntimeLogs] = useState<Array<{
+    timestamp: string; service: string; level: 'info' | 'error'; message: string;
+  }>>([]);
+  const [runtimeLogsError, setRuntimeLogsError] = useState<string | null>(null);
+  const [runtimeLogStatus, setRuntimeLogStatus] = useState<string | null>(null);
+  const [loadingRuntimeLogs, setLoadingRuntimeLogs] = useState(false);
   const currentRevisionRef = useRef(serverRevision);
   useEffect(() => { currentRevisionRef.current = serverRevision; }, [serverRevision]);
 
@@ -81,6 +88,38 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
       }
     } finally {
       setIsCheckingCodex(false);
+    }
+  };
+
+  const loadRuntimeLogs = async () => {
+    if (loadingRuntimeLogs) return;
+    setLoadingRuntimeLogs(true);
+    try {
+      const result = await safeFetchJson<{
+        ok: boolean;
+        lines: Array<{timestamp: string; service: string; level: 'info' | 'error'; message: string}>;
+        pythonPid: number | null;
+        pythonRestartAttempt: number;
+        source: string;
+        error?: string;
+      }>('/api/runtime/logs?limit=100', {
+        timeoutMs: 10000,
+        headers: logAccessToken ? {'X-SVL-Operator-Token': logAccessToken} : {},
+      });
+      if (result.ok && result.data?.ok && Array.isArray(result.data.lines)) {
+        setRuntimeLogs(result.data.lines);
+        setRuntimeLogStatus(
+          'Źródło: aktualny proces SVL · Python PID: ' +
+          (result.data.pythonPid ?? 'brak') +
+          ' · ponowne uruchomienia: ' +
+          Number(result.data.pythonRestartAttempt || 0),
+        );
+        setRuntimeLogsError(null);
+      } else {
+        setRuntimeLogsError(result.data?.error || result.error || 'Nie można pobrać logów bieżącego procesu.');
+      }
+    } finally {
+      setLoadingRuntimeLogs(false);
     }
   };
 
@@ -281,6 +320,44 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
               <button type="button" onClick={() => onNavigate('chat')} className="hover:underline">Otwórz czat</button>
             </div>
           </div>
+        </section>
+
+        <section className="rounded-xl border border-slate-800 bg-[#111826] p-4 space-y-3">
+          <h2 className="flex items-center gap-2 font-semibold">
+            <Terminal size={18} className="text-violet-400" /> Logi uruchomionego backendu Python
+          </h2>
+          <p className="text-xs text-slate-400">
+            Logi pochodzą z procesu, który obsługuje ten podgląd, a nie z GitHub Actions.
+            Wymagają prywatnego tokenu operatora; nie są publikowane automatycznie.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input type="password" autoComplete="off" spellCheck={false}
+              aria-label="Token operatora do logów runtime"
+              value={logAccessToken}
+              onChange={(event) => setLogAccessToken(event.target.value)}
+              placeholder="SVL_OPERATOR_TOKEN"
+              className="min-w-0 flex-1 rounded-md border border-slate-700 bg-[#0B0D13] px-3 py-2 text-sm"
+            />
+            <button type="button" disabled={loadingRuntimeLogs}
+              onClick={() => void loadRuntimeLogs()}
+              className="rounded-md border border-violet-500/50 bg-violet-600/15 px-3 py-2 text-xs text-violet-100 hover:bg-violet-500/20 disabled:opacity-50"
+            >{loadingRuntimeLogs ? 'Odczyt…' : 'Pobierz ostatnie logi'}</button>
+          </div>
+          {runtimeLogStatus && <p className="text-xs text-slate-400">{runtimeLogStatus}</p>}
+          {runtimeLogsError && <p role="status" className="text-xs text-amber-300">{runtimeLogsError}</p>}
+          {runtimeLogs.length > 0 && (
+            <div className="max-h-72 overflow-auto rounded-md border border-slate-800 bg-[#080C13] p-3 font-mono text-[11px] leading-relaxed">
+              {runtimeLogs.map((line, i) => (
+                <div key={i} className={line.level === 'error' ? 'text-rose-300' : 'text-slate-300'}>
+                  <span className="text-slate-500">{line.timestamp} [{line.service}] </span>
+                  <span className="whitespace-pre-wrap break-all">{line.message}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {runtimeLogs.length === 0 && !runtimeLogsError && (
+            <p className="text-xs text-slate-500">Nie pobrano jeszcze logów bieżącego backendu.</p>
+          )}
         </section>
 
         <section className="rounded-xl border border-slate-800 bg-[#111826] p-4 space-y-3">
