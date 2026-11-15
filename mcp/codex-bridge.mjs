@@ -302,13 +302,30 @@ const server = http.createServer(async (req, res) => {
     let body;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
     catch { return send(res, 400, rpcError(null, -32700, 'Parse error')); }
+    const protocolHeader = req.headers['mcp-protocol-version'];
     const methodHeader = req.headers['mcp-method'];
     const nameHeader = req.headers['mcp-name'];
+    // Modern MCP (2026-07-28) uses per-request metadata and mandatory mirrored headers.
+    // Keep backward compatibility for existing 2025 Streamable HTTP clients.
+    if (protocolHeader === '2026-07-28') {
+      const declared = body?.params?._meta?.['io.modelcontextprotocol/protocolVersion'];
+      if (declared !== protocolHeader || !methodHeader || methodHeader !== body?.method) {
+        return send(res, 400, rpcError(body?.id ?? null, -32600, 'Modern MCP metadata/header mismatch'));
+      }
+      if (['tools/call', 'prompts/get', 'resources/read'].includes(body?.method)) {
+        const selectedName = body?.params?.name ?? body?.params?.uri;
+        if (!nameHeader || nameHeader !== selectedName) {
+          return send(res, 400, rpcError(body?.id ?? null, -32600, 'MCP name header mismatch'));
+        }
+      }
+    } else if (protocolHeader && !['2025-06-18', '2025-11-25'].includes(protocolHeader)) {
+      return send(res, 400, rpcError(body?.id ?? null, -32600, 'Unsupported protocol version'));
+    }
     if (methodHeader && methodHeader !== body?.method) {
-      return send(res, 400, { error: 'MCP method header mismatch' });
+      return send(res, 400, rpcError(body?.id ?? null, -32600, 'MCP method header mismatch'));
     }
     if (nameHeader && body?.method === 'tools/call' && nameHeader !== body?.params?.name) {
-      return send(res, 400, { error: 'MCP name header mismatch' });
+      return send(res, 400, rpcError(body?.id ?? null, -32600, 'MCP name header mismatch'));
     }
     const answer = await handleRpc(body);
     send(res, answer === null ? 202 : 200, answer);
