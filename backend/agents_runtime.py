@@ -1164,6 +1164,7 @@ class SVLAgentOrchestrator:
             execution_config = self._task_execution_configs.get(str(task.get("id")), {})
         return {
             "id": task["id"],
+            "target_agent": str(task.get("target_agent") or ""),
             "title": task["title"],
             "payload": task["payload"],
             "model": str(execution_config.get("ollama_model") or ""),
@@ -1661,8 +1662,32 @@ class SVLAgentOrchestrator:
         config = self.get_agent_config(target_agent)
         if ollama_host:
             self.ollama_host = str(ollama_host).strip().rstrip("/")
-        if not self.ollama_host and os.environ.get("SVL_CODEX_AGENTS_ENABLED") != "true":
+        use_codex = os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true"
+        if not self.ollama_host and not use_codex:
             raise RuntimeError("No Ollama endpoint is configured for worker task execution.")
+
+        if use_codex:
+            # Codex-only mode can launch five lightweight workers without probing
+            # GitHub or requiring the Ollama daemon. Avoid silent queued tasks.
+            for name, meta in CANONICAL_SVL_AGENTS.items():
+                proc = self.processes.get(name)
+                if proc is None or not proc.is_alive():
+                    proc = self._start_agent_worker(name)
+                self.agent_states.setdefault(name, {
+                    "id": meta["id"],
+                    "canonical_name": name,
+                    "display_name": meta["display_name"],
+                    "status": "STARTING_LOCAL_WORKER",
+                    "pid": proc.pid,
+                    "uid": os.getuid(),
+                    "worker_phase": "STARTING",
+                    "current_task_id": None,
+                    "heartbeat_at": None,
+                    "instance_origin": "LOCAL_CODEX_WORKER",
+                    "external_process_connected": False,
+                })
+            self._ensure_result_supervisor()
+            self._submit_pending_agent_tasks()
 
         task_id = str(uuid.uuid4())
         task_record = {
@@ -1687,8 +1712,12 @@ class SVLAgentOrchestrator:
             "worker_pid": None,
         }
         self._save_agent_task(task_record)
-        self._submit_agent_task(task_record)
-        self.append_agent_log(target_agent, "TASK_QUEUED", f"Od '{task_record['sender']}': {clean_title}")
+        submitted = self._submit_agent_task(task_record)
+        self.append_agent_log(
+            target_agent, "TASK_QUEUED",
+            f"Od '{task_record['sender']}': {clean_title}" +
+            ("" if submitted else " (oczekuje na dostępny proces workera)")
+        )
 
         await self.bus.publish(
             topic="svl.agent.task_queued",

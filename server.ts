@@ -707,7 +707,7 @@ async function startServer() {
     // Queue natural-language input that cannot be handled by the selected terminal.
     const queueAgentDirective = async (rawDirective: string, sourceLabel: string) => {
       const cleanDir = rawDirective.replace(/^\/?exec\s+/i, '').trim();
-      const matchAg = cleanDir.match(/^@?(Aria(?:\s+Mitek)?|Alex(?:\s+Mitek)?|Astyria(?:\s+Mitek)?|Aurelius(?:\s+Mitek)?)\b\s*(.*)$/i);
+      const matchAg = cleanDir.match(/^@?(Aria(?:\s+Mitek)?|Alex(?:\s+Mitek)?|Astyria(?:\s+Mitek)?|Aurelius(?:\s+Mitek)?|Agata(?:\s+Mitek)?)\b\s*(.*)$/i);
       const targetAg = (matchAg ? normalizeAgentCanonicalName(matchAg[1]) : 'Alex') || 'Alex';
       const bodyText = (matchAg && matchAg[2] ? matchAg[2].trim() : cleanDir) || cleanDir;
 
