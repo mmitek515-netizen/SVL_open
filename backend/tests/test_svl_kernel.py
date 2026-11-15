@@ -27,7 +27,13 @@ if str(BACKEND_DIR) not in sys.path:
 
 from hyperspace_engine import BinaryHyperspaceKernel, WithoutNlpHarmonicEngine
 from spherical_bus import SphericalEventBus
-from svl_core import SVLProtectedVariable, SVLSystemKernel, TopologicalInfinityEngine, VisualScope
+from svl_core import (
+    SVLProtectedVariable,
+    SVLSystemKernel,
+    TopologicalInfinityEngine,
+    VisualScope,
+    resolve_sqlite_path,
+)
 
 
 from agents_runtime import (
@@ -39,6 +45,16 @@ from agents_runtime import (
 
 
 class TestSVLKernelSuite(unittest.TestCase):
+    def test_relative_sqlite_paths_are_anchored_to_the_project(self) -> None:
+        expected = BACKEND_DIR.parent / "data" / "svl_os.sqlite3"
+        self.assertEqual(resolve_sqlite_path(), expected)
+        self.assertEqual(resolve_sqlite_path("./data/svl_os.sqlite3"), expected)
+        with patch.dict("os.environ", {"SVL_SQLITE_PATH": "./state/custom.sqlite3"}):
+            self.assertEqual(
+                resolve_sqlite_path(),
+                BACKEND_DIR.parent / "state" / "custom.sqlite3",
+            )
+
     def test_topological_infinity_engine_math(self) -> None:
         engine = TopologicalInfinityEngine(float("-inf"), float("inf"))
         self.assertAlmostEqual(engine.compact_start, -1.0)
@@ -132,11 +148,29 @@ class TestSVLKernelSuite(unittest.TestCase):
                 self.assertNotIn("root", config["allowed_scopes"])
                 self.assertNotIn("sudo_nopasswd", config["allowed_scopes"])
 
-            updated = orchestrator.update_agent_config("Aria", {"temperature": 0.42, "ollama_model": "llama3.2-vision:11b"})
+            custom_prompt = "Zachowuj moje ustalenia i odpowiadaj zwięźle."
+            updated = orchestrator.update_agent_config(
+                "Aria",
+                {
+                    "temperature": 0.42,
+                    "ollama_model": "llama3.2-vision:11b",
+                    "system_prompt": custom_prompt,
+                },
+            )
             self.assertAlmostEqual(updated["temperature"], 0.42)
             reloaded = orchestrator.get_agent_config("Aria")
             self.assertAlmostEqual(reloaded["temperature"], 0.42)
+            self.assertEqual(reloaded["system_prompt"], custom_prompt)
             self.assertFalse(reloaded["root_nopasswd"])
+            orchestrator.add_agent_memory("Aria", "Ustalenie do zachowania po restarcie.", kind="decision")
+
+            restarted_kernel = SVLSystemKernel(db_path=db_file, operator_token=token)
+            restarted_orchestrator = SVLAgentOrchestrator(restarted_kernel, bus)
+            self.assertEqual(restarted_orchestrator.get_agent_config("Aria")["system_prompt"], custom_prompt)
+            self.assertEqual(
+                restarted_orchestrator.get_agent_memories("Aria", limit=1)[0]["content"],
+                "Ustalenie do zachowania po restarcie.",
+            )
 
             kernel.run_db(
                 lambda conn: conn.execute(

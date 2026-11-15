@@ -31,6 +31,15 @@ from typing import Any, Callable, Optional, TypeVar
 _T = TypeVar("_T")
 
 SYNC_SCHEMA_VERSION = "2026.11.sync.v1"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def resolve_sqlite_path(db_path: Optional[str] = None) -> Path:
+    configured_path = db_path or os.environ.get("SVL_SQLITE_PATH")
+    path = Path(configured_path).expanduser() if configured_path else Path("data/svl_os.sqlite3")
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
 
 SENSITIVE_KEY_MARKERS = (
     "token",
@@ -418,7 +427,7 @@ class SVLSystemKernel:
     """
 
     def __init__(self, db_path: Optional[str] = None, operator_token: Optional[str] = None) -> None:
-        self.db_path = Path(db_path or os.environ.get("SVL_SQLITE_PATH", "./data/svl_os.sqlite3"))
+        self.db_path = resolve_sqlite_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         env_token = (operator_token or os.environ.get("SVL_OPERATOR_TOKEN") or "").strip()

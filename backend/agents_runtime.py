@@ -434,7 +434,7 @@ class SVLAgentOrchestrator:
     def __init__(self, kernel: SVLSystemKernel, bus: SphericalEventBus) -> None:
         self.kernel = kernel
         self.bus = bus
-        self.runtime_dir = Path("./data/runtime_agents")
+        self.runtime_dir = self.kernel.db_path.parent / "runtime_agents"
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.processes: dict[str, multiprocessing.Process] = {}
         self.agent_states: dict[str, dict[str, Any]] = {}
@@ -656,16 +656,20 @@ class SVLAgentOrchestrator:
                 else:
                     try:
                         loaded = json.loads(existing["config_json"] or "{}")
-                        if isinstance(loaded, dict):
-                            loaded["system_prompt"] = meta["system_prompt"]
-                            loaded["display_name"] = meta["display_name"]
-                            loaded = sanitize_agent_config(loaded)
-                            conn.execute(
-                                "UPDATE agent_configs SET config_json = ?, updated_at = ? WHERE canonical_name = ?",
-                                (json.dumps(loaded, ensure_ascii=False), now_iso, name),
-                            )
-                    except Exception:
-                        pass
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise RuntimeError(f"Stored configuration for agent {name} is invalid JSON.") from exc
+                    if not isinstance(loaded, dict):
+                        raise RuntimeError(f"Stored configuration for agent {name} must be a JSON object.")
+
+                    if "system_prompt" not in loaded:
+                        loaded["system_prompt"] = meta["system_prompt"]
+                    loaded["display_name"] = meta["display_name"]
+                    sanitized = sanitize_agent_config(loaded)
+                    if sanitized != loaded:
+                        conn.execute(
+                            "UPDATE agent_configs SET config_json = ?, updated_at = ? WHERE canonical_name = ?",
+                            (json.dumps(sanitized, ensure_ascii=False), now_iso, name),
+                        )
 
         self.kernel.run_db(_init_tbl, write=True)
 
@@ -676,20 +680,21 @@ class SVLAgentOrchestrator:
             **meta.get("default_config", {}),
             "system_prompt": meta.get("system_prompt", ""),
         }
-        try:
-            def _read(conn: Any) -> Any:
-                return conn.execute(
-                    "SELECT config_json FROM agent_configs WHERE canonical_name = ?",
-                    (canonical_name,),
-                ).fetchone()
+        def _read(conn: Any) -> Any:
+            return conn.execute(
+                "SELECT config_json FROM agent_configs WHERE canonical_name = ?",
+                (canonical_name,),
+            ).fetchone()
 
-            row = self.kernel.run_db(_read, write=False)
-            if row and row["config_json"]:
+        row = self.kernel.run_db(_read, write=False)
+        if row:
+            try:
                 loaded = json.loads(row["config_json"])
-                if isinstance(loaded, dict):
-                    base.update(loaded)
-        except Exception:
-            pass
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"Stored configuration for agent {canonical_name} is invalid JSON.") from exc
+            if not isinstance(loaded, dict):
+                raise RuntimeError(f"Stored configuration for agent {canonical_name} must be a JSON object.")
+            base.update(loaded)
         return sanitize_agent_config(base)
 
     def get_agent_config_revision(self, canonical_name: str) -> int:

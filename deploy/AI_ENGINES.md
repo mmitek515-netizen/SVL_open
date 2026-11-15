@@ -41,3 +41,14 @@ ollama list
 ```
 
 Test generowania obrazu wykonuje instalator. Można go powtórzyć przyciskiem **Generuj obraz** w czacie. Generowanie wymaga działającego ComfyUI oraz pobranych modeli; sama odpowiedź `/system_stats` potwierdza tylko dostępność API, nie zakończone wnioskowanie.
+
+## Trwałość promptów, pamięci i konfiguracji
+
+Konfiguracje agentów (w tym edytowane prompty systemowe), wpisy pamięci i historia rozmów są przechowywane w bazie SQLite. Instalacja natywna używa `/var/lib/svl-os/svl_os.sqlite3`; Docker Compose zapisuje bazę w wolumenie `svl-os-data`. Nie usuwaj tego katalogu ani wolumenu podczas aktualizacji. Ścieżki względne `SVL_SQLITE_PATH` są rozwiązywane względem katalogu repozytorium, a nie bieżącego katalogu procesu.
+
+Edytuj prompty w panelu Agentów i zatwierdź przyciskiem zapisu; restart zachowuje je teraz zamiast przywracać wbudowany tekst domyślny. Przed migracją lub reinstalacją wykonaj kopię SQLite, np.:
+
+```bash
+sudo sqlite3 /var/lib/svl-os/svl_os.sqlite3 \
+  ".backup '/var/lib/svl-os/svl_os.sqlite3.backup'"
+```
