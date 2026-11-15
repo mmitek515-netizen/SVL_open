@@ -1124,7 +1124,7 @@ async def handle_api_request(
                         "modelUsed": "SVL Chat Sync",
                         "timestamp": datetime.now(timezone.utc).strftime("%H:%M"),
                         "content": (
-                            f"Zastosowano {len(applied_actions)} zmian(y) wynikających z polecenia czatu."
+                            "Zastosowano zmiany wynikające z polecenia czatu."
                             + (f"\n\nOstrzeżenie: {module_warning}" if module_warning else "")
                         ),
                         "appliedActions": applied_actions,
