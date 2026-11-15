@@ -93,8 +93,10 @@ function startAutomaticGitHubSync(): NodeJS.Timeout | null {
     console.log('[GitHubSync] Automatic sync is disabled; configure GITHUB_TOKEN and restart to enable it.');
     return null;
   }
-  if (process.env.SVL_GITHUB_AUTO_SYNC === 'false') {
-    console.log('[GitHubSync] Automatic sync is disabled by SVL_GITHUB_AUTO_SYNC=false.');
+  // Explicit opt-in only: a stored GitHub token is not permission to
+  // publish a potentially stale AI Studio snapshot on every boot.
+  if (process.env.SVL_GITHUB_AUTO_SYNC !== 'true') {
+    console.log('[GitHubSync] Automatic code publishing is disabled (set SVL_GITHUB_AUTO_SYNC=true to opt in).');
     return null;
   }
 
@@ -128,7 +130,7 @@ function startAutomaticGitHubSync(): NodeJS.Timeout | null {
   void syncWorkspace();
   const timer = setInterval(() => void syncWorkspace(), intervalMs);
   timer.unref();
-  console.log(`[GitHubSync] Automatic two-way sync enabled for ${syncBranch} every ${intervalMs} ms.`);
+  console.log(`[GitHubSync] Optional branch publishing enabled for ${syncBranch} every ${intervalMs} ms. No live source replacement.`);
   return timer;
 }
 
@@ -458,7 +460,7 @@ async function startServer() {
       branchUrl: `https://github.com/mmitek515-netizen/SVL_open/tree/${encodeURIComponent(branch)}`,
       defaultBranch: 'main',
       tokenConfigured,
-      automaticEnabled: tokenConfigured && process.env.SVL_GITHUB_AUTO_SYNC !== 'false',
+      automaticEnabled: tokenConfigured && process.env.SVL_GITHUB_AUTO_SYNC === 'true',
       remoteApplyEnabled: process.env.SVL_GITHUB_APPLY_REMOTE_CHANGES === 'true',
       automaticMode: 'publish-only; no implicit branch merge or live source replacement',
       intervalMs: Number(process.env.SVL_GITHUB_SYNC_INTERVAL_MS || 30000),
