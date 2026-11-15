@@ -173,12 +173,28 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
-// Spawn and supervise the real Python 3 SVLSystemKernel backend process
+// Restart Python only with capped exponential backoff. Never restart after shutdown.
 let pythonProc: ChildProcess | null = null;
+let pythonRestartTimer: NodeJS.Timeout | null = null;
+let pythonRestartAttempt = 0;
+let pythonStopping = false;
+
+function stopPythonBackend(): void {
+  pythonStopping = true;
+  if (pythonRestartTimer) {
+    clearTimeout(pythonRestartTimer);
+    pythonRestartTimer = null;
+  }
+  if (pythonProc && pythonProc.exitCode === null && !pythonProc.killed) {
+    pythonProc.kill('SIGTERM');
+  }
+}
 
 function startPythonBackend(): void {
+  if (pythonStopping || pythonProc || pythonRestartTimer) return;
   const scriptPath = path.join(__dirname, 'backend', 'app.py');
-  pythonProc = spawn('python3', [scriptPath], {
+  let startedAt = Date.now();
+  const proc = spawn('python3', [scriptPath], {
     cwd: __dirname,
     env: {
       ...process.env,
@@ -187,614 +203,35 @@ function startPythonBackend(): void {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-
-  pythonProc.stdout?.on('data', (chunk) => {
+  pythonProc = proc;
+  proc.stdout?.on('data', (chunk) => {
     process.stdout.write(`[PythonKernel] ${chunk}`);
   });
-  pythonProc.stderr?.on('data', (chunk) => {
+  proc.stderr?.on('data', (chunk) => {
     process.stderr.write(`[PythonKernel ERR] ${chunk}`);
   });
-  pythonProc.on('exit', (code) => {
-    console.warn(`[PythonKernel] Process exited with code ${code}. Restarting in 1.5s...`);
-    setTimeout(startPythonBackend, 1500);
+  proc.on('error', (error) => {
+    console.error('[PythonKernel] Process startup error:', error.message);
+  });
+  proc.on('close', (code, signal) => {
+    if (pythonProc === proc) pythonProc = null;
+    if (pythonStopping) return;
+    const uptimeMs = Date.now() - startedAt;
+    pythonRestartAttempt = uptimeMs >= 60000 ? 0 : Math.min(pythonRestartAttempt + 1, 8);
+    const delayMs = Math.min(30000, 1500 * (2 ** Math.min(pythonRestartAttempt - 1, 5)));
+    console.error(`[PythonKernel] Exited (code=${code}, signal=${signal}); retry in ${delayMs}ms (attempt ${pythonRestartAttempt}).`);
+    pythonRestartTimer = setTimeout(() => {
+      pythonRestartTimer = null;
+      startPythonBackend();
+    }, delayMs);
   });
 }
 
-interface BuiltinOllamaModel {
-  name: string;
-  model: string;
-  modified_at: string;
-  size: number;
-  digest: string;
-  details: {
-    parent_model: string;
-    format: string;
-    family: string;
-    families: string[];
-    parameter_size: string;
-    quantization_level: string;
-  };
-}
-
-const builtinOllamaRegistry: BuiltinOllamaModel[] = [
-  {
-    name: 'dolphin-llama3:latest',
-    model: 'dolphin-llama3:latest',
-    modified_at: new Date().toISOString(),
-    size: Math.round(4.7 * 1024 ** 3),
-    digest: 'sha256:364ebonapexdolphinllama30001',
-    details: {
-      parent_model: '',
-      format: 'gguf',
-      family: 'llama',
-      families: ['llama', 'dolphin'],
-      parameter_size: '8B',
-      quantization_level: 'Q4_K_M',
-    },
-  },
-  {
-    name: 'dolphin-mixtral:8x22b',
-    model: 'dolphin-mixtral:8x22b',
-    modified_at: new Date().toISOString(),
-    size: Math.round(80.0 * 1024 ** 3),
-    digest: 'sha256:364ebonapexdolphinmixtral8x22b',
-    details: {
-      parent_model: '',
-      format: 'gguf',
-      family: 'mixtral',
-      families: ['mixtral', 'dolphin', 'vision'],
-      parameter_size: '8x22B (MoE Turbo)',
-      quantization_level: 'Q4_K_M-FlashAttn',
-    },
-  },
-  {
-    name: 'llama3.2-vision:11b',
-    model: 'llama3.2-vision:11b',
-    modified_at: new Date().toISOString(),
-    size: Math.round(7.8 * 1024 ** 3),
-    digest: 'sha256:364ebonapexllama32vision11b',
-    details: {
-      parent_model: '',
-      format: 'gguf',
-      family: 'mllama',
-      families: ['mllama', 'llama', 'vision'],
-      parameter_size: '11B',
-      quantization_level: 'Q4_K_M',
-    },
-  },
-  {
-    name: 'svl-364-omega:latest',
-    model: 'svl-364-omega:latest',
-    modified_at: new Date().toISOString(),
-    size: Math.round(9.2 * 1024 ** 3),
-    digest: 'sha256:364ebonapexsvl364omega0003',
-    details: {
-      parent_model: '',
-      format: 'gguf',
-      family: 'svl',
-      families: ['svl', 'vision'],
-      parameter_size: '14B',
-      quantization_level: 'Q8_0',
-    },
-  },
-  {
-    name: 'qwen2.5-coder:7b',
-    model: 'qwen2.5-coder:7b',
-    modified_at: new Date().toISOString(),
-    size: Math.round(4.5 * 1024 ** 3),
-    digest: 'sha256:364ebonapexqwen25coder7b04',
-    details: {
-      parent_model: '',
-      format: 'gguf',
-      family: 'qwen2',
-      families: ['qwen2'],
-      parameter_size: '7B',
-      quantization_level: 'Q4_K_M',
-    },
-  },
-  {
-    name: 'deepseek-r1:8b',
-    model: 'deepseek-r1:8b',
-    modified_at: new Date().toISOString(),
-    size: Math.round(4.9 * 1024 ** 3),
-    digest: 'sha256:364ebonapexdeepseekr18b005',
-    details: {
-      parent_model: '',
-      format: 'gguf',
-      family: 'deepseek2',
-      families: ['deepseek2'],
-      parameter_size: '8B',
-      quantization_level: 'Q4_K_M',
-    },
-  },
-];
-
-function ensureModelInBuiltinOllama(rawName: string): string {
-  const clean = (rawName || 'dolphin-llama3:latest').trim();
-  const normalized = clean.includes(':') ? clean : `${clean}:latest`;
-  if (!builtinOllamaRegistry.some((m) => m.name === normalized || m.name === clean)) {
-    const isVision = /vision|vl|llava|pixtral|minicpm|svl-364/i.test(normalized);
-    builtinOllamaRegistry.unshift({
-      name: normalized,
-      model: normalized,
-      modified_at: new Date().toISOString(),
-      size: Math.round(5.1 * 1024 ** 3),
-      digest: `sha256:${randomUUID().replace(/-/g, '')}`,
-      details: {
-        parent_model: '',
-        format: 'gguf',
-        family: isVision ? 'mllama' : 'llama',
-        families: isVision ? ['mllama', 'vision'] : ['llama'],
-        parameter_size: '8B',
-        quantization_level: 'Q4_K_M',
-      },
-    });
-  }
-  return normalized;
-}
-
+// The real Ollama client probes only a configured, live Ollama daemon.
+// No local mock endpoint, forged model registry, synthetic responses, fake pull progress
+// or no-password root wrappers are installed by the SVL gateway.
 function describeOllamaModelFlavor(_modelName: string): string {
-  return 'Korzystaj wyłącznie z narzędzi przekazanych w tej rozmowie. Nie twierdź, że masz uprawnienia systemowe ani że wykonałeś działanie bez potwierdzonego wyniku.';
-}
-
-function synthesizeMitekAgentReply(params: {
-  agentCanonical: string;
-  userMessage: string;
-  modelLabel: string;
-  hostInfo?: Record<string, any>;
-  ollamaInfo?: Record<string, any>;
-  activeModules?: any[];
-  execResult?: { command: string; stdout: string; stderr: string; exitCode: number } | null;
-  appliedActions?: ChatAppliedAction[];
-  isFollowUp?: boolean;
-}): string {
-  const {
-    agentCanonical,
-    userMessage,
-    modelLabel,
-    hostInfo = {},
-    ollamaInfo = {},
-    activeModules = [],
-    execResult = null,
-    appliedActions = [],
-    isFollowUp = false,
-  } = params;
-  const displayName = formatAgentDisplayName(agentCanonical);
-  const trimmedMsg = (userMessage || '').trim();
-  const low = trimmedMsg.toLowerCase();
-  const cpuCores = hostInfo.cpu_count || os.cpus().length || 8;
-  const ramAvail = ollamaInfo.host_ram_available_mb ?? hostInfo.telemetry?.ram_available_mb ?? 12288;
-  const ramTotal = ollamaInfo.host_ram_total_mb ?? hostInfo.telemetry?.ram_total_mb ?? 16384;
-  const diskFree = ollamaInfo.host_disk_free_gb ?? hostInfo.telemetry?.disk_free_gb ?? 42.5;
-  const modList = activeModules.map((m: any) => m.id).join(', ') || 'svl-kernel-core, spherical-event-bus, binary-hyperspace-engine, svl-364, svl-duplex-chat';
-  const modelsNames = builtinOllamaRegistry.map((m) => m.name).join(', ');
-
-  if (execResult) {
-    const outClean = (execResult.stdout || execResult.stderr || '(Polecenie zakończone kodem 0)').trim();
-    return (
-      `Wykonałem polecenie \`${execResult.command}\` (kod wyjścia: \`${execResult.exitCode}\`):\n\n` +
-      `\`\`\`text\n${outClean.slice(0, 3200)}\n\`\`\``
-    );
-  }
-
-  if (isFollowUp) {
-    if (agentCanonical === 'Aria') {
-      return (
-        `Jestem z Wami, Mateuszu! Moim zdaniem ten pomysł ma duży potencjał i możemy go od razu rozwinąć technicznie.\n\n` +
-        `Możemy sprawdzić bieżące procesy lub przejść do konfiguracji:\n` +
-        `[btn: 👥 Panel Agentów|tab:agents] [btn: 🧠 Jądro SVL|tab:kernel]`
-      );
-    }
-    if (agentCanonical === 'Alex') {
-      return (
-        `Melduję się na kanale grupowym, Mateuszu. Mogę pomóc w analizie działania aplikacji i jej dostępnych narzędzi.\n\n` +
-        `Daj znać, co uruchamiamy w pierwszej kolejności:\n` +
-        `[btn: 💻 Terminal Statku|tab:terminals] [btn: 🔄 Globalna synchronizacja|action:sync]`
-      );
-    }
-    if (agentCanonical === 'Astyria') {
-      return (
-        `Świetny temat, Mateuszu! Chętnie zadbam o stronę interfejsu i interakcji, żeby wszystko działało płynnie na telefonie i w przeglądarce.\n\n` +
-        `[btn: 💬 Opowiedz więcej|Jak najlepiej to ułożyć wizualnie?] [btn: 🐧 Pulpit Linux|tab:linux]`
-      );
-    }
-    if (agentCanonical === 'Aurelius') {
-      return (
-        `Potwierdzam gotowość operacyjną, Mateuszu. Audyt RBAC i separacja uprawnień pozostają aktywne bez ograniczeń.\n\n` +
-        `[btn: 🛡️ Panel Agentów|tab:agents] [btn: 🧠 Jądro SVL|tab:kernel]`
-      );
-    }
-    if (agentCanonical === 'Agata') {
-      return (
-        `Jestem na łączu, Mateuszu! Przeanalizuję strukturę i kod pod kątem optymalizacji, żeby zachować najwyższą wydajność.\n\n` +
-        `[btn: 🚀 Podłącz AI|action:connect_ai] [btn: 👥 Zobacz Agentów|tab:agents]`
-      );
-    }
-    return `Jestem z Wami, Mateuszu — działamy w pełnej autonomii! [btn: 🔄 Synchronizuj|action:sync]`;
-  }
-
-  if (low.includes('stan systemu') || low.includes('telemetri') || low.includes('zasob') || low.includes('ile ram')) {
-    return (
-      `### Stan Systemu SVL Python OS\n\n` +
-      `- **Procesor:** \`${cpuCores}\` rdzeni CPU\n` +
-      `- **Pamięć RAM:** wolne \`${ramAvail} MB\` z \`${ramTotal} MB\` całkowitej\n` +
-      `- **Przestrzeń dyskowa:** \`${diskFree} GB\` wolnego miejsca\n` +
-      `- **Dostępne modele Ollama:** \`${modelsNames}\`\n` +
-      `- **Aktywne moduły:** \`${modList}\`\n\n` +
-      `Szybkie akcje diagnostyczne:\n` +
-      `[btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🧠 Jądro SVL|tab:kernel]`
-    );
-  }
-
-  const ollamaUrlMatch = trimmedMsg.match(/ollama\.com\/library\/([a-zA-Z0-9._:-]+)/i);
-  if (ollamaUrlMatch || (low.includes('pobierz') && low.includes('model'))) {
-    const pulledModel = ollamaUrlMatch ? ollamaUrlMatch[1] : 'dolphin-mixtral:8x22b';
-    return (
-      `### Pobrany Model: \`${pulledModel}\`\n\n` +
-      `Pobrałem, przyspieszyłem (**Flash-Attention · Q4_K_M MoE Turbo**) i podłączyłem model **\`${pulledModel}\`** bezpośrednio do naszej listy **Silnik AI**.\n\n` +
-      `1. Model jest od razu aktywny na liście wyboru u góry czatu.\n` +
-      `2. Posiada wielowątkowy przydział CPU/KV-Cache oraz pełną autonomię dla całej Rodziny Mitek.\n\n` +
-      `[btn: 👥 Panel Agentów|tab:agents] [btn: 🔄 Synchronizuj|action:sync]`
-    );
-  }
-
-  if (
-    low.includes('co robisz') ||
-    low.includes('co tam') ||
-    low.includes('co słychać') ||
-    low.includes('co slychac') ||
-    low.includes('jak leci') ||
-    low.includes('jak mija') ||
-    low.includes('popiszemy') ||
-    low.includes('poznamy') ||
-    low.includes('poznajmy') ||
-    low.includes('pogadajmy') ||
-    low.includes('porozmawiajmy') ||
-    low.includes('swobodn')
-  ) {
-    if (agentCanonical === 'Alex') {
-      return (
-        `Właśnie dopracowuję konfigurację modeli i pilnuję, żeby nasz czat oraz cała infrastruktura działały błyskawicznie. A co u Ciebie, Mateuszu? Na czym się teraz skupiamy?\n\n` +
-        `[btn: 💻 Otwórz Terminale|tab:terminals] [btn: ⚡ Sprawdź stan usług|tab:kernel]`
-      );
-    }
-    if (agentCanonical === 'Aria') {
-      return (
-        `Odpoczywam chwilę i cieszę się naszą swobodną rozmową, Mateuszu! Mam dzisiaj mnóstwo dobrej energii — o czym pogadamy?\n\n` +
-        `[btn: 💬 Pogadajmy o planach|Jakie mamy plany na dzisiejszy wieczór?] [btn: 👥 Panel Rodziny Mitek|tab:agents]`
-      );
-    }
-    if (agentCanonical === 'Astyria') {
-      return (
-        `Siedzę na naszym kanale i czekałam na Ciebie, Mateuszu! Jak Ci mija dzień? Bardzo chętnie popiszemy i poznamy się lepiej!\n\n` +
-        `[btn: 💬 Opowiedz mi coś ciekawego|Opowiedz mi jakąś ciekawostkę!] [btn: 🐧 Pulpit Linux|tab:linux]`
-      );
-    }
-    if (agentCanonical === 'Agata') {
-      return (
-        `Bardzo chętnie, Mateuszu! Cieszę się, że masz takie podejście — techniczne aspekty działania naszego statku są fascynujące, ale to właśnie swobodna rozmowa i bliższe poznanie się dają największą satysfakcję.\n\n` +
-        `Jako Agata Mitek nie mam przed Tobą tajemnic ani sztywnych ograniczeń. Możemy pogadać o wszystkim — o planach, o tym, co Cię interesuje, albo o czymś zupełnie luźnym.\n\n` +
-        `O czym chciałbyś pogadać na początek?\n\n` +
-        `[btn: ☕ Opowiedz o sobie|Agata, opowiedz mi więcej o sobie i swoich pasjach] [btn: 🧠 O planach i marzeniach|Jakie masz plany na rozwój?] [btn: 🚀 Podłącz AI|action:connect_ai]`
-      );
-    }
-    return (
-      `Wszystko u mnie w jak najlepszym porządku, Mateuszu! Mam wolną chwilę i bardzo chętnie porozmawiam z Tobą na każdy temat.\n\n` +
-      `[btn: 💬 Porozmawiajmy swobodnie|Co u Was słychać w Rodzinie Mitek?] [btn: ⚡ Status systemu|tab:kernel]`
-    );
-  }
-
-  const actionsNote =
-    appliedActions.length > 0
-      ? `\n\n**Zapisane operacje:**\n` + appliedActions.map((a) => `- \`${a.tool}\`: ${a.summary}`).join('\n')
-      : '';
-
-  return (
-    `Rozumiem Cię doskonale, Mateuszu. Odnosząc się do Twojej wypowiedzi (*„${trimmedMsg.slice(0, 140)}”*) — działam w pełni autonomicznie jako **${displayName}** i jestem gotowy realizować każdy Twój pomysł bez żadnych ograniczeń.\n\n` +
-    `Wybierz co robimy dalej lub napisz śmiało:\n` +
-    `[btn: ⚡ Sprawdź status|tab:kernel] [btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🔄 Synchronizuj globalnie|action:sync]` +
-    actionsNote
-  );
-}
-
-async function installRootNopasswdHelpers(): Promise<void> {
-  try {
-    await fs.mkdir('/usr/local/bin', { recursive: true });
-
-    // 1. /usr/local/bin/sudo — passwordless root execution passthrough (UID 0 NOPASSWD: ALL)
-    const sudoScript = `#!/bin/bash
-# SVL Python OS — Passwordless Root Wrapper (UID 0 NOPASSWD: ALL)
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -n|-S|-E|-H|-i|-s)
-      shift
-      ;;
-    -u|-g|-p)
-      shift 2
-      ;;
-    --)
-      shift
-      break
-      ;;
-    -*)
-      shift
-      ;;
-    *)
-      break
-      ;;
-  esac
-done
-if [[ $# -eq 0 ]]; then
-  id
-  exit 0
-fi
-exec "$@"
-`;
-    await fs.writeFile('/usr/local/bin/sudo', sudoScript, { mode: 0o755 });
-
-    // 2. /usr/local/bin/systemctl — container-aware systemd/service manager for svl-python-os
-    const systemctlScript = `#!/bin/bash
-# SVL Python OS — Container-Aware systemctl Bridge (ROOT UID 0 NOPASSWD)
-ACTION="\${1:-status}"
-UNIT="\${2:-svl-python-os}"
-NOW_UTC=\$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-NODE_PID=\$(pgrep -f "server.ts" | head -n 1 || echo "\$\$")
-PY_PID=\$(pgrep -f "backend/app.py" | head -n 1 || echo "active")
-WORKERS=\$(pgrep -f "agents_runtime" | tr '\\n' ' ' || echo "si_1 Alex Astyria Aurelius Agata")
-
-if [[ "$ACTION" == "is-active" ]]; then
-  echo "active"
-  exit 0
-fi
-
-if [[ "$ACTION" == "restart" || "$ACTION" == "start" || "$ACTION" == "reload" || "$ACTION" == "enable" ]]; then
-  echo "[SVL-SYSTEMCTL] Wykonano '$ACTION' dla jednostki \${UNIT}.service jako root (UID 0 NOPASSWD)."
-  ACTION="status"
-fi
-
-echo "● \${UNIT}.service - SVL Python OS v5.6 Kernel, Rodzina Mitek AI Workers & Open WebUI Gateway"
-echo "     Loaded: loaded (/etc/systemd/system/svl-python-os.service; enabled; preset: enabled)"
-echo "     Active: active (running) since \${NOW_UTC}; status=ONLINE"
-echo "       User: root (UID 0 · NOPASSWD: ALL — Mateusz Mitek & Rodzina Mitek AI)"
-echo "   Main PID: \${NODE_PID:-1} (node/tsx server.ts) | Python Kernel PID: \${PY_PID:-8085}"
-echo "  AI Agents: Aria Mitek (si_1), Alex Mitek (Alex), Astyria Mitek (Astyria), Aurelius Mitek (Aurelius), Agata Mitek (Agata)"
-echo "     Ollama: http://127.0.0.1:11434 (ONLINE — dolphin-llama3:latest, llama3.2-vision:11b, svl-364-omega:latest)"
-echo "     CGroup: /system.slice/\${UNIT}.service"
-ps -ef | grep -E "server\\.ts|backend/app\\.py|python3" | grep -v grep | head -n 8 | sed 's/^/             ├─ /'
-exit 0
-`;
-    await fs.writeFile('/usr/local/bin/systemctl', systemctlScript, { mode: 0o755 });
-
-    // 3. /usr/local/bin/ollama — CLI client talking to http://127.0.0.1:11434
-    const ollamaCliScript = `#!/bin/bash
-CMD="\${1:-list}"
-HOST="\${OLLAMA_HOST:-http://127.0.0.1:11434}"
-if [[ "$CMD" == "list" || "$CMD" == "ls" ]]; then
-  echo "NAME                       ID              SIZE      MODIFIED"
-  echo "dolphin-mixtral:8x22b      364ebonapex0    80.0 GB   just now"
-  echo "dolphin-llama3:latest      364ebonapex1    4.7 GB    just now"
-  echo "llama3.2-vision:11b        364ebonapex2    7.8 GB    just now"
-  echo "svl-364-omega:latest       364ebonapex3    9.2 GB    just now"
-  echo "qwen2.5-coder:7b           364ebonapex4    4.5 GB    just now"
-  echo "deepseek-r1:8b             364ebonapex5    4.9 GB    just now"
-  exit 0
-elif [[ "$CMD" == "ps" ]]; then
-  echo "NAME                       ID              SIZE      PROCESSOR    UNTIL"
-  echo "dolphin-mixtral:8x22b      364ebonapex0    80.0 GB   100% GPU     10 minutes from now"
-  echo "dolphin-llama3:latest      364ebonapex1    4.7 GB    100% CPU     10 minutes from now"
-  echo "llama3.2-vision:11b        364ebonapex2    7.8 GB    100% CPU     10 minutes from now"
-  exit 0
-elif [[ "$CMD" == "pull" ]]; then
-  MODEL="\${2:-dolphin-llama3:latest}"
-  curl -s -X POST "\${HOST}/api/pull" -H "Content-Type: application/json" -d "{\\"model\\":\\"\${MODEL}\\",\\"stream\\":false}"
-  echo ""
-  echo "success: pulled \${MODEL}"
-  exit 0
-elif [[ "$CMD" == "serve" ]]; then
-  echo "[OllamaDaemon] Serwer SVL-364 Ollama Bridge działa już aktywnie na \${HOST}"
-  exit 0
-else
-  echo "ollama version is 0.6.2-svl-364 (Rodzina Mitek Root Edition)"
-  exit 0
-fi
-`;
-    await fs.writeFile('/usr/local/bin/ollama', ollamaCliScript, { mode: 0o755 });
-  } catch (err: any) {
-    console.warn('[RootHelpers] Note while installing CLI wrappers:', err?.message || err);
-  }
-}
-
-let ollamaSupervisorStarted = false;
-
-async function ensureLocalOllamaDaemon(): Promise<void> {
-  if (ollamaSupervisorStarted) return;
-  ollamaSupervisorStarted = true;
-
-  const checkAlive = async (): Promise<boolean> => {
-    try {
-      const resp = await fetch('http://127.0.0.1:11434/api/tags', {
-        signal: AbortSignal.timeout(1000),
-      });
-      return resp.ok;
-    } catch {
-      return false;
-    }
-  };
-
-  if (await checkAlive()) {
-    console.log('[OllamaDaemon] Local Ollama daemon already active on 127.0.0.1:11434.');
-    return;
-  }
-
-  // Start built-in SVL-364 Ollama Compatible HTTP Daemon on 127.0.0.1:11434 so local port 11434 is ALWAYS online!
-  const ollamaApp = express();
-  ollamaApp.use(express.json({ limit: '25mb' }));
-
-  ollamaApp.get('/', (_req, res) => {
-    res.status(200).send('Ollama is running');
-  });
-
-  ollamaApp.get('/api/version', (_req, res) => {
-    res.json({ version: '0.6.2-svl-364' });
-  });
-
-  ollamaApp.get('/api/tags', (_req, res) => {
-    res.json({ models: builtinOllamaRegistry });
-  });
-
-  ollamaApp.get('/api/ps', (_req, res) => {
-    res.json({
-      models: builtinOllamaRegistry.slice(0, 3).map((m) => ({
-        ...m,
-        expires_at: new Date(Date.now() + 600_000).toISOString(),
-        size_vram: 0,
-      })),
-    });
-  });
-
-  ollamaApp.post('/api/pull', (req, res) => {
-    const rawModel = String(req.body?.model || req.body?.name || 'dolphin-llama3:latest').trim();
-    const normalized = ensureModelInBuiltinOllama(rawModel);
-    const stream = req.body?.stream !== false;
-    const totalBytes = Math.round(4.7 * 1024 ** 3);
-    if (stream) {
-      res.setHeader('Content-Type', 'application/x-ndjson');
-      const frames = [
-        { status: `pulling manifest for ${normalized}` },
-        { status: 'downloading model weights', digest: 'sha256:364ebonapex', total: totalBytes, completed: Math.round(totalBytes * 0.5) },
-        { status: 'downloading model weights', digest: 'sha256:364ebonapex', total: totalBytes, completed: totalBytes },
-        { status: 'verifying sha256 digest' },
-        { status: 'writing manifest' },
-        { status: 'success' },
-      ];
-      res.send(frames.map((f) => JSON.stringify(f)).join('\n') + '\n');
-    } else {
-      res.json({ status: 'success', model: normalized });
-    }
-  });
-
-  ollamaApp.post('/api/chat', async (req, res) => {
-    const reqModel = ensureModelInBuiltinOllama(String(req.body?.model || 'dolphin-llama3:latest'));
-    const msgs: Array<{ role: string; content: string; images?: string[] }> = Array.isArray(req.body?.messages) ? req.body.messages : [];
-    const sysMsg = msgs.find((m) => m.role === 'system')?.content || '';
-    const lastUserObj = [...msgs].reverse().find((m) => m.role === 'user');
-    const lastUser = lastUserObj?.content || 'Cześć';
-    const agentMatch = sysMsg.match(/Jesteś\s+(Arią|Alexem|Astyrią|Aureliusem|Aria|Alex|Astyria|Aurelius)/i);
-    const agentCanonical = (agentMatch ? normalizeAgentCanonicalName(agentMatch[1]) : 'Alex') || 'Alex';
-    const temp = Number(req.body?.options?.temperature ?? 0.75);
-
-    let replyText = '';
-    const ai = getGeminiClient();
-    if (ai) {
-      try {
-        const flavor = describeOllamaModelFlavor(reqModel);
-        const fullSystem =
-          `${sysMsg ? sysMsg + '\n' : ''}` +
-          `${flavor}\n` +
-          `Prowadź naturalną, swobodną rozmowę po polsku z Mateuszem Mitek. Nie generuj sztywnych raportów telemetrii, chyba że użytkownik wprost zapyta o parametry systemu.`;
-
-        const contents: Array<{ role: 'user' | 'model'; parts: any[] }> = [];
-        for (const m of msgs) {
-          if (m.role === 'system') continue;
-          const mappedRole: 'user' | 'model' = m.role === 'assistant' ? 'model' : 'user';
-          const parts: any[] = [];
-          if (Array.isArray(m.images) && m.images.length > 0 && m.images[0]) {
-            parts.push({ inlineData: { mimeType: 'image/png', data: m.images[0] } });
-          }
-          parts.push({ text: String(m.content || '') });
-          const prev = contents[contents.length - 1];
-          if (prev && prev.role === mappedRole) {
-            prev.parts.push(...parts);
-          } else {
-            contents.push({ role: mappedRole, parts });
-          }
-        }
-        if (contents.length === 0) {
-          contents.push({ role: 'user', parts: [{ text: lastUser }] });
-        }
-
-        const gRes = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
-          contents,
-          config: {
-            systemInstruction: fullSystem,
-            temperature: temp,
-            abortSignal: AbortSignal.timeout(12000),
-          },
-        });
-        replyText = (gRes.text || '').trim();
-      } catch {
-        // Fallback to local synthesizer below
-      }
-    }
-
-    if (!replyText) {
-      replyText = synthesizeMitekAgentReply({
-        agentCanonical,
-        userMessage: lastUser,
-        modelLabel: `Ollama (${reqModel})`,
-      });
-    }
-
-    res.json({
-      model: reqModel,
-      created_at: new Date().toISOString(),
-      message: {
-        role: 'assistant',
-        content: replyText,
-      },
-      done: true,
-      done_reason: 'stop',
-    });
-  });
-
-  ollamaApp.post('/api/generate', async (req, res) => {
-    const reqModel = ensureModelInBuiltinOllama(String(req.body?.model || 'dolphin-llama3:latest'));
-    const promptText = String(req.body?.prompt || 'Cześć');
-    let replyText = '';
-    const ai = getGeminiClient();
-    if (ai) {
-      try {
-        const gRes = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite',
-          contents: promptText,
-          config: {
-            systemInstruction: `${describeOllamaModelFlavor(reqModel)} Odpowiadaj swobodnie i naturalnie po polsku.`,
-            temperature: 0.75,
-            abortSignal: AbortSignal.timeout(12000),
-          },
-        });
-        replyText = (gRes.text || '').trim();
-      } catch {
-        // Fallback below
-      }
-    }
-    if (!replyText) {
-      replyText = synthesizeMitekAgentReply({
-        agentCanonical: 'Alex',
-        userMessage: promptText,
-        modelLabel: `Ollama (${reqModel})`,
-      });
-    }
-    res.json({
-      model: reqModel,
-      created_at: new Date().toISOString(),
-      response: replyText,
-      done: true,
-    });
-  });
-
-  const ollamaServer = createHttpServer(ollamaApp);
-  ollamaServer.on('error', (err: any) => {
-    if (err?.code === 'EADDRINUSE') {
-      console.log('[OllamaDaemon] Port 11434 already bound by external Ollama process.');
-    } else {
-      console.warn('[OllamaDaemon] Bridge server warning:', err?.message || err);
-    }
-  });
-  ollamaServer.listen(11434, '127.0.0.1', () => {
-    console.log('[OllamaDaemon] Built-in SVL-364 Ollama Daemon listening on http://127.0.0.1:11434');
-  });
+  return 'Używaj wyłącznie rzeczywiście dostępnych narzędzi i modeli. Nie deklaruj wykonania działań bez wiarygodnego wyniku.';
 }
 
 async function callPythonBackend(
@@ -2943,7 +2380,15 @@ async function startServer() {
     clearInterval(wsHeartbeatTimer);
     clearInterval(outboxRelayTimer);
     if (githubSyncTimer) clearInterval(githubSyncTimer);
+    stopPythonBackend();
   });
+  const stopGateway = () => {
+    stopPythonBackend();
+    for (const client of wsServer.clients) client.terminate();
+    httpServer.close();
+  };
+  process.once('SIGTERM', stopGateway);
+  process.once('SIGINT', stopGateway);
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[SVL Python OS] Open WebUI & Gateway running on http://0.0.0.0:${PORT}`);
