@@ -9,12 +9,34 @@ import {
   extractExplicitChatModuleDirective,
   isConnectMyAiCommand,
   isGitHubWorkspaceSyncRequest,
+  isUnsafeChatInteractiveAction,
   mergeConversationThreads,
+  parseChatInteractiveToken,
   safeParseJsonResponse,
   selectOllamaModelName,
   validateOllamaHostUrl,
   validateOperatorTokenFormat,
 } from './svlLogic';
+
+test('chat interactive tokens preserve action text and tolerate aliases', () => {
+  assert.deepEqual(parseChatInteractiveToken('[btn: Otwórz panel|tab:agents]'), {
+    label: 'Otwórz panel',
+    action: 'tab:agents',
+  });
+  assert.deepEqual(parseChatInteractiveToken('[button: Więcej|text:a|b]'), {
+    label: 'Więcej',
+    action: 'text:a|b',
+  });
+  assert.equal(parseChatInteractiveToken('[btn: |tab:chat]'), null);
+});
+
+test('chat interactive actions cannot execute shell commands', () => {
+  assert.equal(isUnsafeChatInteractiveAction('/exec rm -rf /'), true);
+  assert.equal(isUnsafeChatInteractiveAction('run:uname -a'), true);
+  assert.equal(isUnsafeChatInteractiveAction('send:/exec id'), true);
+  assert.equal(isUnsafeChatInteractiveAction('tab:agents'), false);
+  assert.equal(isUnsafeChatInteractiveAction('action:sync'), false);
+});
 
 test('TopologicalInfinityEngine compactifies [-Infinity, +Infinity] to [-1, 1] with c = 2.5', () => {
   assert.equal(compactifyValue(Number.NEGATIVE_INFINITY), -1.0);
