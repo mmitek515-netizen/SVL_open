@@ -2318,7 +2318,12 @@ async function startServer() {
   }
 
   // Dedicated Application WebSocket Server (/ws/svl) routed explicitly via noServer + upgrade path check
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: 64 * 1024,
+    // Never echo the secret-bearing subprotocol back in the handshake response.
+    handleProtocols: (protocols) => protocols.has('svl-v1') ? 'svl-v1' : false,
+  });
 
   httpServer.on('upgrade', (req: IncomingMessage, socket, head) => {
     try {
@@ -2347,6 +2352,24 @@ async function startServer() {
           socket.destroy();
           return;
         }
+      }
+
+      // A same-origin request is not automatically an authenticated operator.
+      // Secrets are base64url-encoded in the WS subprotocol header rather than
+      // the URL query string (which may be logged by proxies).
+      const protocols = String(req.headers['sec-websocket-protocol'] || '')
+        .split(',').map((item) => item.trim());
+      const credentialProtocol = protocols.find((item) => item.startsWith('svl-auth.'));
+      const encoded = credentialProtocol?.slice('svl-auth.'.length) || '';
+      let credential = '';
+      if (encoded && /^[A-Za-z0-9_-]{1,700}$/.test(encoded)) {
+        try { credential = Buffer.from(encoded, 'base64url').toString('utf8'); }
+        catch { credential = ''; }
+      }
+      if (!protocols.includes('svl-v1') || !hasOperatorAuthorization(credential)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
       }
 
       wss.handleUpgrade(req, socket, head, (ws) => {

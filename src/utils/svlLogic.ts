@@ -594,6 +594,9 @@ export function setSvlCodexAccessToken(value: string): void {
 export function setSvlOperatorAccessToken(value: string): void {
   svlOperatorAccessToken = String(value || '').slice(0, 512);
 }
+export function getSvlOperatorAccessToken(): string {
+  return svlOperatorAccessToken;
+}
 export function hasSvlOperatorAccessToken(): boolean {
   return svlOperatorAccessToken.length > 0;
 }

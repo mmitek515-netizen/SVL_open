@@ -21,6 +21,7 @@ import {
   createUniqueId,
   mergeConversationThreads,
   safeFetchJson,
+  getSvlOperatorAccessToken,
 } from './svlLogic';
 
 const BROADCAST_CHANNEL_NAME = 'svl_python_os_sync';
@@ -845,7 +846,15 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const revParam = serverRevisionRef.current;
         const url = `${proto}//${window.location.host}/ws/svl?origin=${encodeURIComponent(tabOrigin)}&lastRevision=${revParam}`;
-        ws = new WebSocket(url);
+        const operatorSecret = getSvlOperatorAccessToken();
+        const encoded = operatorSecret
+          ? btoa(String.fromCharCode(...new TextEncoder().encode(operatorSecret)))
+              .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+          : '';
+        const protocols = encoded
+          ? ['svl-v1', `svl-auth.${encoded}`]
+          : ['svl-v1'];
+        ws = new WebSocket(url, protocols);
       } catch (err: any) {
         setWsLastError(err?.message || 'Nie udało się utworzyć WebSocket /ws/svl.');
         scheduleReconnect();
@@ -950,6 +959,9 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       };
 
       activeSocket.onclose = (ev) => {
+        // A deliberate reconnect must not spawn an extra reconnect timer from
+        // the old socket, otherwise multiple parallel sockets can be created.
+        if (ws !== activeSocket) return;
         if (heartbeatTimer) {
           clearInterval(heartbeatTimer);
           heartbeatTimer = null;
