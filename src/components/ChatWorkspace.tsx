@@ -19,7 +19,6 @@ import {
   SlidersHorizontal,
   Copy,
   Check,
-  Play,
   Zap,
   CornerDownRight,
   Sparkles,
@@ -86,7 +85,8 @@ const InteractiveActionButton: React.FC<{
   label: string;
   action: string;
   onAction?: (actionValue: string, label?: string) => void;
-}> = ({ label, action, onAction }) => {
+  disabled?: boolean;
+}> = ({ label, action, onAction, disabled = false }) => {
   const getIcon = () => {
     const act = action.trim().toLowerCase();
     if (act.startsWith('tab:terminals')) return <Terminal className="w-3.5 h-3.5 text-violet-400" />;
@@ -95,7 +95,7 @@ const InteractiveActionButton: React.FC<{
     if (act.startsWith('tab:linux')) return <Terminal className="w-3.5 h-3.5 text-amber-400" />;
     if (act === 'action:connect_ai' || act === 'connect_ai') return <Zap className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />;
     if (act === 'action:sync' || act === 'sync') return <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />;
-    if (act.startsWith('/exec ') || act.startsWith('/')) return <Play className="w-3.5 h-3.5 text-violet-400 fill-violet-400" />;
+    if (isUnsafeChatInteractiveAction(action)) return <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />;
     return <CornerDownRight className="w-3.5 h-3.5 text-slate-400" />;
   };
 
@@ -103,7 +103,9 @@ const InteractiveActionButton: React.FC<{
     <button
       type="button"
       onClick={() => onAction?.(action, label)}
-      className="inline-flex items-center gap-1.5 px-3 py-1.5 my-1 mr-2 rounded-lg bg-violet-950/60 hover:bg-violet-900/80 active:bg-violet-800 text-violet-200 border border-violet-500/40 hover:border-violet-400 text-xs font-medium transition-all shadow-sm active:scale-95 cursor-pointer"
+      disabled={disabled}
+      title={disabled ? 'Przyciski czatu nie mogą uruchamiać poleceń powłoki.' : undefined}
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 my-1 mr-2 rounded-lg bg-violet-950/60 hover:bg-violet-900/80 active:bg-violet-800 text-violet-200 border border-violet-500/40 hover:border-violet-400 text-xs font-medium transition-all shadow-sm active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
     >
       {getIcon()}
       <span>{label}</span>
@@ -116,7 +118,7 @@ function renderFormattedLine(
   keyPrefix: string,
   onAction?: (actionValue: string, label?: string) => void,
 ): React.ReactNode {
-  const tokens = line.split(/(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|(?<!\*)\*[^*\n]+\*(?!\*)|_[^_\n]+_|\[(?:btn|button|action):[^\]]+\]|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g);
+  const tokens = line.split(/(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|\[(?:btn|button|action):[^\]]+\]|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g);
   return tokens.map((tok, i) => {
     const button = parseChatInteractiveToken(tok);
     if (button) {
@@ -662,7 +664,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
 
       const res = await safeFetchJson<any>('/api/chat', {
         method: 'POST',
-        timeoutMs: 95000,
+        timeoutMs: 180000,
         body: JSON.stringify({
           message: fullPrompt,
           model: selectedModel,
@@ -811,11 +813,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const handleInteractiveAction = async (actionValue: string, label?: string) => {
     const val = actionValue.trim();
     if (!val) return;
+    if (isUnsafeChatInteractiveAction(val)) {
+      setChatActionError('Przyciski odpowiedzi AI nie mogą uruchamiać poleceń powłoki. Wykonaj je ręcznie po sprawdzeniu.');
+      return;
+    }
 
     // 1. Tab navigation
     if (val.startsWith('tab:')) {
-      const tabName = val.slice(4).trim() as 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux';
-      onNavigateTab(tabName);
+      const tabName = val.slice(4).trim();
+      const allowedTabs = ['chat', 'svl364', 'agents', 'terminals', 'kernel', 'linux'];
+      if (!allowedTabs.includes(tabName)) return;
+      onNavigateTab(tabName as 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux');
       return;
     }
 
@@ -829,18 +837,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       return;
     }
 
-    // 3. Command execution (direct execution)
-    if (val.startsWith('/exec ') || val.startsWith('/')) {
-      void handleSendMessage(val);
-      return;
-    }
-    if (val.startsWith('run:') || val.startsWith('exec:')) {
-      const cmd = val.slice(val.indexOf(':') + 1).trim();
-      void handleSendMessage(`/exec ${cmd}`);
-      return;
-    }
-
-    // 4. Send direct message
+    // 3. Send direct message
     if (val.startsWith('send:')) {
       const textToSend = val.slice(5).trim();
       void handleSendMessage(textToSend);
