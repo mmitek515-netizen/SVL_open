@@ -16,7 +16,8 @@ if (args[0] === '--version') {
   process.exit(0);
 }
 if (args[0] === 'login' && args[1] === 'status') {
-  process.stdout.write('Logged in using ChatGPT\n');
+  const fs = require('node:fs');
+  process.stdout.write(fs.existsSync('api-key-mode') ? 'Logged in using an API key\n' : 'Logged in using ChatGPT\n');
   process.exit(0);
 }
 if (args[0] === 'exec') {
@@ -114,6 +115,14 @@ test('SVL Codex MCP: initialization, tools, bearer auth and bounded readonly tas
   assert.equal(read.status, 200);
   assert.equal(read.data.result.isError, false);
   assert.match(JSON.parse(read.data.result.content[0].text).answer, /Received: inspect source code/);
+
+  // A cached OpenAI API-key login must not be accepted as ChatGPT OAuth.
+  await writeFile(path.join(dir, 'api-key-mode'), '1');
+  const keyMode = await rpc(port, { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'codex_status', arguments: {} } });
+  assert.equal(JSON.parse(keyMode.data.result.content[0].text).loggedIn, false);
+  const rejectApi = await rpc(port, { jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'codex_task', arguments: { prompt: 'inspect' } } });
+  assert.equal(rejectApi.data.result.isError, true);
+  await rm(path.join(dir, 'api-key-mode'));
 
   const rejectedWrite = await rpc(port, { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'codex_task', arguments: { prompt: 'change files', write: true } } });
   assert.equal(rejectedWrite.data.result.isError, true);
