@@ -28,6 +28,18 @@ if ! grep -Eqi 'logged in (using|with) chatgpt' <<< "$LOGIN_STATUS"; then
   exit 1
 fi
 
+# Install dependencies before loading any SVL service credentials into the environment.
+# This limits exposure of application tokens to npm install lifecycle scripts.
+if [[ ! -d node_modules ]]; then
+  if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
+    npm ci --no-audit --no-fund
+  else
+    # This repository currently tracks no npm lockfile on main.
+    # npm ci fails unconditionally without one, so use normal install.
+    npm install --no-audit --no-fund
+  fi
+fi
+
 CONFIG_DIR="$HOME/.config/svl-open"
 CONFIG_FILE="$CONFIG_DIR/local-codex.env"
 mkdir -p "$CONFIG_DIR"
@@ -52,16 +64,6 @@ export SVL_CODEX_CHAT_ENABLED=true
 export SVL_CODEX_AGENTS_ENABLED=true
 export SVL_GITHUB_AUTO_SYNC=false
 export SVL_GITHUB_APPLY_REMOTE_CHANGES=false
-
-if [[ ! -d node_modules ]]; then
-  if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
-    npm ci --no-audit --no-fund
-  else
-    # This repository currently tracks no npm lockfile on main.
-    # npm ci fails unconditionally without one, so use normal install.
-    npm install --no-audit --no-fund
-  fi
-fi
 
 echo "SVL_open ready to start with Codex CLI OAuth (same Linux runtime)."
 echo "Open the private Codespaces port 3000 preview; static IP not needed."
