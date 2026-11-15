@@ -1192,7 +1192,17 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       const eventId = createUniqueId('evt-msg');
       try {
-        const res = await safeFetchJson<{
+        // The SQLite store deduplicates on msg.id. A retry with the same
+        // message and event identifiers cannot create a second chat entry.
+        const payload = JSON.stringify({
+          conversation_id: convId,
+          title: convTitle,
+          model,
+          message: msg,
+          origin: tabOrigin,
+          eventId,
+        });
+        const persistOnce = () => safeFetchJson<{
           ok: boolean;
           revision?: number;
           serverRevision?: number;
@@ -1202,15 +1212,20 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }>('/api/py/chat/conversations/message', {
           method: 'POST',
           timeoutMs: 15000,
-          body: JSON.stringify({
-            conversation_id: convId,
-            title: convTitle,
-            model,
-            message: msg,
-            origin: tabOrigin,
-            eventId,
-          }),
+          maxRetries: 0,
+          body: payload,
         });
+        let res = await persistOnce();
+        const transient = !res.ok &&
+          (res.status === 0 || res.status === 502 || res.status === 503 || res.status === 504);
+        if (transient && pendingMsgIdsRef.current.has(msg.id)) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 450));
+          // A server-side clear-all invalidates pending messages. Never replay
+          // old writes into an intentionally emptied conversation.
+          if (pendingMsgIdsRef.current.has(msg.id)) {
+            res = await persistOnce();
+          }
+        }
 
         if (res.ok && res.data?.ok) {
           if (Array.isArray(res.data.conversations)) {
