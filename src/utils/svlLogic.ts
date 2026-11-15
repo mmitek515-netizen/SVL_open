@@ -667,7 +667,7 @@ export function extractExplicitChatModuleDirective(text: string): {
       description: 'Moduł orkiestracji i optymalizacji backendu zadeklarowany z poziomu czatu Operatora.',
       config: {
         module_alias: hasApex ? 'svl-364-ebon-apex' : 'svl-364',
-        async_event_bus_buffer: 500,
+        async_event_bus_buffer: 2000,
         agent_max_context_turns: 24,
         worker_heartbeat_interval_sec: 2.0,
       },

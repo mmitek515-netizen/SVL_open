@@ -20,6 +20,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [chatStats, setChatStats] = useState<{totalMessages: number; resetApplied: boolean; databaseName: string} | null>(null);
   const [runningCommit, setRunningCommit] = useState<string | null>(null);
+  const [diagnosticsCheckedAt, setDiagnosticsCheckedAt] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const refreshObservability = useCallback(async () => {
@@ -37,6 +38,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
         '/api/deployment-info', {timeoutMs: 10000},
       ),
     ]);
+    setDiagnosticsCheckedAt(new Date().toISOString());
     if (chatDiag.ok && chatDiag.data?.ok) setChatStats(chatDiag.data);
     if (deployDiag.ok && deployDiag.data?.ok) setRunningCommit(deployDiag.data.commit || null);
     if (response.ok && response.data?.ok && Array.isArray(response.data.events)) {
@@ -71,6 +73,30 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const commandModule: any = systemModules.find((item: any) => item.id === 'svl-364');
   const totalMessages = conversations.reduce((sum, thread) => sum + (thread.messages?.length || 0), 0);
   const ollamaReachable = healthData?.ollama?.daemon_reachable === true;
+  const ollamaModels: Array<{ name: string }> = Array.isArray(healthData?.ollama?.models)
+    ? healthData.ollama.models
+    : [];
+  const configuredModel = String(
+    commandModule?.config?.configured_ollama_model ||
+    healthData?.ollama?.preferred_14b_vision_model ||
+    '',
+  );
+  const configuredModelInstalled = Boolean(
+    configuredModel &&
+    ollamaModels.some((model) =>
+      model.name === configuredModel ||
+      String(model.name || '').startsWith(`${configuredModel.split(':')[0]}:`),
+    ),
+  );
+  const backendOnline = healthData?.status === 'ONLINE';
+  const localLinkOnline = backendOnline && wsState === 'online';
+  const physicalTelemetryEndpoint = String(commandModule?.config?.telemetry_endpoint || '');
+  const busCapacity = Number(
+    agentsData?.spherical_bus?.max_history_size ||
+    commandModule?.config?.async_event_bus_buffer ||
+    0,
+  );
+  const busTelemetry = agentsData?.spherical_bus?.telemetry || {};
   const targetNames = ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'];
 
   return (
@@ -104,6 +130,58 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
             icon={<Database size={17} />} />
         </section>
 
+        <section className="rounded-xl border border-slate-800 bg-[#111826] p-4 space-y-3" aria-label="Zweryfikowane łącza SVL-364">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="flex items-center gap-2 font-semibold">
+              <RadioTower size={18} className="text-violet-400" /> Diagnostyka połączeń SVL-364
+            </h2>
+            <span className="text-xs text-slate-500">
+              Ostatni pomiar: {diagnosticsCheckedAt ? new Date(diagnosticsCheckedAt).toLocaleTimeString('pl-PL') : 'oczekuje'}
+            </span>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            <LinkCheck
+              label="Aplikacja ↔ Python Kernel"
+              state={localLinkOnline ? 'online' : 'offline'}
+              detail={
+                localLinkOnline
+                  ? `Kernel ${healthData.system || 'SVL'} · WebSocket online · rewizja ${serverRevision}`
+                  : `Kernel: ${backendOnline ? 'online' : 'brak odpowiedzi'} · WebSocket: ${wsState}`
+              }
+            />
+            <LinkCheck
+              label="Ollama ↔ host"
+              state={!ollamaReachable ? 'offline' : configuredModelInstalled ? 'online' : 'degraded'}
+              detail={
+                !ollamaReachable
+                  ? healthData?.ollama?.error || 'Daemon Ollama nie odpowiada.'
+                  : configuredModelInstalled
+                    ? `${configuredModel} · zainstalowany · aktywne: ${(healthData?.ollama?.loaded_models || []).length}`
+                    : `${configuredModel || 'Brak wybranego modelu'} nie znaleziono · dostępne: ${ollamaModels.length}`
+              }
+            />
+            <LinkCheck
+              label="Spherical Event Bus"
+              state={busCapacity > 0 ? 'online' : 'unverified'}
+              detail={
+                busCapacity > 0
+                  ? `Bufor ${busCapacity}/2000 · opublikowane zdarzenia: ${busTelemetry.published_events || 0}`
+                  : 'Oczekiwanie na telemetrię workera.'
+              }
+            />
+            <LinkCheck
+              label="Zewnętrzne łącze statku"
+              state="unverified"
+              detail={physicalTelemetryEndpoint
+                ? `Endpoint ${physicalTelemetryEndpoint} jest zapisany, ale brak testu protokołu/heartbeat.`
+                : 'Nie skonfigurowano endpointu ani protokołu telemetrii; połączenie fizyczne nie jest potwierdzone.'}
+            />
+          </div>
+          <p className="text-xs text-slate-500">
+            Wyniki dotyczą usług i procesów dostępnych dla tej aplikacji. Sama nazwa „statek SVL-364” oznacza moduł programowy; nie potwierdza łączności z fizycznym pojazdem.
+          </p>
+        </section>
+
         <section className="grid gap-3 lg:grid-cols-2">
           <div className="rounded-xl border border-slate-800 bg-[#111826] p-4 space-y-3">
             <h2 className="flex gap-2 items-center font-semibold"><Server size={18} className="text-violet-400" /> Moduły i usługi</h2>
@@ -113,7 +191,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
                 {commandModule ? String(commandModule.status || 'Zarejestrowany') : 'Brak w stanie backendu'}
               </span>
             </div>
-            <p className="text-xs text-slate-400">Rejestr modułów: {systemModules.length} · zdalna telemetria statku: niepotwierdzona</p>
+            <p className="text-xs text-slate-400">Rejestr modułów: {systemModules.length} · endpoint telemetrii: {physicalTelemetryEndpoint ? 'zapisany, niezweryfikowany' : 'nie skonfigurowany'}</p>
             <div className="max-h-48 overflow-auto space-y-1">
               {systemModules.slice(0, 16).map((mod: any) => (
                 <div key={mod.id} className="flex justify-between gap-2 border-b border-slate-800/70 py-1 text-xs">
@@ -202,3 +280,35 @@ const StatusMetric: React.FC<{label: string; value: string; detail: string; icon
       <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">{detail}</p>
     </div>
   );
+
+const LinkCheck: React.FC<{
+  label: string;
+  state: 'online' | 'degraded' | 'offline' | 'unverified';
+  detail: string;
+}> = ({ label, state, detail }) => {
+  const labelByState = {
+    online: 'Połączono',
+    degraded: 'Częściowo',
+    offline: 'Offline',
+    unverified: 'Niezweryfikowane',
+  } as const;
+  const classByState = {
+    online: 'text-emerald-300',
+    degraded: 'text-amber-300',
+    offline: 'text-rose-300',
+    unverified: 'text-slate-400',
+  } as const;
+  const Icon = state === 'online' ? Wifi : WifiOff;
+
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2">
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <span className="font-medium">{label}</span>
+        <span className={`flex items-center gap-1 text-xs ${classByState[state]}`}>
+          <Icon size={13} /> {labelByState[state]}
+        </span>
+      </div>
+      <p className="mt-1 break-words text-xs text-slate-400">{detail}</p>
+    </div>
+  );
+};

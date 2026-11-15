@@ -31,6 +31,15 @@ from typing import Any, Callable, Optional, TypeVar
 _T = TypeVar("_T")
 
 SYNC_SCHEMA_VERSION = "2026.11.sync.v1"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def resolve_sqlite_path(db_path: Optional[str] = None) -> Path:
+    configured_path = db_path or os.environ.get("SVL_SQLITE_PATH")
+    path = Path(configured_path).expanduser() if configured_path else Path("data/svl_os.sqlite3")
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path.resolve()
 
 SENSITIVE_KEY_MARKERS = (
     "token",
@@ -418,7 +427,7 @@ class SVLSystemKernel:
     """
 
     def __init__(self, db_path: Optional[str] = None, operator_token: Optional[str] = None) -> None:
-        self.db_path = Path(db_path or os.environ.get("SVL_SQLITE_PATH", "./data/svl_os.sqlite3"))
+        self.db_path = resolve_sqlite_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         env_token = (operator_token or os.environ.get("SVL_OPERATOR_TOKEN") or "").strip()
@@ -713,7 +722,7 @@ class SVLSystemKernel:
                     "Orchestration & Command Center",
                     "ACTIVE",
                     "Stały moduł programowy Centrum Dowodzenia; nie potwierdza fizycznej łączności ze statkiem.",
-                    json.dumps({"module_alias": "svl-364-ebon-apex", "connection_verified": False, "local_command_center": True, "async_event_bus_buffer": 500}, ensure_ascii=False),
+                    json.dumps({"module_alias": "svl-364-ebon-apex", "connection_verified": False, "local_command_center": True, "async_event_bus_buffer": 2000}, ensure_ascii=False),
                     "kernel",
                     "init-svl-364-command",
                     1,
@@ -2109,7 +2118,7 @@ class SVLSystemKernel:
                 mod_name = "SVL-364 Ebon Apex" if svl364_has_apex_name else "SVL-364 Ebon Apex"
                 desired_patch: dict[str, Any] = {
                     "module_alias": "svl-364-ebon-apex",
-                    "async_event_bus_buffer": 500,
+                    "async_event_bus_buffer": 2000,
                     "agent_max_context_turns": 24,
                     "worker_heartbeat_interval_sec": 2.0,
                     "priority_routing": "svl-hybrid-router",
@@ -2129,7 +2138,7 @@ class SVLSystemKernel:
                 if "svl-364" not in existing_mods:
                     desc = (
                         "Moduł orkiestracji i optymalizacji backendu zsynchronizowany z poleceń czatu Operatora "
-                        "(rozszerzony bufor SphericalEventBus 500 zdarzeń, lokalny model Ollama zgodny z OLLAMA_PREFERRED_MODEL, czat Rodzina Mitek)."
+                        "(maksymalny bufor SphericalEventBus 2000 zdarzeń, lokalny model Ollama zgodny z OLLAMA_PREFERRED_MODEL, czat Rodzina Mitek)."
                     )
                     sync_res = self.commit_entity_event_tx(
                         conn,
