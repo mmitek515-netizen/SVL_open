@@ -108,6 +108,7 @@ test('SVL Codex MCP: initialization, tools, bearer auth and bounded readonly tas
   const statusResult = JSON.parse(status.data.result.content[0].text);
   assert.equal(statusResult.installed, true);
   assert.equal(statusResult.loggedIn, true);
+  assert.equal(statusResult.authenticationMode, 'chatgpt-cli');
 
   const read = await rpc(port, { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'codex_task', arguments: { prompt: 'inspect source code' } } });
   assert.equal(read.status, 200);
