@@ -23,6 +23,7 @@ import {
   type ChatAppliedAction,
 } from './src/utils/svlLogic.ts';
 import { DEFAULT_GITHUB_SYNC_BRANCH, GitHubSyncService } from './src/utils/githubSync.ts';
+import { codexChatAccessAllowed, codexChatConfiguration, generateCodexCliChat, probeCodexCli } from './src/server/codexCliChat.ts';
 
 dotenv.config();
 
@@ -989,6 +990,14 @@ async function startServer() {
   }));
 
   // Read-only build provenance: a GitHub commit is not proof of deployed code.
+  app.get('/api/codex-chat/status', asyncRoute(async (_req, res) => {
+    const state = codexChatConfiguration();
+    const probe = state.enabled && state.accessConfigured
+      ? await probeCodexCli(__dirname)
+      : {loggedIn: false, reason: 'Disabled or not configured'};
+    res.json({ok: true, ...state, loggedIn: probe.loggedIn, reason: probe.reason});
+  }));
+
   app.get('/api/deployment-info', (_req, res) => {
     let commit = process.env.GITHUB_SHA || process.env.VITE_GIT_SHA || '';
     let source = commit ? 'environment' : 'unknown';
@@ -1609,6 +1618,46 @@ async function startServer() {
     const ollamaHost = String(ollamaInfo.ollama_host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
     const conversationHistory = buildChatHistoryPayload(Array.isArray(history) ? history : [], 16);
     const missionVerificationContext = [...conversationHistory.map((turn) => turn.content), cleanMsg].join('\n');
+    // Codex CLI uses the logged-in ChatGPT account in THIS runtime, not a public API.
+    // An unrelated Google AI Studio preview cannot reach a Codespace's local login.
+    if (model === 'codex-cli') {
+      if (!codexChatAccessAllowed(req.headers['x-svl-codex-access'])) {
+        res.status(401).json({
+          ok: false,
+          error: 'Codex CLI wymaga włączenia na backendzie i prywatnego tokenu dostępu operatora.',
+        });
+        return;
+      }
+      if (imageBase64) {
+        res.status(400).json({
+          ok: false,
+          error: 'Ten tryb Codex CLI obsługuje tylko tekst. Dla obrazów wybierz model multimodalny.',
+        });
+        return;
+      }
+      const response = await generateCodexCliChat({
+        agentName: selectedDisplayName,
+        message: cleanMsg,
+        history: conversationHistory,
+      }, __dirname);
+      if (!response.ok) {
+        res.status(response.busy ? 429 : 424).json({ok:false,error:response.error,offline:true});
+        return;
+      }
+      const replyText = guardUnverifiedMissionCompletion(missionVerificationContext, response.reply || '');
+      res.json({
+        ok: true,
+        sender: selectedDisplayName,
+        agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
+        modelUsed: 'Codex CLI · ChatGPT OAuth',
+        reply: replyText,
+        followUpMessages: [],
+        appliedActions: [],
+        latestServerRevision: Number(healthRes.data?.serverRevision || 0),
+      });
+      return;
+    }
+
 
     const agentState = (agentsRes.data?.agents || []).find((a: any) => a.canonical_name === selectedAgent) || {};
     const agentConfig = agentState.config || {};
@@ -2353,10 +2402,32 @@ async function startServer() {
       }
     }
 
+    // The hybrid router also supports local Codex CLI when explicitly enabled
+    // AND the operator authenticates the request. Never expose OAuth to anonymous users.
+    if (codexChatAccessAllowed(req.headers['x-svl-codex-access']) && !imageBase64) {
+      const result = await generateCodexCliChat({
+        agentName: selectedDisplayName,
+        message: cleanMsg,
+        history: conversationHistory,
+      }, __dirname);
+      if (result.ok && result.reply) {
+        res.json({
+          ok: true,
+          sender: selectedDisplayName,
+          agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
+          modelUsed: 'Codex CLI · ChatGPT OAuth',
+          reply: guardUnverifiedMissionCompletion(missionVerificationContext, result.reply),
+          followUpMessages: [],
+          appliedActions,
+          latestServerRevision: latestActionSrvRev,
+        });
+        return;
+      }
+    }
     res.status(503).json({
       ok: false,
       offline: true,
-      error: 'Brak działającego modelu AI. Sprawdź Ollama /api/tags lub konfigurację i limit Gemini. Nie wygenerowano fikcyjnej odpowiedzi.',
+      error: 'Brak dostępnego modelu. Jeżeli masz tylko konto Codex CLI, wybierz Codex CLI w czacie i skonfiguruj jego dostęp lokalnie. Sama synchronizacja GitHub nie przenosi sesji ChatGPT OAuth do AI Studio.',
       modelUsed: displayModelBadge,
       appliedActions,
     });
