@@ -1201,7 +1201,16 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           return { ok: true };
         }
 
+        // Roll back optimistic message on failed persistence instead of showing ghost messages.
+        setConversations((prev) => prev.map((c) =>
+          c.id === convId ? { ...c, messages: c.messages.filter((entry) => entry.id !== msg.id) } : c,
+        ));
         return { ok: false, error: res.error || res.data?.error || `Błąd zapisu wiadomości HTTP ${res.status}` };
+      } catch (error: any) {
+        setConversations((prev) => prev.map((c) =>
+          c.id === convId ? { ...c, messages: c.messages.filter((entry) => entry.id !== msg.id) } : c,
+        ));
+        return { ok: false, error: error?.message || String(error) };
       } finally {
         pendingMsgIdsRef.current.delete(msg.id);
       }

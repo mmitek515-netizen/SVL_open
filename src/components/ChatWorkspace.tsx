@@ -19,7 +19,6 @@ import {
   SlidersHorizontal,
   Copy,
   Check,
-  Play,
   Zap,
   CornerDownRight,
   Sparkles,
@@ -31,6 +30,8 @@ import {
   buildChatHistoryPayload,
   createUniqueId,
   formatAgentDisplayName,
+  isUnsafeChatInteractiveAction,
+  parseChatInteractiveToken,
   safeFetchJson,
   validateOllamaHostUrl,
 } from '../utils/svlLogic';
@@ -45,23 +46,16 @@ interface ChatWorkspaceProps {
 const InteractiveCodeBlock: React.FC<{
   code: string;
   language: string;
-  onAction?: (actionValue: string, label?: string) => void;
-}> = ({ code, language, onAction }) => {
+}> = ({ code, language }) => {
   const [copied, setCopied] = useState(false);
   const cleanCode = code.replace(/^\n+|\n+$/g, '');
   const cleanLang = (language || '').toLowerCase().trim();
-  const isExecutable =
-    Boolean(onAction) &&
-    (['bash', 'sh', 'shell', 'zsh', 'terminal', 'linux'].includes(cleanLang) ||
-      /^\s*(?:sudo|systemctl|uname|ps|free|cat|ls|grep|python3|npm|curl|docker|git|\/exec)\b/m.test(cleanCode));
 
   const handleCopy = () => {
     void navigator.clipboard.writeText(cleanCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
-
-  const cleanCmd = cleanCode.replace(/^\/?exec\s+/i, '');
 
   return (
     <div className="my-2.5 rounded-lg border border-slate-800 bg-[#0B0D13] overflow-hidden text-xs font-mono shadow-sm">
@@ -78,19 +72,9 @@ const InteractiveCodeBlock: React.FC<{
             {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
             <span>{copied ? 'Skopiowano!' : 'Kopiuj'}</span>
           </button>
-          {isExecutable && (
-            <button
-              type="button"
-              onClick={() => onAction?.(`/exec ${cleanCmd}`, 'Uruchom')}
-              className="flex items-center gap-1 px-2 py-0.5 rounded bg-violet-600/30 hover:bg-violet-600/50 border border-violet-500/40 text-violet-200 hover:text-white transition-colors cursor-pointer active:scale-95"
-            >
-              <Play className="w-3 h-3 text-emerald-400 fill-emerald-400" />
-              <span>Uruchom (/exec)</span>
-            </button>
-          )}
         </div>
       </div>
-      <div className="p-3 overflow-x-auto text-slate-200 leading-relaxed max-h-96">
+      <div className="p-3 overflow-auto text-slate-200 leading-relaxed max-h-96">
         <pre>{cleanCode}</pre>
       </div>
     </div>
@@ -101,7 +85,8 @@ const InteractiveActionButton: React.FC<{
   label: string;
   action: string;
   onAction?: (actionValue: string, label?: string) => void;
-}> = ({ label, action, onAction }) => {
+  disabled?: boolean;
+}> = ({ label, action, onAction, disabled = false }) => {
   const getIcon = () => {
     const act = action.trim().toLowerCase();
     if (act.startsWith('tab:terminals')) return <Terminal className="w-3.5 h-3.5 text-violet-400" />;
@@ -110,7 +95,7 @@ const InteractiveActionButton: React.FC<{
     if (act.startsWith('tab:linux')) return <Terminal className="w-3.5 h-3.5 text-amber-400" />;
     if (act === 'action:connect_ai' || act === 'connect_ai') return <Zap className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />;
     if (act === 'action:sync' || act === 'sync') return <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />;
-    if (act.startsWith('/exec ') || act.startsWith('/')) return <Play className="w-3.5 h-3.5 text-violet-400 fill-violet-400" />;
+    if (isUnsafeChatInteractiveAction(action)) return <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />;
     return <CornerDownRight className="w-3.5 h-3.5 text-slate-400" />;
   };
 
@@ -118,7 +103,9 @@ const InteractiveActionButton: React.FC<{
     <button
       type="button"
       onClick={() => onAction?.(action, label)}
-      className="inline-flex items-center gap-1.5 px-3 py-1.5 my-1 mr-2 rounded-lg bg-violet-950/60 hover:bg-violet-900/80 active:bg-violet-800 text-violet-200 border border-violet-500/40 hover:border-violet-400 text-xs font-medium transition-all shadow-sm active:scale-95 cursor-pointer"
+      disabled={disabled}
+      title={disabled ? 'Przyciski czatu nie mogą uruchamiać poleceń powłoki.' : undefined}
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 my-1 mr-2 rounded-lg bg-violet-950/60 hover:bg-violet-900/80 active:bg-violet-800 text-violet-200 border border-violet-500/40 hover:border-violet-400 text-xs font-medium transition-all shadow-sm active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
     >
       {getIcon()}
       <span>{label}</span>
@@ -131,21 +118,17 @@ function renderFormattedLine(
   keyPrefix: string,
   onAction?: (actionValue: string, label?: string) => void,
 ): React.ReactNode {
-  const tokens = line.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|\[(?:btn|button|action):[^\]]+\])/g);
+  const tokens = line.split(/(\*\*[^*]+\*\*|~~[^~]+~~|`[^`]+`|\*[^*\n]+\*|_[^_\n]+_|\[(?:btn|button|action):[^\]]+\]|\[[^\]]+\]\(https?:\/\/[^\s)]+\))/g);
   return tokens.map((tok, i) => {
-    if (
-      (tok.startsWith('[btn:') || tok.startsWith('[button:') || tok.startsWith('[action:')) &&
-      tok.endsWith(']')
-    ) {
-      const inner = tok.slice(tok.indexOf(':') + 1, -1);
-      const [label, ...rest] = inner.split('|');
-      const actionVal = rest.join('|').trim();
+    const button = parseChatInteractiveToken(tok);
+    if (button) {
       return (
         <InteractiveActionButton
           key={`${keyPrefix}-${i}`}
-          label={label.trim()}
-          action={actionVal || label.trim()}
+          label={button.label}
+          action={button.action}
           onAction={onAction}
+          disabled={isUnsafeChatInteractiveAction(button.action)}
         />
       );
     }
@@ -163,23 +146,36 @@ function renderFormattedLine(
         </em>
       );
     }
+    if (tok.startsWith('_') && tok.endsWith('_') && tok.length > 2) {
+      return (
+        <em key={`${keyPrefix}-${i}`} className="italic text-slate-300">
+          {tok.slice(1, -1)}
+        </em>
+      );
+    }
+    if (tok.startsWith('~~') && tok.endsWith('~~') && tok.length > 4) {
+      return (
+        <del key={`${keyPrefix}-${i}`} className="text-slate-400">
+          {tok.slice(2, -2)}
+        </del>
+      );
+    }
+    const link = tok.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/i);
+    if (link) {
+      return (
+        <a
+          key={`${keyPrefix}-${i}`}
+          href={link[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-violet-300 underline underline-offset-2 hover:text-violet-200"
+        >
+          {link[1]}
+        </a>
+      );
+    }
     if (tok.startsWith('`') && tok.endsWith('`') && tok.length > 2) {
       const codeContent = tok.slice(1, -1);
-      const isCmd = /^\s*(?:\/exec|sudo|systemctl|uname|docker|ollama|python3|cat|ls|free|ps)\b/i.test(codeContent);
-      if (isCmd && onAction) {
-        return (
-          <button
-            key={`${keyPrefix}-${i}`}
-            type="button"
-            onClick={() => onAction(codeContent.startsWith('/') ? codeContent : `/exec ${codeContent}`, codeContent)}
-            title="Kliknij, aby uruchomić jako ROOT (/exec)"
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#0B0D13] hover:bg-violet-950/60 border border-violet-500/40 hover:border-violet-400 font-mono text-[12px] text-violet-300 hover:text-white transition-all cursor-pointer active:scale-95"
-          >
-            <Play className="w-2.5 h-2.5 text-emerald-400 fill-emerald-400" />
-            <span>{codeContent}</span>
-          </button>
-        );
-      }
       return (
         <code
           key={`${keyPrefix}-${i}`}
@@ -200,21 +196,22 @@ function renderFormattedContent(
   const normalized = (content || '').trim();
   if (!normalized) return null;
 
-  // Split by ``` code blocks
-  const codeBlockRegex = /(```[\s\S]*?```)/g;
+  const codeBlockRegex = /(```[\s\S]*?(?:```|$))/g;
   const segments = normalized.split(codeBlockRegex);
 
   return segments.map((seg, segIdx) => {
-    if (seg.startsWith('```') && seg.endsWith('```')) {
+    if (seg.startsWith('```')) {
       const firstLineBreak = seg.indexOf('\n');
       const lang = firstLineBreak !== -1 ? seg.slice(3, firstLineBreak).trim() : '';
-      const code = firstLineBreak !== -1 ? seg.slice(firstLineBreak + 1, -3) : seg.slice(3, -3);
+      const closingFence = seg.endsWith('```') ? seg.lastIndexOf('```') : seg.length;
+      const code = firstLineBreak !== -1
+        ? seg.slice(firstLineBreak + 1, closingFence)
+        : seg.slice(3, closingFence);
       return (
         <InteractiveCodeBlock
           key={`code-block-${segIdx}`}
           code={code}
           language={lang}
-          onAction={onAction}
         />
       );
     }
@@ -224,42 +221,43 @@ function renderFormattedContent(
       <React.Fragment key={`text-seg-${segIdx}`}>
         {lines.map((line, idx) => {
           const trimmed = line.trim();
+          const structuralLine = line.trimStart();
 
           // H1
-          if (line.startsWith('# ')) {
+          if (structuralLine.startsWith('# ')) {
             return (
               <h1 key={`h1-${idx}`} className="text-base md:text-lg font-bold text-slate-100 mt-2.5 mb-1.5 pb-1 border-b border-violet-500/20 flex items-center gap-2">
-                {renderFormattedLine(line.slice(2), `h1-${idx}`, onAction)}
+                {renderFormattedLine(structuralLine.slice(2), `h1-${idx}`, onAction)}
               </h1>
             );
           }
 
           // H2
-          if (line.startsWith('## ')) {
+          if (structuralLine.startsWith('## ')) {
             return (
               <h2 key={`h2-${idx}`} className="text-sm md:text-base font-semibold text-violet-200 mt-2 mb-1 flex items-center gap-2">
-                {renderFormattedLine(line.slice(3), `h2-${idx}`, onAction)}
+                {renderFormattedLine(structuralLine.slice(3), `h2-${idx}`, onAction)}
               </h2>
             );
           }
 
           // H3
-          if (line.startsWith('### ')) {
+          if (structuralLine.startsWith('### ')) {
             return (
               <h3 key={`h3-${idx}`} className="text-xs md:text-sm font-semibold text-violet-300 mt-1.5 mb-1">
-                {renderFormattedLine(line.slice(4), `h3-${idx}`, onAction)}
+                {renderFormattedLine(structuralLine.slice(4), `h3-${idx}`, onAction)}
               </h3>
             );
           }
 
           // Blockquote / Callout
-          if (line.startsWith('> ')) {
+          if (structuralLine.startsWith('> ')) {
             return (
               <div
                 key={`bq-${idx}`}
                 className="my-1.5 border-l-2 border-violet-500 bg-violet-950/20 px-3.5 py-1.5 rounded-r-lg text-slate-300 italic text-xs md:text-sm"
               >
-                {renderFormattedLine(line.slice(2), `bq-${idx}`, onAction)}
+                {renderFormattedLine(structuralLine.slice(2), `bq-${idx}`, onAction)}
               </div>
             );
           }
@@ -815,11 +813,16 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const handleInteractiveAction = async (actionValue: string, label?: string) => {
     const val = actionValue.trim();
     if (!val) return;
+    if (isUnsafeChatInteractiveAction(val)) {
+      setChatActionError('Przyciski odpowiedzi AI nie mogą automatycznie uruchamiać powłoki. Wklej komendę ręcznie do terminala po sprawdzeniu.');
+      return;
+    }
 
     // 1. Tab navigation
     if (val.startsWith('tab:')) {
-      const tabName = val.slice(4).trim() as 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux';
-      onNavigateTab(tabName);
+      const tabName = val.slice(4).trim();
+      if (!['chat', 'svl364', 'agents', 'terminals', 'kernel', 'linux'].includes(tabName)) return;
+      onNavigateTab(tabName as 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux');
       return;
     }
 
@@ -833,17 +836,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       return;
     }
 
-    // 3. Command execution (direct execution)
-    if (val.startsWith('/exec ') || val.startsWith('/')) {
-      void handleSendMessage(val);
-      return;
-    }
-    if (val.startsWith('run:') || val.startsWith('exec:')) {
-      const cmd = val.slice(val.indexOf(':') + 1).trim();
-      void handleSendMessage(`/exec ${cmd}`);
-      return;
-    }
-
+    // 3. Interactive buttons can propose text, but cannot auto-execute shell commands
     // 4. Send direct message
     if (val.startsWith('send:')) {
       const textToSend = val.slice(5).trim();
