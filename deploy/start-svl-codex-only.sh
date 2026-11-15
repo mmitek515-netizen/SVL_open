@@ -13,7 +13,7 @@ for required in node npm python3 codex; do
   fi
 done
 
-if [[ -z "$CODEX_HOME" ]]; then
+if [[ -z "${CODEX_HOME:-}" ]]; then
   export CODEX_HOME="$HOME/.codex"
 fi
 unset OPENAI_API_KEY CODEX_API_KEY
@@ -40,7 +40,7 @@ chmod 600 "$CONFIG_FILE"
 set -a
 source "$CONFIG_FILE"
 set +a
-if [[ "$SVL_CODEX_CHAT_ACCESS_TOKEN" == "" || "$SVL_OPERATOR_TOKEN" == "" ]]; then
+if [[ -z "${SVL_CODEX_CHAT_ACCESS_TOKEN:-}" || -z "${SVL_OPERATOR_TOKEN:-}" ]]; then
   echo "Private access tokens are missing from $CONFIG_FILE" >&2
   exit 1
 fi
