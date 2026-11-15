@@ -354,6 +354,8 @@ export interface SyncableMessage {
   fileName?: string;
   connectionReport?: any;
   appliedActions?: ChatAppliedAction[];
+  sourceOrigin?: string;
+  correlationId?: string;
 }
 
 export interface SyncableConversation {

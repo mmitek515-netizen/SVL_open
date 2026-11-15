@@ -1365,6 +1365,8 @@ class SVLSystemKernel:
                 "imagePreview": attachments[0] if attachments else None,
                 "connectionReport": meta.get("connectionReport"),
                 "appliedActions": meta.get("appliedActions"),
+                "sourceOrigin": meta.get("sourceOrigin"),
+                "correlationId": meta.get("correlationId"),
             }
             msgs_by_conv.setdefault(mr["conversation_id"], []).append(msg_item)
 
@@ -1427,6 +1429,10 @@ class SVLSystemKernel:
             "fileName": msg.get("fileName"),
             "connectionReport": msg.get("connectionReport"),
             "appliedActions": msg.get("appliedActions"),
+            # Diagnostic origin indicates the submitting client/agent session;
+            # it is not an authenticated proof of a human author.
+            "sourceOrigin": str(origin or "unknown")[:120],
+            "correlationId": str(correlation_id or "")[:128],
         }, ensure_ascii=False)
         attachments_json = json.dumps(
             [msg["imagePreview"]] if msg.get("imagePreview") else [],
@@ -1447,6 +1453,28 @@ class SVLSystemKernel:
                         "serverRevision": srv,
                         "event": None,
                     }
+
+            # A transport retry may carry a new eventId but the same message.id.
+            # Do not create another outbox event or increase revisions in this case.
+            existing_msg = conn.execute(
+                "SELECT conversation_id FROM chat_messages WHERE id = ?", (msg_id,)
+            ).fetchone()
+            if existing_msg:
+                if str(existing_msg["conversation_id"]) != conversation_id:
+                    return {"ok": False, "error": "Message ID already belongs to another conversation."}
+                rev = conn.execute(
+                    "SELECT revision FROM sync_entities WHERE entity = 'chat' AND entity_id = ?",
+                    (conversation_id,),
+                ).fetchone()
+                return {
+                    "ok": True,
+                    "deduplicated": True,
+                    "conversation_id": conversation_id,
+                    "message_id": msg_id,
+                    "revision": int(rev["revision"]) if rev else 1,
+                    "serverRevision": self._get_server_revision_tx(conn),
+                    "event": None,
+                }
 
             existing_conv = conn.execute(
                 "SELECT id, created_at, title FROM conversations WHERE id = ?",

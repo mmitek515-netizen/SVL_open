@@ -1455,6 +1455,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                   )}
                   <span aria-hidden="true">·</span>
                   <span className="font-mono tabular-nums text-slate-500">{msg.timestamp}</span>
+                  {msg.sourceOrigin && (
+                    <span
+                      className="max-w-[120px] truncate font-mono text-slate-500/80"
+                      title="Źródło zgłoszone przez klienta aplikacji. Identyfikator nie potwierdza tożsamości autora."
+                    >
+                      sesja: {msg.sourceOrigin.slice(0, 16)}
+                    </span>
+                  )}
                 </div>
 
                 <div
