@@ -514,10 +514,32 @@ class SVLBackendRuntime:
         except Exception:
             pass
 
+        # Verify the actual Codex OAuth login for THIS runtime user; binary presence is not enough.
+        # Never return auth.json, tokens, or any raw login output through the API.
+        codex_logged_in = False
+        if codex_bin:
+            try:
+                login_env = dict(os.environ)
+                login_env.pop("OPENAI_API_KEY", None)
+                login_env.pop("CODEX_API_KEY", None)
+                login_env.setdefault("CODEX_HOME", "/var/lib/svl-os/codex")
+                login_result = subprocess.run(
+                    [codex_bin, "login", "status"],
+                    cwd=os.getcwd(),
+                    env=login_env,
+                    capture_output=True,
+                    timeout=5.0,
+                    check=False,
+                )
+                codex_logged_in = login_result.returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
         return {
             "codex_cli_installed": codex_bin is not None,
+            "codex_cli_logged_in": codex_logged_in,
             "codex_binary_path": codex_bin,
-            "device_login_command": "codex login --device",
+            "device_login_command": "codex login --device-auth",
             "chatgpt_oauth_note": (
                 "Logowanie przez konto ChatGPT (codex login --device) autoryzuje sesję CLI OAuth, "
                 "ale NIE jest równoznaczne z kluczem płatnego OpenAI API (OPENAI_API_KEY)."
