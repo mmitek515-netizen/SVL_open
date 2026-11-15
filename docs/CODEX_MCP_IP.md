@@ -1,5 +1,50 @@
 # SVL_open — MCP po IP przez Codex CLI zalogowane kontem ChatGPT
 
+## NAJPROSTSZY WARIANT: masz tylko zalogowany Codex CLI
+
+Ten wariant działa w środowisku Linux, także w GitHub Codespaces, bez osobnego
+klucza OpenAI API, roota, systemd i bez uruchamiania instalatora Debiana 13.
+Wymaga Node.js 20+, Python 3 oraz już zalogowanego oficjalnego Codex CLI.
+
+~~~bash
+cd /sciezka/do/SVL_open
+git pull --ff-only origin main
+
+# Jeśli Codex nie jest jeszcze zalogowany:
+codex login --device-auth
+codex login status
+
+# Używa bieżącego konta Linux i jego CODEX_HOME:
+bash deploy/start-codex-mcp-cli.sh
+~~~
+
+Jeżeli jesteś już zalogowany, pomiń logowanie i po prostu uruchom skrypt.
+Dopóki terminal z procesem Node jest aktywny, MCP działa pod
+http://127.0.0.1:8787/mcp. Token ochronny MCP (NIE klucz OpenAI API)
+generuje się sam i zostaje zapisany w ~/.config/svl-open-mcp/mcp-token
+lub analogicznym katalogu XDG_CONFIG_HOME. Nie publikuj jego zawartości.
+
+Na drugim urządzeniu w tej samej sieci najbezpieczniej użyć tunelu SSH:
+~~~bash
+ssh -N -L 8787:127.0.0.1:8787 user@IP_SERWERA
+~~~
+Po ustanowieniu tunelu endpoint jest dostępny lokalnie na
+http://127.0.0.1:8787/mcp, z prywatnym nagłówkiem Bearer token.
+Alternatywnie użyj VPN lub HTTPS reverse proxy.
+Dostęp bezpośrednio przez publiczne IP i zwykłe HTTP jest niewskazany.
+
+Dla Codex CLI jako **klienta** zdalnego serwera MCP:
+~~~bash
+export SVL_MCP_TOKEN='wartosc-tokena-przekazana-bezpiecznie'
+codex mcp add svl-open \
+  --url https://mcp.twoja-domena.example/mcp \
+  --bearer-token-env-var SVL_MCP_TOKEN
+codex mcp list
+~~~
+
+Dla klienta Codex działającego na tym samym hoście można użyć
+http://127.0.0.1:8787/mcp zamiast adresu HTTPS.
+
 ## Architektura
 
 Klient MCP (LAN / VPN / HTTPS)
