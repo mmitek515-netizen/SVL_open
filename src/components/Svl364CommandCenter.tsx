@@ -35,10 +35,21 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const [runtimeLogStatus, setRuntimeLogStatus] = useState<string | null>(null);
   const [loadingRuntimeLogs, setLoadingRuntimeLogs] = useState(false);
   const currentRevisionRef = useRef(serverRevision);
+  const observabilityBusyRef = useRef(false);
   useEffect(() => { currentRevisionRef.current = serverRevision; }, [serverRevision]);
 
   const refreshObservability = useCallback(async () => {
-    await refreshDomainModules(['modules', 'kernel', 'agents', 'health', 'chat']);
+    if (observabilityBusyRef.current) return;
+    observabilityBusyRef.current = true;
+    try {
+      await refreshDomainModules(['modules', 'kernel', 'agents', 'health', 'chat']);
+    } catch (error) {
+      setEventsError('Nie udało się odświeżyć stanu backendu: ' +
+        (error instanceof Error ? error.message : String(error)));
+      observabilityBusyRef.current = false;
+      return;
+    }
+    try {
     const currentRevision = Math.max(0, currentRevisionRef.current - 35);
     const response = await safeFetchJson<{ ok: boolean; events?: any[]; error?: string }>(
       '/api/py/sync/events?sinceRevision=' + currentRevision + '&limit=50',
@@ -60,6 +71,12 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
       setEventsError(null);
     } else {
       setEventsError(response.data?.error || response.error || 'Nie udało się pobrać historii zdarzeń');
+    }
+    } catch (error) {
+      setEventsError('Odczyt diagnostyki przerwany: ' +
+        (error instanceof Error ? error.message : String(error)));
+    } finally {
+      observabilityBusyRef.current = false;
     }
   }, [refreshDomainModules]);
 
