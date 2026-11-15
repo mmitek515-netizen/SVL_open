@@ -19,6 +19,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -445,6 +446,69 @@ class TestSVLKernelSuite(unittest.TestCase):
 
             kernel.delete_system_module("custom-mod-99")
             self.assertFalse(any(m["id"] == "custom-mod-99" for m in kernel.list_system_modules()))
+
+    def test_chat_command_module_changes_are_persisted_as_visible_chat_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("os.environ", {"SVL_SQLITE_PATH": str(Path(tmpdir) / "app.sqlite3")}):
+                import app as backend_app
+
+            class FakeKernel:
+                def __init__(self) -> None:
+                    self.saved_messages: list[dict[str, Any]] = []
+
+                def save_chat_message(self, _cid: str, _title: str, _model: str, msg: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+                    self.saved_messages.append(msg)
+                    return {"ok": True, "deduplicated": False}
+
+                def sync_chat_state_mutations(self, **_kwargs: Any) -> dict[str, Any]:
+                    return {
+                        "ok": True,
+                        "appliedCount": 1,
+                        "materializedModules": ["svl-364"],
+                        "serverRevision": 12,
+                        "modules": [{"id": "svl-364", "name": "SVL-364", "revision": 4}],
+                    }
+
+                def list_conversations_with_messages(self) -> list[dict[str, Any]]:
+                    return [{"id": "conv-test", "messages": self.saved_messages}]
+
+            class FakeRuntime:
+                def __init__(self) -> None:
+                    self.kernel = FakeKernel()
+
+                def apply_active_module_settings(self) -> None:
+                    return None
+
+            fake_runtime = FakeRuntime()
+            body = {
+                "conversation_id": "conv-test",
+                "title": "Test",
+                "model": "svl-hybrid-router",
+                "eventId": "evt-user-test",
+                "message": {
+                    "id": "user-test",
+                    "role": "user",
+                    "sender": "Operator",
+                    "content": "Skonfiguruj moduł SVL-364",
+                    "timestamp": "04:00",
+                },
+            }
+            with patch.object(backend_app, "runtime", fake_runtime):
+                status, response = asyncio.run(
+                    backend_app.handle_api_request(
+                        "POST",
+                        "/api/py/chat/conversations/message",
+                        {},
+                        body,
+                    )
+                )
+
+            self.assertEqual(status, 200)
+            self.assertEqual(len(fake_runtime.kernel.saved_messages), 2)
+            report = fake_runtime.kernel.saved_messages[1]
+            self.assertEqual(report["role"], "system")
+            self.assertEqual(report["appliedActions"][0]["entityId"], "svl-364")
+            self.assertEqual(response["conversations"][0]["messages"][1]["appliedActions"][0]["ok"], True)
 
 
 if __name__ == "__main__":
