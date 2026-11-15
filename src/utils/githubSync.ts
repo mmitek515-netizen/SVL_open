@@ -43,7 +43,27 @@ export function isAllowedGithubSyncPath(rawPath: string): boolean {
   const parts = filePath.split('/');
   if (
     parts.some((part) => !part || part === '.' || part === '..') ||
-    parts.some((part) => ['.git', '.github', 'node_modules', 'dist', 'data', '__pycache__'].includes(part.toLowerCase()))
+    parts.some((part) =>
+      [
+        '.git',
+        '.github',
+        '.venv',
+        '.tox',
+        '.cache',
+        '.mypy_cache',
+        '.pytest_cache',
+        '.ruff_cache',
+        '__pycache__',
+        '__pypackages__',
+        'build',
+        'coverage',
+        'data',
+        'dist',
+        'env',
+        'node_modules',
+        'venv',
+      ].includes(part.toLowerCase()),
+    )
   ) {
     return false;
   }
@@ -132,6 +152,15 @@ async function scanWorkspace(rootPath: string): Promise<WorkspaceSnapshot> {
     'coverage',
     'data',
     '__pycache__',
+    '.venv',
+    'venv',
+    'env',
+    '.tox',
+    '.cache',
+    '.mypy_cache',
+    '.pytest_cache',
+    '.ruff_cache',
+    '__pypackages__',
   ]);
   const visit = async (directory: string): Promise<void> => {
     const entries = await fs.readdir(directory, { withFileTypes: true });

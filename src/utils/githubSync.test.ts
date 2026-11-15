@@ -106,6 +106,8 @@ test('GitHub sync only accepts repository source paths and rejects secrets/autom
   assert.equal(isAllowedGithubSyncPath('bun.lock'), true);
   assert.equal(isAllowedGithubSyncPath('bun.lockb'), false);
   assert.equal(isAllowedGithubSyncPath('data/agent-memory.json'), false);
+  assert.equal(isAllowedGithubSyncPath('.venv/lib/python3.14/site-packages/httpx/__init__.py'), false);
+  assert.equal(isAllowedGithubSyncPath('venv/lib/site-packages/httpx/__init__.py'), false);
   assert.equal(containsLikelySecret('GEMINI_API_KEY="MY_GEMINI_API_KEY"'), false);
   assert.equal(containsLikelySecret('GEMINI_API_KEY="actual-secret-value-123"'), true);
   assert.throws(() => new GitHubSyncService({ token: 'test-token', branch: 'main' }), GitHubSyncError);
