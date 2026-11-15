@@ -177,7 +177,6 @@ function SVLWorkspaceShell() {
             type="button"
             aria-expanded={operatorAuthVisible}
             aria-label="Otwórz autoryzację operatora"
-            title="Token operatora do administracji, czatu i danych SQLite"
             onClick={() => setOperatorAuthVisible((visible) => !visible)}
             className={`px-2 py-1 rounded-md border text-[11px] ${operatorAuthStatus === 'authorized'
               ? 'border-emerald-700 text-emerald-300'
