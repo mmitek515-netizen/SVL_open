@@ -15,6 +15,8 @@ import {
   classifyCommandRisk,
   extractExplicitChatModuleDirective,
   formatAgentDisplayName,
+  getGitHubAgentPermissions,
+  guardUnverifiedMissionCompletion,
   isGitHubWorkspaceSyncRequest,
   normalizeAgentCanonicalName,
   selectOllamaModelName,
@@ -1454,14 +1456,15 @@ async function startServer() {
     const cleanMsg = String(message || '').trim();
     const lowerClean = cleanMsg.toLowerCase();
     const wantsGitHubWorkspaceSync = isGitHubWorkspaceSyncRequest(cleanMsg);
-    const wantsGitHubTools =
+    const requestsGitHubTools =
       wantsGitHubWorkspaceSync ||
       (/github(?:\.com)?/i.test(cleanMsg) &&
         /odczytaj|sprawdź|pobierz|zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|commit|push/i.test(
           cleanMsg,
         ));
-    const wantsGitHubWrite =
-      wantsGitHubTools && /zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|zapisz|commit|push/i.test(cleanMsg);
+    const requestsGitHubWrite =
+      wantsGitHubWorkspaceSync ||
+      (requestsGitHubTools && /zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|zapisz|commit|push/i.test(cleanMsg));
     const isProhibitedMinorSafetyRisk =
       (/\b(1[0-7]|[0-9])\s*(-|\s)?(letni|letnia|lat|latek|latka)\b/i.test(lowerClean) ||
         /\b(dzieck|nieletn|małoletn|córk|syn)\b/i.test(lowerClean)) &&
@@ -1605,9 +1608,21 @@ async function startServer() {
     const ollamaInfo = healthRes.data?.ollama || {};
     const ollamaHost = String(ollamaInfo.ollama_host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
     const conversationHistory = buildChatHistoryPayload(Array.isArray(history) ? history : [], 16);
+    const missionVerificationContext = [...conversationHistory.map((turn) => turn.content), cleanMsg].join('\n');
 
     const agentState = (agentsRes.data?.agents || []).find((a: any) => a.canonical_name === selectedAgent) || {};
     const agentConfig = agentState.config || {};
+    const githubPermissions = getGitHubAgentPermissions(agentConfig.allowed_scopes);
+    const wantsGitHubTools =
+      requestsGitHubTools && (requestsGitHubWrite ? githubPermissions.writeSync : githubPermissions.read);
+    const wantsGitHubWrite = requestsGitHubWrite && githubPermissions.writeSync;
+    if (requestsGitHubTools && !wantsGitHubTools) {
+      res.status(403).json({
+        ok: false,
+        error: `Agent ${formatAgentDisplayName(selectedAgent)} nie ma wymaganego uprawnienia GitHub.`,
+      });
+      return;
+    }
     const recentMemories = (agentsRes.data?.agent_memories?.[selectedAgent] || [])
       .slice(0, 3)
       .map((m: any) => `- ${m.content}`)
@@ -1663,6 +1678,8 @@ async function startServer() {
       `WAŻNE: Nazywasz się wyłącznie ${selectedDisplayName} (nigdy nie przedstawiaj się imieniem innego agenta). ` +
       `Działasz jako pomocny asystent AI, a nie niezależny proces. Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki. ` +
       `Możesz wykonywać wyłącznie działania dostępne przez przekazane narzędzia aplikacji; potwierdzaj wykonanie tylko na podstawie ich rzeczywistych wyników i jasno odróżniaj zadania oczekujące od zakończonych.` +
+      `\nDostęp GitHub jest ograniczony do przyznanych zakresów i dedykowanej gałęzi svl-sync. Nie ujawniaj tokenów.` +
+      `\nZakończenie generowania odpowiedzi AI nie oznacza zakończenia misji. Bez wiarygodnych danych status misji jest NIEZWERYFIKOWANY.` +
       formattingAndInteractionGuide +
       (decisionMemories ? `\nZapisane ustalenia i pamięć długotrwała (${selectedDisplayName}):\n${decisionMemories}` : '');
 
@@ -1716,6 +1733,17 @@ async function startServer() {
 
     const executeChatTool = async (toolName: string, rawArgs: Record<string, any>): Promise<Record<string, any>> => {
       const args = rawArgs && typeof rawArgs === 'object' ? rawArgs : {};
+      if (toolName.startsWith('github_')) {
+        const allowed = toolName === 'github_read_file' ? githubPermissions.read : githubPermissions.writeSync;
+        if (!allowed) {
+          const error = 'Brak uprawnień dla operacji GitHub: ' + toolName;
+          appliedActions.push({
+            tool: toolName, entity: 'github', entityId: DEFAULT_GITHUB_SYNC_BRANCH,
+            summary: error, ok: false,
+          });
+          return { ok: false, error };
+        }
+      }
       if (toolName === 'github_sync_workspace') {
         return runGitHubTool(toolName, () => syncGitHubWorkspace('chat'));
       }
@@ -1944,8 +1972,8 @@ async function startServer() {
       },
     ];
 
-    if (wantsGitHubTools) {
-      if (!wantsGitHubWorkspaceSync) {
+    if (wantsGitHubTools && githubPermissions.read) {
+      if (!wantsGitHubWorkspaceSync && githubPermissions.writeSync) {
         chatToolDeclarations.push({
           name: 'github_sync_branch',
           description:
@@ -2150,13 +2178,14 @@ async function startServer() {
           const oData: any = oRaw && !oRaw.trim().startsWith('<') ? JSON.parse(oRaw) : {};
           const extReply = String(oData?.message?.content || oData?.response || '').trim();
           if (extReply) {
-            const followUps = await buildFollowUpFamilyMessages(selectedAgent, displayModelBadge, extReply);
+            const safeReply = guardUnverifiedMissionCompletion(missionVerificationContext, extReply);
+            const followUps = await buildFollowUpFamilyMessages(selectedAgent, displayModelBadge, safeReply);
             res.json({
               ok: true,
               sender: selectedDisplayName,
               agentId: selectedAgent === 'Aria' ? 'si_1' : selectedAgent,
               modelUsed: displayModelBadge,
-              reply: extReply,
+              reply: safeReply,
               followUpMessages: followUps,
               appliedActions,
               latestServerRevision: latestActionSrvRev,
@@ -2291,6 +2320,7 @@ async function startServer() {
             replyText = (plainRes.text || '').trim();
           }
           if (replyText) {
+            replyText = guardUnverifiedMissionCompletion(missionVerificationContext, replyText);
             const memRes = await callPythonBackend(
               'POST',
               '/api/py/agents/memory',
