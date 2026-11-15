@@ -89,6 +89,58 @@ export function formatAgentDisplayName(rawName?: string | null): string {
   return clean;
 }
 
+export function getGitHubAgentPermissions(rawScopes: unknown): { read: boolean; writeSync: boolean } {
+  const scopes = new Set(
+    Array.isArray(rawScopes) ? rawScopes.map((scope) => String(scope).trim().toLowerCase()) : [],
+  );
+  return {
+    read: scopes.has('github.read'),
+    writeSync: scopes.has('github.write_sync'),
+  };
+}
+
+const missionContextPattern = /\b(?:misj|procedur|operacj)\p{L}*/iu;
+const unverifiedMissionCompletionPatterns = [
+  /\b(?:misja|misję|procedura|procedurę|operacja|operację)\s+(?:(?:został[ay]?\s+|jest\s+)?(?:już\s+)?(?:pomyślnie\s+)?)(?:zakończon\p{L}*|ukończon\p{L}*|wykonan\p{L}*|zrealizowan\p{L}*)\b/iu,
+  /\b(?:cał\p{L}*\s+)?(?:misj\p{L}*|procedur\p{L}*|operacj\p{L}*)(?:\s+misj\p{L}*)?\s+dobiegł\p{L}*\s+(?:już\s+)?(?:do\s+)?końca\b/iu,
+  /\b(?:wykonał[ae]m|zrealizował[ae]m|zakończył[ae]m|ukończył[ae]m)\s+(?:już\s+)?(?:cał\p{L}*\s+)?(?:misj\p{L}*|procedur\p{L}*|operacj\p{L}*)\b/iu,
+  /\b(?:wszystkie|całe)\s+(?:kroki|etapy|fazy)\s+(?:misji\s+)?(?:zostały|są)\s+(?:już\s+)?(?:zakończon\p{L}*|ukończon\p{L}*|wykonan\p{L}*|zrealizowan\p{L}*)\b/iu,
+  /\b(?:the\s+)?(?:mission|procedure|operation)s?\s+(?:(?:is|was|has|have)\s+(?:been\s+)?|are\s+)?(?:successfully\s+)?(?:completed|finished|concluded|done)\b/iu,
+  /\b(?:i\s+)?(?:completed|finished|concluded)\s+(?:the\s+)?(?:mission|procedure|operation)s?\b/iu,
+  /\b(?:all\s+)?(?:mission\s+)?(?:steps|stages|phases)\s+(?:are|have\s+been|were)\s+(?:fully\s+)?(?:completed|finished|done)\b/iu,
+];
+
+export const UNVERIFIED_MISSION_STATUS_REPLY =
+  '⚠️ **Status misji: NIEZWERYFIKOWANY.** System nie ma rejestru misji ani potwierdzeń wykonania jej kroków. Wygenerowanie odpowiedzi AI lub status „COMPLETED” zadania agenta oznacza tylko gotową odpowiedź, nie zakończenie procedury. Nie mogę potwierdzić, że misja dobiegła końca. Prześlij checklistę i wyniki z wiarygodnego źródła, a pomogę sprawdzić każdy krok.';
+
+export function guardUnverifiedMissionCompletion(context: string, answer: string): string {
+  if (
+    !missionContextPattern.test(context) ||
+    !unverifiedMissionCompletionPatterns.some((pattern) => pattern.test(answer))
+  ) {
+    return answer;
+  }
+  return UNVERIFIED_MISSION_STATUS_REPLY;
+}
+
+export function parseChatInteractiveToken(token: string): { label: string; action: string } | null {
+  const match = token.trim().match(/^\[(?:btn|button|action):([^\]]+)\]$/);
+  if (!match) return null;
+
+  const separator = match[1].indexOf('|');
+  const label = (separator < 0 ? match[1] : match[1].slice(0, separator)).trim();
+  const action = (separator < 0 ? label : match[1].slice(separator + 1)).trim();
+  return label ? { label, action: action || label } : null;
+}
+
+export function isUnsafeChatInteractiveAction(action: string): boolean {
+  const value = action.trim();
+  if (/^(?:\/|run:|exec:)/i.test(value)) return true;
+
+  const dispatchedText = value.match(/^(?:send|text):\s*([\s\S]*)$/i)?.[1]?.trim() || '';
+  return /^\/exec(?:\s|$)/i.test(dispatchedText);
+}
+
 export function normalizeAgentCanonicalName(
   rawName?: string | null,
 ): 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata' | null {
