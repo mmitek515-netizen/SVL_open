@@ -38,6 +38,7 @@ Oprogramowanie uruchomione w osobnym AI Studio nadal nie będzie miało dostępu
 
 - `SVL_CODEX_CHAT_ENABLED` jest domyślnie `false`. Włączenie wymaga prywatnego tokenu operatora długości minimum 32 znaków.
 - Backend uruchamia Codex CLI z `--sandbox read-only` w pustym, tymczasowym katalogu bez projektu, bez API key i z ograniczeniami czasu, rozmiaru odpowiedzi oraz liczby równoczesnych żądań. Nie wystawia sesji OAuth przez MCP HTTP.
+- Lokalny czat oraz pięć workerów używają wspólnej blokady `flock` (util-linux) dla tego samego użytkownika Linux. Nie potrzeba stałego IP. Gdy konto jest zajęte, serwer zgłasza stan zajętości zamiast uruchamiać równoległe generowanie.
 - Szczegółowa diagnostyka zalogowania wymaga prywatnego tokenu operatora w nagłówku `X-SVL-Codex-Access`. Bez niego endpoint pokazuje jedynie ogólny stan konfiguracji.
 - Tryb jest tekstowy. Nie deklaruje obsługi obrazów ani uruchomionych usług Ollama.
 - Nie wklejaj `auth.json`, sekretu operatora ani kodów logowania urządzenia do czatu, logów lub repozytorium.

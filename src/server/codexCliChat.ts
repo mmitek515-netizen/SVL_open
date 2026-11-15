@@ -36,7 +36,9 @@ function codexEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-async function runCodex(args: string[], stdin: string, timeoutMs: number, cwd: string): Promise<RunResult> {
+async function runCodex(
+  args: string[], stdin: string, timeoutMs: number, cwd: string, sharedAgentLock = false,
+): Promise<RunResult> {
   return new Promise((resolve) => {
     let settled = false;
     let stdout = '';
@@ -52,7 +54,15 @@ async function runCodex(args: string[], stdin: string, timeoutMs: number, cwd: s
       resolve({ code, stdout, stderr, timedOut, truncated });
     };
     try {
-      child = spawn('codex', args, {
+      // util-linux flock --no-fork uses the same advisory lock as Python
+      // fcntl.flock() in the five agent worker processes.
+      const lockPath = path.join(os.tmpdir(),
+        'svl-codex-oauth-worker-' + String(typeof process.getuid === 'function' ? process.getuid() : os.userInfo().uid) + '.lock');
+      const binary = sharedAgentLock ? 'flock' : 'codex';
+      const commandArgs = sharedAgentLock
+        ? ['--no-fork', '--exclusive', '--wait', '15', '--conflict-exit-code', '75', lockPath, 'codex', ...args]
+        : args;
+      child = spawn(binary, commandArgs, {
         cwd,
         shell: false,
         env: codexEnv(),
@@ -179,9 +189,13 @@ export async function generateCodexCliChat(
         prompt,
         CHAT_TIMEOUT_MS,
         isolatedRoot,
+        true,
       );
       if (run.timedOut) return {ok:false,error:'Codex CLI exceeded its response timeout'};
       if (run.truncated) return {ok:false,error:'Codex CLI produced too much output'};
+      if (run.code === 75) {
+        return {ok:false,busy:true,error:'Codex CLI jest zajęty pracą innego agenta. Spróbuj później.'};
+      }
       if (run.code !== 0) return {ok:false,error:'Codex CLI failed or the logged-in account reached its usage limit'};
       const reply = finalAgentReply(run.stdout);
       return reply ? {ok:true,reply} : {ok:false,error:'Codex CLI returned no agent message'};

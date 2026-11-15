@@ -6,7 +6,7 @@ umask 077
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-for required in node npm python3 codex; do
+for required in node npm python3 codex flock; do
   if ! command -v "$required" >/dev/null 2>&1; then
     echo "Missing executable: $required" >&2
     exit 1
