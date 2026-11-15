@@ -39,9 +39,11 @@ from svl_core import (
 
 from agents_runtime import (
     CANONICAL_SVL_AGENTS,
+    GITHUB_AGENT_SCOPES,
     SVLAgentOrchestrator,
     _agent_worker_process_loop,
     execute_agent_task,
+    guard_unverified_mission_completion,
 )
 
 
@@ -148,6 +150,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                 self.assertEqual(config["autonomy_mode"], "SUPERVISED_TOOL_USE")
                 self.assertNotIn("root", config["allowed_scopes"])
                 self.assertNotIn("sudo_nopasswd", config["allowed_scopes"])
+                self.assertTrue(set(GITHUB_AGENT_SCOPES).issubset(config["allowed_scopes"]))
 
             custom_prompt = "Zachowuj moje ustalenia i odpowiadaj zwięźle."
             updated = orchestrator.update_agent_config(
@@ -189,7 +192,10 @@ class TestSVLKernelSuite(unittest.TestCase):
             self.assertFalse(migrated["root_nopasswd"])
             self.assertEqual(migrated["rbac_role"], "assistant")
             self.assertEqual(migrated["autonomy_mode"], "SUPERVISED_TOOL_USE")
-            self.assertEqual(migrated["allowed_scopes"], ["chat"])
+            self.assertEqual(
+                migrated["allowed_scopes"],
+                ["chat", *GITHUB_AGENT_SCOPES],
+            )
 
     def test_agent_dispatch_is_persisted_until_a_worker_is_connected(self) -> None:
         async def _run() -> None:
@@ -241,7 +247,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                     "started_at": "2025-01-01T00:00:00+00:00",
                 })
                 await orchestrator._handle_worker_message({
-                    "type": "task_completed",
+                    "type": "task_answer_ready",
                     "task_id": task_id,
                     "agent": "Aria",
                     "worker_pid": 1234,
@@ -251,7 +257,7 @@ class TestSVLKernelSuite(unittest.TestCase):
 
                 restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
                 task = next(item for item in restored.agent_queues["Aria"] if item["id"] == task_id)
-                self.assertEqual(task["status"], "COMPLETED")
+                self.assertEqual(task["status"], "ANSWER_READY")
                 self.assertEqual(task["result"], "Task result")
 
         asyncio.run(_run())
@@ -290,7 +296,20 @@ class TestSVLKernelSuite(unittest.TestCase):
         request_body = json.loads(request.data.decode("utf-8"))
         self.assertFalse(request_body["stream"])
         self.assertEqual([message["role"] for message in request_body["messages"]], ["system", "user"])
+        self.assertIn("no mission registry", request_body["messages"][0]["content"])
         self.assertNotIn("tools", request_body)
+
+    def test_worker_mission_completion_claim_is_blocked_without_verified_state(self) -> None:
+        guarded = guard_unverified_mission_completion(
+            "Prowadzę misję, sprawdź status procedury.",
+            "Cała procedura misji dobiegła już końca.",
+        )
+        self.assertIn("Status misji: NIEZWERYFIKOWANY", guarded)
+        planned = "Procedurę można uznać za zakończoną dopiero po weryfikacji każdego kroku."
+        self.assertEqual(
+            guard_unverified_mission_completion("Opisz procedurę misji.", planned),
+            planned,
+        )
 
     def test_worker_process_consumes_tasks_and_reports_failures(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
