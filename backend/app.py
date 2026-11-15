@@ -1467,7 +1467,10 @@ async def _handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 async def _run_boot_autoconnect() -> None:
     try:
         runtime.orchestrator.ollama_host = runtime.ollama_host
-        await runtime.orchestrator.connect_my_ai(triggered_by="system_boot_autoconnect")
+        await runtime.orchestrator.connect_my_ai(
+            triggered_by="system_boot_autoconnect",
+            skip_network_probes=os.environ.get("SVL_CODEX_AGENTS_ENABLED") == "true",
+        )
     except Exception as exc:
         print(f"[SVL Python OS] Warning during boot autoconnect: {exc}", flush=True)
 

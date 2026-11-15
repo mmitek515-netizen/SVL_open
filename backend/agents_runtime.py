@@ -1433,7 +1433,9 @@ class SVLAgentOrchestrator:
                 "reason": f"External endpoint unreachable: {exc}",
             }
 
-    async def connect_my_ai(self, triggered_by: str = "operator") -> dict[str, Any]:
+    async def connect_my_ai(
+        self, triggered_by: str = "operator", skip_network_probes: bool = False
+    ) -> dict[str, Any]:
         """
         Realizuje polecenie 'podłącz moje ai':
         1. Łączy się z repozytoriami mmitek515-netizen/SVL_System oraz mmitek515-netizen/Debian_13.
@@ -1442,11 +1444,27 @@ class SVLAgentOrchestrator:
         4. Uruchamia pięć lokalnych workerów i wyraźnie odróżnia ich procesy od zewnętrznych usług.
         5. Przywraca/inicjalizuje ich pamięć wyłącznie na podstawie rzeczywistych danych z repozytorium i bazy SQLite.
         """
-        svl_repo_probe, deb_repo_probe, external_probe = await asyncio.gather(
-            asyncio.to_thread(self._probe_github_repository, "mmitek515-netizen/SVL_System"),
-            asyncio.to_thread(self._probe_github_repository, "mmitek515-netizen/Debian_13"),
-            asyncio.to_thread(self._probe_external_running_agents),
-        )
+        if skip_network_probes:
+            # In Codex-only environments the local workers do not require any
+            # GitHub or remote-host connectivity at boot. Do not claim a probe.
+            svl_repo_probe = {
+                "reachable": False, "checked": False,
+                "reason": "boot Codex-only mode skips remote repository inspection",
+            }
+            deb_repo_probe = {
+                "reachable": False, "checked": False,
+                "reason": "boot Codex-only mode skips remote repository inspection",
+            }
+            external_probe = {
+                "external_processes_running": False, "checked": False,
+                "reason": "remote agents not inspected during Codex-only boot",
+            }
+        else:
+            svl_repo_probe, deb_repo_probe, external_probe = await asyncio.gather(
+                asyncio.to_thread(self._probe_github_repository, "mmitek515-netizen/SVL_System"),
+                asyncio.to_thread(self._probe_github_repository, "mmitek515-netizen/Debian_13"),
+                asyncio.to_thread(self._probe_external_running_agents),
+            )
 
         spawned_agents: list[dict[str, Any]] = []
         for name, meta in CANONICAL_SVL_AGENTS.items():
@@ -1460,12 +1478,16 @@ class SVLAgentOrchestrator:
                 self.add_agent_memory(
                     canonical_name=name,
                     kind="fact",
-                    source="SVL_System_Import",
+                    source="Local_Codex_Boot" if skip_network_probes else "SVL_System_Import",
                     content=(
-                        f"Zaimportowano profil agenta {name} (id={meta['id']}) z repozytorium "
-                        f"mmitek515-netizen/SVL_System ({meta['source_profile_path']}). "
-                        f"Zachowana rola: {meta['preserved_role']}."
-                    ),
+                        (
+                            f"Uruchomiono lokalny profil agenta {name} (id={meta['id']}); "
+                            f"zdalne repozytorium nie było sprawdzane podczas startu. "
+                        ) if skip_network_probes else (
+                            f"Zaimportowano profil agenta {name} (id={meta['id']}) z repozytorium "
+                            f"mmitek515-netizen/SVL_System ({meta['source_profile_path']}). "
+                        )
+                    ) + f"Zachowana rola: {meta['preserved_role']}.",
                 )
 
             cfg = self.get_agent_config(name)
@@ -1480,7 +1502,9 @@ class SVLAgentOrchestrator:
                 "source_repository": "https://github.com/mmitek515-netizen/SVL_System",
                 "source_profile_path": meta["source_profile_path"],
                 "source_nature": "SOFTWARE_DEFINITION_ONLY (.github/agents/*.agent.md + src/kernel/agents.ts)",
-                "external_process_connected": external_probe["external_processes_running"],
+                "external_process_connected": bool(
+                    external_probe["external_processes_running"]
+                ) if external_probe.get("checked", True) else False,
                 "instance_origin": "NEW_LOCAL_WORKER_FROM_REPO_CODE",
                 "instance_label": "Nowa instancja lokalna uruchomiona na podstawie kodu z SVL_System",
                 "status": "ONLINE_LOCAL_WORKER",
