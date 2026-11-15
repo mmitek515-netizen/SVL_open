@@ -498,7 +498,7 @@ export class GitHubSyncService {
     }
   }
 
-  async syncWorkspace(rootPath: string): Promise<{
+  async syncWorkspace(rootPath: string, options: {applyRemoteChanges?: boolean} = {}): Promise<{
     repository: string;
     branch: string;
     defaultBranch: string;
@@ -509,7 +509,8 @@ export class GitHubSyncService {
     conflicts: string[];
     skipped: string[];
   }> {
-    const { defaultBranch } = await this.syncDefaultBranch();
+    // Automatic workspace sync must not merge branch histories or modify source files.
+    const defaultBranch = await this.ensureBranch();
     const [baseSnapshot, remoteSnapshot, localSnapshot] = await Promise.all([
       this.getBranchTree(defaultBranch),
       this.getBranchTree(this.branch),
@@ -554,6 +555,10 @@ export class GitHubSyncService {
         localIsClean &&
         relation === 'default_ahead'
       ) {
+        if (!options.applyRemoteChanges) {
+          skipped.push(filePath);
+          continue;
+        }
         const absolutePath = path.resolve(root, filePath);
         if (!absolutePath.startsWith(`${root}${path.sep}`)) {
           skipped.push(filePath);
@@ -618,6 +623,10 @@ export class GitHubSyncService {
       }
 
       if (localSha === baseSha) {
+        if (!options.applyRemoteChanges) {
+          skipped.push(filePath);
+          continue;
+        }
         const absolutePath = path.resolve(root, filePath);
         if (!absolutePath.startsWith(`${root}${path.sep}`)) {
           skipped.push(filePath);
@@ -729,7 +738,7 @@ export class GitHubSyncService {
     if (!isAllowedGithubSyncPath(filePath)) {
       throw new GitHubSyncError('File path is not allowed for GitHub sync.');
     }
-    await this.syncDefaultBranch();
+    await this.ensureBranch();
 
     const file = await this.request(
       `/repos/${this.repository}/contents/${filePath.split('/').map(encodeURIComponent).join('/')}?ref=${encodeURIComponent(this.branch)}`,
@@ -769,7 +778,7 @@ export class GitHubSyncService {
       throw new GitHubSyncError('File content appears to contain a secret; it was not sent to GitHub.');
     }
 
-    await this.syncDefaultBranch();
+    await this.ensureBranch();
     const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
     const existing = await this.request(
       `/repos/${this.repository}/contents/${encodedPath}?ref=${encodeURIComponent(this.branch)}`,

@@ -70,7 +70,9 @@ async function syncGitHubWorkspace(
   githubSyncRuntimeStatus.lastTrigger = trigger;
   githubSyncRuntimeStatus.lastError = null;
   try {
-    const result = await createGitHubSyncService().syncWorkspace(__dirname);
+    const applyRemoteChanges =
+      trigger === 'dashboard' && process.env.SVL_GITHUB_APPLY_REMOTE_CHANGES === 'true';
+    const result = await createGitHubSyncService().syncWorkspace(__dirname, {applyRemoteChanges});
     githubSyncRuntimeStatus.lastResult = result;
     githubSyncRuntimeStatus.lastSuccessAt = new Date().toISOString();
     return result;
@@ -962,6 +964,8 @@ async function startServer() {
       defaultBranch: 'main',
       tokenConfigured,
       automaticEnabled: tokenConfigured && process.env.SVL_GITHUB_AUTO_SYNC !== 'false',
+      remoteApplyEnabled: process.env.SVL_GITHUB_APPLY_REMOTE_CHANGES === 'true',
+      automaticMode: 'publish-only; no implicit branch merge or live source replacement',
       intervalMs: Number(process.env.SVL_GITHUB_SYNC_INTERVAL_MS || 30000),
       ...githubSyncRuntimeStatus,
     });
