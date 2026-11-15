@@ -23,7 +23,7 @@ import {
   type ChatAppliedAction,
 } from './src/utils/svlLogic.ts';
 import { DEFAULT_GITHUB_SYNC_BRANCH, GitHubSyncService } from './src/utils/githubSync.ts';
-import { codexChatAccessAllowed, codexChatConfiguration, generateCodexCliChat, probeCodexCli } from './src/server/codexCliChat.ts';
+import { codexChatAccessAllowed, codexChatConfiguration, codexChatDiagnostics, generateCodexCliChat, probeCodexCli } from './src/server/codexCliChat.ts';
 
 dotenv.config();
 
@@ -523,7 +523,11 @@ async function startServer() {
       return;
     }
     const probe = await probeCodexCli(__dirname);
-    res.json({ok: true, ...state, authenticated: true, loggedIn: probe.loggedIn, reason: probe.reason});
+    res.json({
+      ok: true, ...state, authenticated: true,
+      loggedIn: probe.loggedIn, reason: probe.reason,
+      activity: codexChatDiagnostics(),
+    });
   }));
 
   app.get('/api/operator/status', (req, res) => {
