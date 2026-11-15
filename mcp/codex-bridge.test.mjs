@@ -104,6 +104,38 @@ test('SVL Codex MCP: initialization, tools, bearer auth and bounded readonly tas
   assert.equal(list.status, 200);
   assert.deepEqual(list.data.result.tools.map(x => x.name), ['svl_sync_status', 'svl_agents_status', 'codex_status', 'codex_task']);
 
+  // 2026-07-28 MCP clients mirror protocol, method and tool metadata into headers.
+  const modernBody = { jsonrpc: '2.0', id: 29, method: 'tools/list', params: {
+    _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28' }
+  } };
+  const modern = await fetch('http://127.0.0.1:' + port + '/mcp', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + secret,
+      Accept: 'application/json, text/event-stream',
+      'Content-Type': 'application/json',
+      'MCP-Protocol-Version': '2026-07-28',
+      'Mcp-Method': 'tools/list',
+    },
+    body: JSON.stringify(modernBody),
+  });
+  assert.equal(modern.status, 200);
+  const modernList = await modern.json();
+  assert.equal(modernList.result.tools.length, 4);
+  const mismatchedModern = await fetch('http://127.0.0.1:' + port + '/mcp', {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + secret,
+      Accept: 'application/json, text/event-stream',
+      'Content-Type': 'application/json',
+      'MCP-Protocol-Version': '2026-07-28',
+      'Mcp-Method': 'tools/call',
+    },
+    body: JSON.stringify(modernBody),
+  });
+  assert.equal(mismatchedModern.status, 400);
+
+
   const status = await rpc(port, { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'codex_status', arguments: {} } });
   assert.equal(status.status, 200);
   const statusResult = JSON.parse(status.data.result.content[0].text);
