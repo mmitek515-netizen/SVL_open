@@ -222,9 +222,14 @@ export const LinuxDeployDashboard: React.FC = () => {
   useEffect(() => {
     const controller = new AbortController();
     async function loadFile() {
+      if (!githubOperatorToken) {
+        setFileContent('Aby odczytać plik, wprowadź prywatny SVL_OPERATOR_TOKEN w polu GitHub / Dostęp do plików.');
+        return;
+      }
       const res = await safeFetchJson<any>(`/api/files?path=${encodeURIComponent(selectedFilePath)}`, {
         signal: controller.signal,
         timeoutMs: 10000,
+        headers: {'X-SVL-Operator-Token': githubOperatorToken},
       });
       if (res.aborted) return;
       const data = res.data;
@@ -234,7 +239,7 @@ export const LinuxDeployDashboard: React.FC = () => {
     return () => {
       controller.abort();
     };
-  }, [selectedFilePath]);
+  }, [selectedFilePath, githubOperatorToken]);
 
   const handleCopyFile = async () => {
     try {
@@ -514,7 +519,7 @@ export const LinuxDeployDashboard: React.FC = () => {
             </p>
             <div className="flex flex-wrap items-center gap-3">
               <input type="password" autoComplete="off" spellCheck={false}
-                aria-label="Token operatora SVL do synchronizacji GitHub"
+                aria-label="Token operatora SVL do synchronizacji GitHub i odczytu plików projektu"
                 value={githubOperatorToken}
                 onChange={(event) => setGithubOperatorToken(event.target.value)}
                 placeholder="SVL_OPERATOR_TOKEN"

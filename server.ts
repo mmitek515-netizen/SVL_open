@@ -2150,39 +2150,84 @@ async function startServer() {
     });
   }));
 
-  // 4. Workspace File Explorer API (Read real project files, deployment configs, and Python modules)
+  // Authenticated code inspector. File traversal, symlink escapes and secrets
+  // are denied even when the operator supplies a valid token.
   app.get('/api/files', asyncRoute(async (req, res) => {
-    const relPath = String(req.query.path || '').replace(/^\/+/, '');
-    const targetPath = path.resolve(__dirname, relPath);
-    if (!targetPath.startsWith(__dirname)) {
-      res.status(403).json({ ok: false, error: 'Access outside workspace denied.' });
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
+      res.status(401).json({ ok: false, error: 'Podaj SVL_OPERATOR_TOKEN, aby odczytać pliki projektu.' });
       return;
     }
-
+    const relPath = typeof req.query.path === 'string' ? req.query.path : '';
+    const segments = relPath.split(/[\\/]/);
+    const deniedNames = new Set([
+      'data', 'node_modules', 'dist', 'coverage', 'logs', 'secrets',
+      '.git', '.github', '.codex', '.venv', '__pycache__',
+    ]);
+    const forbiddenSegment = segments.some((segment) =>
+      segment === '..' ||
+      (segment.startsWith('.') && segment !== '.env.example') ||
+      deniedNames.has(segment.toLowerCase())
+    );
+    if (!relPath || relPath.length > 350 || relPath.includes('\0') ||
+        path.isAbsolute(relPath) || forbiddenSegment) {
+      res.status(403).json({ ok: false, error: 'Niedozwolona ścieżka projektu.' });
+      return;
+    }
     try {
+      const root = await fs.realpath(__dirname);
+      const targetPath = await fs.realpath(path.resolve(root, relPath));
+      const relative = path.relative(root, targetPath);
+      if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) ||
+          path.isAbsolute(relative) ||
+          relative.split(path.sep).some((part) =>
+            (part.startsWith('.') && part !== '.env.example') ||
+            deniedNames.has(part.toLowerCase())
+          )) {
+        res.status(403).json({ ok: false, error: 'Ścieżka poza dozwolonym kodem źródłowym.' });
+        return;
+      }
       const stat = await fs.stat(targetPath);
       if (stat.isDirectory()) {
         const entries = await fs.readdir(targetPath, { withFileTypes: true });
         const items = entries
-          .filter((e) => !['node_modules', '.git', 'dist', '.playwright-cli'].includes(e.name))
-          .map((e) => ({
-            name: e.name,
-            path: path.relative(__dirname, path.join(targetPath, e.name)),
-            type: e.isDirectory() ? 'directory' : 'file',
+          .filter((item) =>
+            !item.name.startsWith('.') &&
+            !deniedNames.has(item.name.toLowerCase()) &&
+            !item.isSymbolicLink()
+          )
+          .slice(0, 300)
+          .map((item) => ({
+            name: item.name,
+            path: path.relative(root, path.join(targetPath, item.name)),
+            type: item.isDirectory() ? 'directory' : 'file',
           }));
-        res.json({ ok: true, kind: 'directory', path: relPath, items });
-      } else {
-        const content = await fs.readFile(targetPath, 'utf-8');
-        res.json({
-          ok: true,
-          kind: 'file',
-          path: relPath,
-          size: stat.size,
-          content: content.slice(0, 64000),
-        });
+        res.json({ ok: true, kind: 'directory', path: relative, items });
+        return;
       }
+      if (!stat.isFile() || stat.size > 256 * 1024) {
+        res.status(413).json({ ok: false, error: 'Nieobsługiwany plik lub zbyt duży rozmiar.' });
+        return;
+      }
+      const permitted = /\.(ts|tsx|py|md|json|css|html|yml|yaml|toml|sh|service)$/i.test(relative) ||
+        path.basename(relative) === '.env.example';
+      if (!permitted) {
+        res.status(403).json({ ok: false, error: 'Dozwolony jest tylko tekstowy kod źródłowy.' });
+        return;
+      }
+      const content = await fs.readFile(targetPath, 'utf8');
+      res.json({
+        ok: true,
+        kind: 'file',
+        path: relative,
+        size: stat.size,
+        content: content.slice(0, 64000),
+      });
     } catch (err: any) {
-      res.status(404).json({ ok: false, error: err?.message || 'File not found' });
+      const notFound = err?.code === 'ENOENT' || err?.code === 'ENOTDIR';
+      res.status(notFound ? 404 : 424).json({
+        ok: false,
+        error: notFound ? 'Plik nie istnieje w tym runtime.' : 'Nie udało się odczytać pliku.',
+      });
     }
   }));
 
