@@ -1100,16 +1100,17 @@ async function startServer() {
       const outputText = execResult.stdout.trim() || execResult.stderr.trim() || '(brak danych wyjściowych)';
       const statusIcon = execResult.ok ? '✅ Sukces (exit 0)' : `❌ Błąd (exit ${execResult.exitCode})`;
       const formattedReply =
-        `### Wykonanie polecenia root (/exec)\n\n` +
+        `### Wykonanie polecenia Linux (/exec)\n\n` +
         `**Komenda:** \`${commandToRun}\`\n` +
-        `**Status:** ${statusIcon} (${execResult.durationMs}ms)\n\n` +
+        `**Status:** ${statusIcon} (${execResult.durationMs}ms)\n` +
+        `**Uprawnienia:** konto użytkownika procesu SVL_open; UID 0 nie jest zakładany.\n\n` +
         `\`\`\`bash\n${outputText}\n\`\`\``;
 
       res.json({
         ok: true,
         sender: 'Alex Mitek',
         agentId: 'Alex',
-        modelUsed: 'SVL Root Shell Worker',
+        modelUsed: 'SVL Linux Shell (authorized operator)',
         reply: formattedReply,
       });
       return;
