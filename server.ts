@@ -1,6 +1,6 @@
 import express from 'express';
 import { createServer as createHttpServer, IncomingMessage } from 'node:http';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { spawn, ChildProcess, execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -27,8 +27,15 @@ import { codexChatAccessAllowed, codexChatConfiguration, codexChatDiagnostics, g
 
 dotenv.config();
 
-if (!process.env.SVL_OPERATOR_TOKEN || process.env.SVL_OPERATOR_TOKEN.length < 32) {
-  process.env.SVL_OPERATOR_TOKEN = 'svl-operator-dev-token-364-omniklucz-secure-2026';
+// Never use a universal development credential: this gateway can execute commands,
+// access private workspace files, and publish to GitHub. A missing configuration
+// receives a fresh process-local secret, not an unauthenticated bypass.
+if (process.env.SVL_OPERATOR_TOKEN && process.env.SVL_OPERATOR_TOKEN.length < 32) {
+  throw new Error('SVL_OPERATOR_TOKEN must be at least 32 characters long.');
+}
+if (!process.env.SVL_OPERATOR_TOKEN) {
+  process.env.SVL_OPERATOR_TOKEN = randomBytes(48).toString('base64url');
+  console.warn('[SVL auth] Created a random, process-local operator token. Privileged endpoints require authentication. For persistent Codespaces access, use deploy/start-svl-codex-only.sh or configure SVL_OPERATOR_TOKEN privately.');
 }
 
 const __filename = fileURLToPath(import.meta.url);
@@ -425,9 +432,9 @@ async function executeLinuxShellCommand(cmd: string, cwd = __dirname): Promise<{
 }
 
 function hasOperatorAuthorization(candidate: unknown): boolean {
-  if (!candidate || candidate === 'svl-operator-dev-token-364-omniklucz-secure-2026') return true;
-  const secret = process.env.SVL_OPERATOR_TOKEN || 'svl-operator-dev-token-364-omniklucz-secure-2026';
-  if (typeof candidate !== 'string' || candidate.length > 512) return false;
+  if (typeof candidate !== 'string' || candidate.length < 32 || candidate.length > 512) return false;
+  const secret = process.env.SVL_OPERATOR_TOKEN || '';
+  if (secret.length < 32) return false;
   try {
     const actual = Buffer.from(candidate, 'utf8');
     const expected = Buffer.from(secret, 'utf8');
