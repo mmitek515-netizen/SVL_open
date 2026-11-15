@@ -1359,6 +1359,18 @@ async function startServer() {
     res.status(pyRes.status).json(pyRes.data);
   }));
 
+  app.post('/api/kernel/factory-reset', asyncRoute(async (req, res) => {
+    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token']) &&
+        !hasOperatorAuthorization(req.body?.operatorToken)) {
+      res.status(401).json({ ok: false, error: 'Przywracanie ustawień fabrycznych wymaga SVL_OPERATOR_TOKEN.' });
+      return;
+    }
+    const corrId: string = (req as any).correlationId || '';
+    const pyRes = await callPythonBackend('POST', '/api/py/kernel/factory-reset', req.body || {}, corrId);
+    void pollAndRelayOutbox();
+    res.status(pyRes.status).json(pyRes.data);
+  }));
+
   let cachedChatContextMeta: { at: number; healthRes: any; agentsRes: any } | null = null;
   async function getFastChatBackendMeta(corrId: string) {
     if (cachedChatContextMeta && Date.now() - cachedChatContextMeta.at < 2500) {

@@ -111,6 +111,24 @@ class TestSVLRealVisionSuite(unittest.TestCase):
             self.assertIn("svl-364-repo-vault", mods)
             self.assertIn("svl-364-camera-feed", mods)
 
+    def test_factory_reset_wipes_and_reinitializes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test_factory.sqlite3"
+            kernel = SVLSystemKernel(db_path=db_path)
+            kernel.save_chat_message(
+                "conv-rodzina-mitek-wszyscy",
+                "Rodzina Mitek",
+                "test",
+                {"id": "msg-1", "role": "user", "sender": "Operator", "timestamp": "12:00", "content": "Test message"},
+                origin="test",
+            )
+            self.assertGreater(len(kernel.list_conversations_with_messages()), 0)
+            reset_res = kernel.factory_reset(origin="unit-test")
+            self.assertTrue(reset_res["ok"])
+            self.assertEqual(reset_res["status"], "FACTORY_RESET_COMPLETED")
+            self.assertGreaterEqual(len(kernel.list_conversations_with_messages()), 1)
+            self.assertIn("svl-antivirus-scanner", {m["id"] for m in kernel.list_system_modules()})
+
 
 if __name__ == "__main__":
     unittest.main()

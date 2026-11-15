@@ -717,6 +717,13 @@ async def handle_api_request(
             "serverRevision": meta["serverRevision"],
         }
 
+    if method == "POST" and path == "/api/py/kernel/factory-reset":
+        reset_res = runtime.kernel.factory_reset(origin=origin, correlation_id=corr)
+        return 200, {
+            "ok": True,
+            **reset_res,
+        }
+
     if method == "GET" and path == "/api/py/modules":
         meta = runtime.kernel.get_sync_snapshot_meta()
         return 200, {
