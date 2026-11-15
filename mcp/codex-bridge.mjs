@@ -210,10 +210,14 @@ async function handleRpc(msg) {
   }
   if (name === 'codex_status') {
     const version = await runCodex(['--version']);
-    const login = version.code === 0 ? await runCodex(['login', 'status']) : { code: 127 };
+    const login = version.code === 0 ? await runCodex(['login', 'status']) : { code: 127, stdout: '', stderr: '' };
+    // An active API-key login is NOT ChatGPT OAuth. Reject it rather than silently
+    // switching backends or billing modes.
+    const chatgptLogin = login.code === 0 && /chatgpt/i.test(login.stdout + '\n' + login.stderr);
     return reply(id, toolReply({
       installed: version.code === 0,
-      loggedIn: login.code === 0,
+      loggedIn: chatgptLogin,
+      authenticationMode: chatgptLogin ? 'chatgpt-cli' : 'not-chatgpt',
       version: version.code === 0 ? version.stdout.trim().slice(0, 120) : null,
       workspace: WORKDIR,
       writableTasksEnabled: ENABLE_WRITE,
@@ -232,6 +236,14 @@ async function handleRpc(msg) {
     if (running) return reply(id, toolReply({ error: 'Codex task already running; retry later' }, true));
     running = true;
     try {
+      // Enforce explicit ChatGPT CLI mode before allowing any remote MCP task.
+      const login = await runCodex(['login', 'status']);
+      if (login.code !== 0 || !/chatgpt/i.test(login.stdout + '\n' + login.stderr)) {
+        return reply(id, toolReply({
+          error: 'Codex CLI is not logged in with ChatGPT under the svlos service account',
+          hint: 'Run codex login --device-auth with the configured CODEX_HOME',
+        }, true));
+      }
       const sandbox = write ? 'workspace-write' : 'read-only';
       const result = await runCodex(
         ['exec', '--json', '--sandbox', sandbox, '--skip-git-repo-check', '-'],
