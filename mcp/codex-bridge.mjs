@@ -238,7 +238,7 @@ async function handleRpc(msg) {
       version: version.code === 0 ? version.stdout.trim().slice(0, 120) : null,
       workspace: WORKDIR,
       writableTasksEnabled: ENABLE_WRITE,
-      loginHint: login.code !== 0 ? 'Run codex login --device as svlos, using the service CODEX_HOME.' : undefined,
+      loginHint: login.code !== 0 ? 'Run codex login --device-auth as the same Linux user and CODEX_HOME as this MCP process.' : undefined,
     }));
   }
   if (name === 'codex_task') {
@@ -257,8 +257,8 @@ async function handleRpc(msg) {
       const login = await runCodex(['login', 'status']);
       if (login.code !== 0 || !/logged in (?:using|with) chatgpt\b/i.test(login.stdout + '\n' + login.stderr)) {
         return reply(id, toolReply({
-          error: 'Codex CLI is not logged in with ChatGPT under the svlos service account',
-          hint: 'Run codex login --device-auth with the configured CODEX_HOME',
+          error: 'Codex CLI is not logged in with ChatGPT under this MCP process Linux account',
+          hint: 'Run codex login --device-auth as this MCP process Linux user, with the same CODEX_HOME',
         }, true));
       }
       const sandbox = write ? 'workspace-write' : 'read-only';
