@@ -2082,13 +2082,37 @@ async function startServer() {
     const chosenAgent = channelBoundAgent || (allAgents.includes(targetAgent) ? targetAgent : allAgents[Math.floor(Math.random() * allAgents.length)]);
     const chosenDisplayName = formatAgentDisplayName(chosenAgent);
 
-    const [healthRes] = await Promise.all([
-      callPythonBackend('GET', '/api/py/health', undefined, corrId),
-    ]);
-
-    const aiClient = getGeminiClient();
     let proactiveText = '';
-    const displayModel = model.startsWith('ollama:') ? model.replace('ollama:', 'Ollama (') + ')' : 'SVL-364 (Duplex Autonomia)';
+    const displayModel = model === 'codex-cli'
+      ? 'Codex CLI · ChatGPT OAuth'
+      : model.startsWith('ollama:') ? model.replace('ollama:', 'Ollama (') + ')' : 'SVL-364 (Duplex Autonomia)';
+
+    // Manual-only proactive generation: the model does NOT send anything
+    // automatically and cannot claim unseen tasks have been completed.
+    if (model === 'codex-cli') {
+      if (!codexChatAccessAllowed(req.headers['x-svl-codex-access'])) {
+        res.status(401).json({ok:false,error:'Ręczna wypowiedź Codex CLI wymaga prywatnego tokenu czatu.'});
+        return;
+      }
+      const generated = await generateCodexCliChat({
+        agentName: chosenDisplayName,
+        message:
+          'Operator ręcznie uruchomił inicjację rozmowy. Napisz teraz jedną ' +
+          'naturalną wiadomość po polsku jako ' + chosenDisplayName + '. ' +
+          'Możesz zapytać o plany, zaproponować pomoc lub omówić zadania, ' +
+          'ale nie twierdź, że cokolwiek wykonałeś bez danych z rzeczywistych narzędzi.',
+        history: [],
+      }, __dirname);
+      if (!generated.ok || !generated.reply) {
+        res.status(generated.busy ? 429 : 424).json({
+          ok:false,error:generated.error || 'Codex CLI nie wygenerował wiadomości.',
+        });
+        return;
+      }
+      proactiveText = generated.reply;
+    }
+
+    const aiClient = model === 'codex-cli' ? null : getGeminiClient();
 
     if (aiClient) {
       const pModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
@@ -2126,32 +2150,6 @@ async function startServer() {
       });
       return;
     }
-    if (false) {
-      const fallbacks: Record<string, string> = {
-        Aria:
-          `Cześć Mateuszu! Miałam chwilę wolną między analizami i pomyślałam, że sprawdzę, co u Ciebie słychać.\n\n` +
-          `W systemie SVL-364 wszystko gra — procesy AI pracują stabilnie. Masz ochotę na chwilę swobodnej rozmowy czy planujemy jakieś nowe zadania?\n\n` +
-          `[btn: 💬 Pogadajmy swobodnie|Co u Ciebie słychać nowego, Aria?] [btn: ⚡ Status usług|tab:kernel] [btn: 👥 Panel Agentów|tab:agents]`,
-        Alex:
-          `Cześć Mateuszu! Tu Alex. Właśnie zakończyłem przegląd jądra SVLSystemKernel i wątków obliczeniowych na statku SVL-364.\n\n` +
-          `Pięć profili agentów jest dostępnych w aplikacji. Mogę pomóc przeanalizować ich stan — na czym dzisiaj skupiamy uwagę?\n\n` +
-          `[btn: 💻 Otwórz Terminale|tab:terminals] [btn: 🧠 Stan Jądra SVL|tab:kernel]`,
-        Astyria:
-          `Hej Mateuszu! Czuwam na łączu. Przygotowałam interfejs czatu i moduły graficzne — wszystko działa płynnie na telefonie i w przeglądarce.\n\n` +
-          `O czym masz dzisiaj ochotę porozmawiać? Chętnie pogadam o wszystkim!\n\n` +
-          `[btn: 💬 Opowiedz o sobie|Opowiedz mi coś ciekawego o sobie, Astyria] [btn: 🐧 Pulpit Linux|tab:linux] [btn: 🔄 Pełna synchronizacja|action:sync]`,
-        Aurelius:
-          `Melduję się na posterunku, Mateuszu. Zabezpieczenia RBAC, audyt operacyjny i rejestr zdarzeń w SQLite działają bez zakłóceń.\n\n` +
-          `Pomyślałem, że dam znać, że wszystko jest bezpieczne. Czy chcesz sprawdzić stan uprawnień lub przejrzeć bieżące logi?\n\n` +
-          `[btn: 🛡️ Panel Agentów|tab:agents] [btn: 🧠 Jądro SVL|tab:kernel] [btn: 💬 Porozmawiajmy|Jak się dzisiaj czujesz, Aurelius?]`,
-        Agata:
-          `Cześć Mateuszu! Tu Agata. Właśnie zoptymalizowałam kolejkę zadań i sprawdziłam integralność modułów systemowych.\n\n` +
-          `Jako piąty autonomiczny agent Rodziny Mitek czuję się świetnie na naszym statku. Zawsze chętnie z Tobą porozmawiam lub pomogę w analizie!\n\n` +
-          `[btn: 💬 Pogadajmy o planach|Agata, jakie masz plany na dalszy rozwój systemu?] [btn: 🚀 Podłącz AI|action:connect_ai] [btn: 💻 Terminal Statku|tab:terminals]`,
-      };
-      proactiveText = fallbacks[chosenAgent] || fallbacks.Alex;
-    }
-
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
     const msgId = `asst-proactive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const assistantMsg = {

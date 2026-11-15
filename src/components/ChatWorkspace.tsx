@@ -492,7 +492,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         error?: string;
       }>('/api/chat/proactive', {
         method: 'POST',
-        timeoutMs: 30000,
+        timeoutMs: selectedModel === 'codex-cli' ? 175000 : 30000,
+        headers: selectedModel === 'codex-cli' && codexAccessToken
+          ? {'X-SVL-Codex-Access': codexAccessToken}
+          : {},
         body: JSON.stringify({
           conversationId: activeConv.id,
           targetAgent: chosenTarget,
