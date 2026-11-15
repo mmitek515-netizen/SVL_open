@@ -7,9 +7,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-for bin in node codex python3; do
+for bin in node codex python3 flock; do
   if ! command -v "$bin" >/dev/null 2>&1; then
-    echo "Missing $bin. This launcher needs Node.js, Codex CLI, Python 3." >&2
+    echo "Missing $bin. This launcher needs Node.js, Codex CLI, Python 3 and util-linux flock." >&2
     exit 1
   fi
 done
@@ -29,7 +29,7 @@ export SVL_MCP_ENABLE_WRITE="${SVL_MCP_ENABLE_WRITE:-false}"
 # Disallow falling back to paid API key mode.
 unset OPENAI_API_KEY CODEX_API_KEY
 LOGIN_STATUS="$(codex login status 2>&1 || true)"
-if ! grep -qi 'chatgpt' <<< "$LOGIN_STATUS"; then
+if ! grep -Eqi 'logged in (using|with) chatgpt' <<< "$LOGIN_STATUS"; then
   echo 'Codex CLI must be signed in with ChatGPT, not an API key.' >&2
   echo 'Run: codex login --device-auth' >&2
   echo 'Then: codex login status' >&2

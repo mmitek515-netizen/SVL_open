@@ -8,7 +8,7 @@
  */
 import { spawn } from 'node:child_process';
 import { timingSafeEqual } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -17,6 +17,31 @@ const MAX_PROMPT_BYTES = 11_000;
 const CHAT_TIMEOUT_MS = 140_000;
 let running = false;
 let lastProbe: { expires: number; loggedIn: boolean; reason: string } | null = null;
+type ChatResult = {ok:boolean;reply?:string;error?:string;busy?:boolean};
+type CodexOutcome = 'idle' | 'ready' | 'disabled' | 'busy' | 'login_required' |
+  'timeout' | 'output_limit' | 'cli_failed' | 'no_reply';
+const codexActivity: {
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  outcome: CodexOutcome;
+} = {
+  lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, outcome: 'idle',
+};
+
+export function codexChatDiagnostics() {
+  // Do not expose prompts, stderr, tokens, OAuth metadata or filesystem paths.
+  return {...codexActivity, running};
+}
+
+function reportCodexOutcome(result: ChatResult, outcome: CodexOutcome): ChatResult {
+  const now = new Date().toISOString();
+  codexActivity.lastAttemptAt = now;
+  codexActivity.outcome = outcome;
+  if (result.ok) codexActivity.lastSuccessAt = now;
+  else codexActivity.lastFailureAt = now;
+  return result;
+}
 
 type RunResult = { code: number; stdout: string; stderr: string; timedOut: boolean; truncated: boolean };
 
@@ -54,10 +79,9 @@ async function runCodex(
       resolve({ code, stdout, stderr, timedOut, truncated });
     };
     try {
-      // util-linux flock --no-fork uses the same advisory lock as Python
-      // fcntl.flock() in the five agent worker processes.
-      const lockPath = path.join(os.tmpdir(),
-        'svl-codex-oauth-worker-' + String(typeof process.getuid === 'function' ? process.getuid() : os.userInfo().uid) + '.lock');
+      // util-linux flock and Python fcntl.flock share this user-private lock.
+      // Do not use a predictable filename under a world-writable /tmp directory.
+      const lockPath = path.join(os.homedir(), '.local', 'state', 'svl-open', 'codex-cli.lock');
       const binary = sharedAgentLock ? 'flock' : 'codex';
       const commandArgs = sharedAgentLock
         ? ['--no-fork', '--exclusive', '--wait', '15', '--conflict-exit-code', '75', lockPath, 'codex', ...args]
@@ -96,12 +120,12 @@ async function runCodex(
       if (stream === 'stdout') stdout += buf.toString('utf8');
       else stderr += buf.toString('utf8');
     };
-    childStdout.on('data', (b: Buffer) => consume(b, 'stdout'));
-    childStderr.on('data', (b: Buffer) => consume(b, 'stderr'));
+    child.stdout?.on('data', (b: Buffer) => consume(b, 'stdout'));
+    child.stderr?.on('data', (b: Buffer) => consume(b, 'stderr'));
     child.on('error', () => complete(127));
     child.on('close', code => complete(code ?? 1));
-    childStdin.on('error', () => {});
-    childStdin.end(stdin);
+    child.stdin?.on('error', () => {});
+    child.stdin?.end(stdin);
   });
 }
 
@@ -167,13 +191,20 @@ export async function generateCodexCliChat(
   input: {agentName:string;message:string;history:Array<{role:string;content:string}>},
   cwd: string,
 ): Promise<{ok:boolean;reply?:string;error?:string;busy?:boolean}> {
-  if (!enabled()) return {ok:false,error:'Codex CLI chat is disabled on the gateway'};
-  if (!configured()) return {ok:false,error:'Codex CLI requires private operator access protection'};
-  if (running) return {ok:false,busy:true,error:'Codex CLI is already answering another message'};
+  if (!enabled() || !configured()) {
+    return reportCodexOutcome({
+      ok:false, error:'Codex CLI requires backend opt-in and private chat access configuration',
+    }, 'disabled');
+  }
+  if (running) {
+    return reportCodexOutcome({
+      ok:false,busy:true,error:'Codex CLI is already answering another message',
+    }, 'busy');
+  }
   running = true;
   try {
     const probe = await probeCodexCli(cwd, true);
-    if (!probe.loggedIn) return {ok:false,error:probe.reason};
+    if (!probe.loggedIn) return reportCodexOutcome({ok:false,error:probe.reason}, 'login_required');
     const history = (input.history || []).slice(-8).map(turn =>
       (turn.role === 'assistant' ? 'AI: ' : 'Operator: ') + String(turn.content || '').slice(0,450),
     );
@@ -189,7 +220,9 @@ export async function generateCodexCliChat(
     // Keep the conversation outside SVL_open's source directory. Read-only
     // Codex must not read the application's checked-out code by default.
     const isolatedRoot = await mkdtemp(path.join(os.tmpdir(), 'svl-codex-chat-'));
+    const lockDir = path.join(os.homedir(), '.local', 'state', 'svl-open');
     try {
+      await mkdir(lockDir, {recursive: true, mode: 0o700});
       const run = await runCodex(
         ['exec', '--ignore-user-config', '--ignore-rules',
          '--skip-git-repo-check', '--ephemeral', '--json',
@@ -199,17 +232,33 @@ export async function generateCodexCliChat(
         isolatedRoot,
         true,
       );
-      if (run.timedOut) return {ok:false,error:'Codex CLI exceeded its response timeout'};
-      if (run.truncated) return {ok:false,error:'Codex CLI produced too much output'};
-      if (run.code === 75) {
-        return {ok:false,busy:true,error:'Codex CLI jest zajęty pracą innego agenta. Spróbuj później.'};
+      if (run.timedOut) {
+        return reportCodexOutcome({ok:false,error:'Codex CLI exceeded its response timeout'}, 'timeout');
       }
-      if (run.code !== 0) return {ok:false,error:'Codex CLI failed or the logged-in account reached its usage limit'};
+      if (run.truncated) {
+        return reportCodexOutcome({ok:false,error:'Codex CLI produced too much output'}, 'output_limit');
+      }
+      if (run.code === 75) {
+        return reportCodexOutcome({
+          ok:false,busy:true,error:'Codex CLI jest zajęty pracą innego agenta. Spróbuj później.',
+        }, 'busy');
+      }
+      if (run.code !== 0) {
+        return reportCodexOutcome({
+          ok:false,error:'Codex CLI failed or the logged-in account reached its usage limit',
+        }, 'cli_failed');
+      }
       const reply = finalAgentReply(run.stdout);
-      return reply ? {ok:true,reply} : {ok:false,error:'Codex CLI returned no agent message'};
+      return reply
+        ? reportCodexOutcome({ok:true,reply}, 'ready')
+        : reportCodexOutcome({ok:false,error:'Codex CLI returned no agent message'}, 'no_reply');
     } finally {
       await rm(isolatedRoot, {recursive: true, force: true});
     }
+  } catch {
+    return reportCodexOutcome({
+      ok:false,error:'Codex CLI could not start or initialize its isolated working directory',
+    }, 'cli_failed');
   } finally {
     running = false;
   }

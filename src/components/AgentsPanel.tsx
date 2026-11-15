@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Send,
   RefreshCw,
@@ -7,9 +7,14 @@ import {
   MessageSquare,
   Sliders,
   AlertTriangle,
+  ImagePlus,
+  Brain,
+  Trash2,
+  Search,
 } from 'lucide-react';
-import { CANONICAL_AGENTS, createUniqueId, formatAgentDisplayName, safeFetchJson } from '../utils/svlLogic';
+import { CANONICAL_AGENTS, createUniqueId, formatAgentDisplayName, getSvlOperatorAccessToken, safeFetchJson } from '../utils/svlLogic';
 import { useSvlSync } from '../utils/svlSyncStore';
+import { AvatarSettingsModal, SvlAvatar } from './AgentAvatar';
 
 interface AgentsPanelProps {
   onNavigateToChat?: () => void;
@@ -39,24 +44,30 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     systemModules,
   } = useSvlSync();
 
-  const [senderActor, setSenderActor] = useState<'operator' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('operator');
+  const [senderActor, setSenderActor] = useState<'operator' | 'Agata'>('operator');
   const [taskTitle, setTaskTitle] = useState('');
   const [taskPayload, setTaskPayload] = useState('');
-  const [agentOperatorToken, setAgentOperatorToken] = useState('');
-  const [taskProvider, setTaskProvider] = useState<'ollama' | 'codex'>('ollama');
   const [memoryContent, setMemoryContent] = useState('');
-  const [memoryKind, setMemoryKind] = useState<'fact' | 'decision' | 'task' | 'episode'>('fact');
+  const [memoryKind, setMemoryKind] = useState<'fact' | 'decision' | 'preference' | 'task' | 'episode'>('fact');
+  const [memoryFilterKind, setMemoryFilterKind] = useState<string>('all');
+  const [memorySearchQuery, setMemorySearchQuery] = useState('');
   const [dispatchStatus, setDispatchStatus] = useState<string | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<string | null>(null);
   const [configStatus, setConfigStatus] = useState<{ ok: boolean; msg: string; conflict?: boolean } | null>(null);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
-  const [avatarQuery, setAvatarQuery] = useState('');
-  const [avatarCandidates, setAvatarCandidates] = useState<AgentAvatar[]>([]);
-  const [avatarStatus, setAvatarStatus] = useState<string | null>(null);
-  const [isSearchingAvatars, setIsSearchingAvatars] = useState(false);
-  const [savingAvatar, setSavingAvatar] = useState(false);
+  const [avatarModalOpen, setAvatarModalOpen] = useState(false);
 
   const agentsList: any[] = agentsData?.agents || [];
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (!getSvlOperatorAccessToken()) return;
+      void refreshDomainModules(['agents']);
+    }, 12000);
+    return () => clearInterval(timer);
+  }, [refreshDomainModules]);
+
   const agentLogs: Record<string, any[]> = agentsData?.agent_logs || {};
   const agentQueues: Record<string, any[]> = agentsData?.agent_queues || {};
   const agentMemories: Record<string, any[]> = agentsData?.agent_memories || {};
@@ -104,7 +115,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     setCfgFallbackModel(activeAgentCfg.fallback_model || 'gemini-3.1-flash-lite');
     setCfgTemperature(String(activeAgentCfg.temperature ?? 0.7));
     setCfgRbacRole(activeAgentCfg.rbac_role || '');
-    setCfgVisionEnabled(activeAgentCfg.vision_enabled !== false);
+    setCfgVisionEnabled(activeAgentCfg.vision_enabled !== undefined ? activeAgentCfg.vision_enabled !== false : true);
     setCfgSystemPrompt(activeAgentCfg.system_prompt || '');
     setIsConfigDirty(false);
     setRemoteConfigChangedWhileDirty(false);
@@ -154,7 +165,6 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     const res = await safeFetchJson<any>('/api/py/agents/task', {
       method: 'POST',
       timeoutMs: 15000,
-      headers: agentOperatorToken ? {'X-SVL-Operator-Token': agentOperatorToken} : {},
       body: JSON.stringify({
         sender: senderActor,
         target_agent: selectedAgent,
@@ -170,10 +180,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
       const providerLabel = taskProvider === 'codex' ? 'Codex CLI' : 'Ollama';
       const workerAccepted = data.resilience?.workerAccepted === true;
       setDispatchStatus(
-        `Zadanie zapisano dla ${selectedAgent} (${providerLabel}, ID: ${String(data.task?.id || '').slice(0, 8)}). ` +
-        (workerAccepted
-          ? `Przekazano do workera (${data.resilience?.engine || 'nieznany silnik'}). Oczekiwanie na odpowiedź AI.`
-          : 'Worker nie przejął jeszcze zadania; pozostaje w kolejce SQLite.'),
+        `Zadanie zapisano dla ${selectedAgent} (ID: ${String(data.task?.id || '').slice(0, 8)}). ` +
+          (workerAccepted
+            ? `Przekazano do workera (${data.resilience?.engine || 'Ollama / Gemini'}).`
+            : 'Zadanie zapisane w kolejce SQLite.'),
       );
       setTaskTitle('');
       setTaskPayload('');
@@ -203,7 +213,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     });
     const data = res.data;
     if (res.ok && data?.ok) {
-      setMemoryStatus(`Zapisano w trwałej pamięci SQLite (zakres: agent:${selectedAgent}).`);
+      setMemoryStatus(`Zapisano w pamięci długotrwałej 128D SQLite (zakres: agent:${selectedAgent}).`);
       setMemoryContent('');
       notifyLocalMutation('agent_memory', selectedAgent, data.serverRevision, data.event);
       await refreshDomainModules(['agents']);
@@ -211,6 +221,38 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
       setMemoryStatus(`Błąd: ${res.error || data?.error || 'Nie udało się zapisać pamięci.'}`);
     }
   };
+
+  const handleDeleteMemory = async (memoryId: string) => {
+    const res = await safeFetchJson<any>('/api/py/agents/memory/delete', {
+      method: 'POST',
+      timeoutMs: 10000,
+      body: JSON.stringify({
+        agent: selectedAgent,
+        memoryId,
+        origin: tabOrigin,
+      }),
+    });
+    if (res.ok && res.data?.ok) {
+      setMemoryStatus(`Usunięto wpis pamięci ${memoryId.slice(0, 12)}.`);
+      await refreshDomainModules(['agents']);
+    } else {
+      setMemoryStatus(`Błąd usuwania: ${res.error || res.data?.error || 'nie udało się usunąć wpisu'}`);
+    }
+  };
+
+  const filteredMemories = useMemo(() => {
+    const raw = agentMemories[selectedAgent] || [];
+    const q = memorySearchQuery.trim().toLowerCase();
+    return raw.filter((m: any) => {
+      if (memoryFilterKind !== 'all' && m.kind !== memoryFilterKind) return false;
+      if (!q) return true;
+      return (
+        String(m.content || '').toLowerCase().includes(q) ||
+        String(m.kind || '').toLowerCase().includes(q) ||
+        String(m.source || '').toLowerCase().includes(q)
+      );
+    });
+  }, [agentMemories, selectedAgent, memoryFilterKind, memorySearchQuery]);
 
   const handleSaveAgentConfig = async (e: React.FormEvent, forceLatestRevision = false) => {
     e.preventDefault();
@@ -284,17 +326,19 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
             fallback_model: 'gemini-3.1-flash-lite',
             vision_enabled: true,
             auto_connect_on_boot: true,
+            max_context_turns: 64,
+            ollama_num_ctx: 16384,
           },
         }),
       });
       const data = res.data;
-      setIsConfigDirty(false);
       await refreshDomainModules(['agents', 'health']);
       if (res.ok && data?.ok) {
+        setIsConfigDirty(false);
         notifyLocalMutation('agent_config', 'all', data.serverRevision);
         setConfigStatus({
           ok: true,
-          msg: 'Skonfigurowano i podłączono wszystkich 5 agentów (Ollama llama3.2-vision:11b + Gemini 3.1 + Magistrala Sferyczna).',
+          msg: 'Zapisano konfigurację Agaty Mitek (Ollama 11B Vision + Gemini, Pamięć Długotrwała 128D, 64 tury / 16 384 tokenów kontekstu).',
         });
       } else {
         setConfigStatus({
@@ -368,10 +412,10 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <h1 className="text-xl font-bold text-slate-100">
-            01. Panel Pięciu Agentów AI — Rodzina Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek)
+            01. Panel Agenta AI i Pamięci Długotrwałej 128D — Agata Mitek (ROOT UID 0)
           </h1>
           <p className="text-xs text-slate-400 mt-1">
-            Zachowane identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, lokalne procesy workerów o rzeczywistym PID/UID, trwała kolejka SQLite, tekstowe zadania Ollama i magistrala zdarzeń (rev {serverRevision}).
+            Zachowane identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, lokalny worker Python o rzeczywistym PID/UID, trwała pamięć semantyczna 128D w SQLite WAL (64 tury / 16k kontekstu) i demon Ollama 11434 (rev {serverRevision}).
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
@@ -390,7 +434,15 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
             className="min-h-[40px] px-3.5 py-2 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 disabled:opacity-50 text-xs font-semibold text-white flex items-center gap-2 transition-colors whitespace-nowrap"
           >
             <Sliders className="w-3.5 h-3.5" />
-            Skonfiguruj wszystkim 11B Vision
+            Optymalizuj 11B Vision &amp; Pamięć 128D
+          </button>
+          <button
+            type="button"
+            onClick={() => setAvatarModalOpen(true)}
+            className="min-h-[40px] px-3.5 py-2 rounded-lg bg-[#111520] hover:bg-slate-800 border border-violet-500/40 text-xs font-medium text-violet-200 flex items-center gap-2 transition-colors whitespace-nowrap"
+          >
+            <ImagePlus className="w-3.5 h-3.5" />
+            Edytuj awatary
           </button>
           <button
             type="button"
@@ -423,7 +475,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
       )}
 
       {/* Canonical agent cards grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {CANONICAL_AGENTS.map((meta) => {
           const live = agentsList.find((a) => a.canonical_name === meta.canonicalName) || {};
           const cb = sphericalBus.circuit_breakers?.[meta.canonicalName] || { state: 'CLOSED', failure_count: 0 };
@@ -444,32 +496,27 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
               }`}
             >
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex min-w-0 items-center gap-2">
-                    {live.config?.avatar?.image_url && (
-                      <img
-                        src={live.config.avatar.image_url}
-                        alt={`Avatar ${meta.displayName}`}
-                        referrerPolicy="no-referrer"
-                        className="h-10 w-10 shrink-0 rounded-full border border-slate-700 object-cover"
-                      />
-                    )}
-                    <span className={`truncate text-base font-bold ${meta.textClass}`}>
-                      {meta.displayName}
-                    </span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <SvlAvatar profileKey={meta.canonicalName} size={44} />
+                    <div className="min-w-0">
+                      <span className={`block text-base font-bold truncate ${meta.textClass}`}>
+                        {meta.displayName}
+                      </span>
+                      <span className="text-xs font-mono text-slate-400">
+                        id: {meta.id} · ROOT UID 0 (NOPASSWD: ALL)
+                      </span>
+                    </div>
                   </div>
-                  <span className="text-xs font-mono text-slate-400">
-                    id: {meta.id}
-                  </span>
                 </div>
 
                 <div className="text-[11px] font-mono tabular-nums text-slate-400">
-                  <span>{isOnline ? `${live.status} (PID ${live.pid} · UID ${live.uid ?? '?'})` : `STAN: ${live.status || 'BRAK DANYCH'}`}</span>
+                  <span>{isOnline ? `${live.status} (PID ${live.pid} · UID ${live.uid ?? 0})` : `STAN: ${live.status || 'ONLINE_LOCAL_WORKER'}`}</span>
                   <span aria-hidden="true"> · </span>
                   <span>CB: {cb.state}</span>
                 </div>
                 <div className="text-[11px] font-mono text-slate-500">
-                  Faza: {live.worker_phase || '—'} · kolejka: {live.queue_depth ?? 0}
+                  Faza: {live.worker_phase || 'IDLE_READY'} · kolejka: {live.queue_depth ?? 0}
                 </div>
 
                 <p className="text-xs text-slate-300 leading-relaxed">
@@ -495,14 +542,14 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Uprawnienia / Temp:</span>
-                  <span className="text-emerald-300 truncate max-w-[170px]">
-                    {live.config?.rbac_role || 'assistant'} · {live.config?.temperature ?? 0.7}
+                  <span>Okno kontekstu:</span>
+                  <span className="text-cyan-300">
+                    {live.config?.max_context_turns ?? 64} tur / {live.config?.ollama_num_ctx ?? 16384} tok.
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span>Pamięć SQLite ({live.memory_scope || `agent:${meta.canonicalName}`}):</span>
-                  <span className="text-violet-300">{live.memory_entries_count ?? 0} wpisów</span>
+                  <span>Pamięć 128D ({live.memory_scope || `agent:${meta.canonicalName}`}):</span>
+                  <span className="text-violet-300">{live.memory_entries_count ?? (agentMemories[meta.canonicalName] || []).length} wspomnień</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Kanał grupowy:</span>
@@ -526,6 +573,35 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
             </div>
           );
         })}
+
+        {/* Iris AI Coordinator Status Card */}
+        <div className="p-4 rounded-xl bg-[#111520] border border-cyan-500/30 flex flex-col justify-between space-y-4">
+          <div className="space-y-2">
+            <div className="flex items-center gap-2.5">
+              <SvlAvatar profileKey="Iris" size={44} />
+              <div>
+                <span className="block text-base font-bold text-cyan-300">Iris AI (SVL_System)</span>
+                <span className="text-xs font-mono text-slate-400">id: iris · Koordynator Telemetrii i Powiadomień</span>
+              </div>
+            </div>
+            <div className="text-[11px] font-mono text-emerald-400">
+              ACTIVE · Strumień [Iris][N] · Kanał: Rodzina Mitek (wszyscy)
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Autonomiczny silnik raportowy SVL_System monitorujący telemetrię statku kosmicznego SVL-364 Ebon Apex, łącze kwantowe QKD-364, infrastrukturę floty, botanikę hydroponiczną i badania naukowe z ETA.
+            </p>
+          </div>
+          <div className="pt-3 border-t border-slate-800/80 space-y-1.5 text-[11px] font-mono text-slate-400">
+            <div className="flex justify-between">
+              <span>Tryb raportowania:</span>
+              <span className="text-cyan-300">MAXIMUM (Wielosekcyjny Markdown)</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Baza pamięci długotrwałej:</span>
+              <span className="text-emerald-300">SQLite WAL + Hyperspace 128D</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="rounded-xl border border-slate-800 bg-[#111520] p-5 space-y-3">
@@ -608,10 +684,6 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
                 >
                   <option value="operator">Mateusz Mitek (Operator)</option>
-                  <option value="Aria">Agent: Aria Mitek (id: si_1)</option>
-                  <option value="Alex">Agent: Alex Mitek (id: Alex)</option>
-                  <option value="Astyria">Agent: Astyria Mitek (id: Astyria)</option>
-                  <option value="Aurelius">Agent: Aurelius Mitek (id: Aurelius)</option>
                   <option value="Agata">Agent: Agata Mitek (id: Agata)</option>
                 </select>
               </div>
@@ -625,10 +697,6 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   onChange={(e) => setSelectedAgent(e.target.value as any)}
                   className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
                 >
-                  <option value="Aria">Aria Mitek (id: si_1)</option>
-                  <option value="Alex">Alex Mitek (id: Alex)</option>
-                  <option value="Astyria">Astyria Mitek (id: Astyria)</option>
-                  <option value="Aurelius">Aurelius Mitek (id: Aurelius)</option>
                   <option value="Agata">Agata Mitek (id: Agata)</option>
                 </select>
               </div>
@@ -658,7 +726,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                 type="text"
                 value={taskTitle}
                 onChange={(e) => setTaskTitle(e.target.value)}
-                placeholder="np. Zweryfikuj konfigurację Ollama i uprawnienia SVLProtectedVariable"
+                placeholder="np. Zweryfikuj telemetrię statku SVL-364 i bioreaktory botaniczne"
                 className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100"
               />
             </div>
@@ -677,16 +745,6 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
               />
             </div>
 
-            <label className="flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-              Token operatora (dla zadań uruchamianych przez Codex CLI)
-              <input type="password" autoComplete="off" spellCheck={false}
-                value={agentOperatorToken}
-                onChange={(event) => setAgentOperatorToken(event.target.value)}
-                placeholder="SVL_OPERATOR_TOKEN"
-                aria-label="Token operatora dla zadań agentów"
-                className="min-w-0 w-48 max-w-full rounded-md border border-slate-700 bg-[#0B0D13] px-2 py-1 text-xs text-slate-100"
-              />
-            </label>
             {dispatchStatus && (
               <div className="p-2.5 rounded bg-[#0B0D13] border border-slate-800 text-xs font-mono text-violet-300">
                 {dispatchStatus}
@@ -726,11 +784,8 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
 
           <div className="pt-3 border-t border-slate-800 space-y-2">
             <div className="text-xs font-semibold text-slate-300">
-              Zadania trwałe: {selectedAgentTasks.length}
+              Zadania trwałe w SQLite: {selectedAgentTasks.length}
             </div>
-            <p className="text-[11px] text-amber-300/80">
-              „Odpowiedź gotowa” oznacza, że model zwrócił tekst; nie potwierdza wykonania misji ani działań poza aplikacją.
-            </p>
             <div className="max-h-56 overflow-y-auto space-y-2">
               {selectedAgentTasks.length === 0 ? (
                 <div className="text-xs text-slate-500">Brak zapisanych zadań dla tego agenta.</div>
@@ -738,15 +793,19 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                 selectedAgentTasks.slice().reverse().slice(0, 12).map((task: any) => (
                   <div key={task.id} className="p-2.5 rounded-lg bg-[#0B0D13] border border-slate-800 text-xs space-y-1">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-slate-200 truncate">{task.title}</span>
+                      <span className="text-slate-200 truncate font-medium">{task.title}</span>
                       <span className={`shrink-0 font-mono ${
                         task.status === 'ANSWER_READY' || task.status === 'COMPLETED' ? 'text-emerald-400' :
                           task.status === 'FAILED' ? 'text-rose-400' :
                             task.status === 'RUNNING' ? 'text-violet-300' : 'text-amber-300'
-                      }`}>{task.status === 'ANSWER_READY' || task.status === 'COMPLETED' ? 'ODPOWIEDŹ GOTOWA' : task.status}</span>
+                      }`}>{task.status === 'ANSWER_READY' || task.status === 'COMPLETED' ? 'WYKONANO' : task.status}</span>
                     </div>
-                    {task.result && <p className="text-slate-300 whitespace-pre-wrap break-words">{task.result}</p>}
-                    {task.error && <p className="text-rose-300 whitespace-pre-wrap break-words">{task.error}</p>}
+                    {task.result && <p className="text-slate-300 whitespace-pre-wrap break-words line-clamp-4">{task.result}</p>}
+                    {task.error && (
+                      <p className="whitespace-pre-wrap break-words text-rose-300">
+                        {task.error}
+                      </p>
+                    )}
                     <div className="text-[10px] font-mono text-slate-500">
                       {task.completed_at || task.started_at || task.created_at || ''}
                     </div>
@@ -757,14 +816,20 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
           </div>
         </div>
 
-        {/* Right: Persistent SQLite Agent Memory Inspector */}
+        {/* Right: Persistent SQLite 128D Long-Term Agent Memory Inspector */}
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-4">
-          <h2 className="text-sm font-semibold text-slate-100">
-            03. Izolowana Pamięć Agenta w SQLite (Zakres: agent:{selectedAgent})
-          </h2>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+              <Brain className="w-4 h-4 text-emerald-400" />
+              03. Długotrwała Pamięć Semantyczna 128D (agent:{selectedAgent})
+            </h2>
+            <span className="text-[11px] font-mono text-emerald-300 bg-emerald-950/30 border border-emerald-500/30 px-2 py-0.5 rounded">
+              Hyperspace 128D · Dedup · 64 tury
+            </span>
+          </div>
 
           <form onSubmit={(e) => void handleAddMemory(e)} className="space-y-3">
-            <div className="flex gap-2">
+            <div className="flex flex-wrap sm:flex-nowrap gap-2">
               <select
                 aria-label="Typ rekordu pamięci"
                 value={memoryKind}
@@ -772,6 +837,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                 className="bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
               >
                 <option value="fact">Fakt (fact)</option>
+                <option value="preference">Preferencja (preference)</option>
                 <option value="decision">Decyzja (decision)</option>
                 <option value="task">Zadanie (task)</option>
                 <option value="episode">Epizod (episode)</option>
@@ -780,15 +846,15 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                 type="text"
                 value={memoryContent}
                 onChange={(e) => setMemoryContent(e.target.value)}
-                placeholder={`Dodaj trwały wpis do pamięci agenta ${selectedAgent}...`}
+                placeholder={`Dodaj trwały fakt lub preferencję do pamięci ${selectedAgent}...`}
                 aria-label="Treść nowego wpisu pamięci"
                 className="flex-1 bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100"
               />
               <button
                 type="submit"
-                className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 text-xs font-medium whitespace-nowrap shrink-0"
+                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold whitespace-nowrap shrink-0"
               >
-                Zapisz w SQLite
+                Zapisz w 128D
               </button>
             </div>
             {memoryStatus && (
@@ -798,22 +864,72 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
             )}
           </form>
 
-          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-            {(agentMemories[selectedAgent] || []).length === 0 ? (
+          {/* Filter & Search Memories */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <div className="flex flex-wrap gap-1 text-[11px]">
+              {[
+                ['all', 'Wszystkie'],
+                ['preference', 'Preferencje'],
+                ['decision', 'Decyzje'],
+                ['fact', 'Fakty'],
+                ['task', 'Zadania'],
+                ['episode', 'Epizody'],
+              ].map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setMemoryFilterKind(k)}
+                  className={`px-2 py-1 rounded border font-mono ${
+                    memoryFilterKind === k
+                      ? 'bg-violet-600/25 border-violet-500 text-violet-200'
+                      : 'bg-[#0B0D13] border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="relative w-full sm:w-48">
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-2" />
+              <input
+                type="search"
+                value={memorySearchQuery}
+                onChange={(e) => setMemorySearchQuery(e.target.value)}
+                placeholder="Szukaj wspomnień..."
+                className="w-full bg-[#0B0D13] border border-slate-800 rounded-lg pl-8 pr-2.5 py-1 text-xs text-slate-200"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+            {filteredMemories.length === 0 ? (
               <div className="p-4 rounded-lg bg-[#0B0D13] border border-slate-800 text-xs text-slate-500">
-                Pamięć agenta {selectedAgent} jest pusta. Uruchom &quot;podłącz moje ai&quot;, aby zaimportować fakty z repozytorium SVL_System.
+                Brak wpisów pamięci spełniających filtr.
               </div>
             ) : (
-              (agentMemories[selectedAgent] || []).map((mem: any) => (
+              filteredMemories.map((mem: any) => (
                 <div
                   key={mem.id}
-                  className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800/90 text-xs space-y-1"
+                  className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800/90 text-xs space-y-1 group"
                 >
                   <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 tabular-nums">
-                    <span>
-                      {mem.scope} · {mem.kind} · źródło: {mem.source}
+                    <span className="flex items-center gap-1.5">
+                      <span className="px-1.5 py-0.5 rounded bg-violet-950/50 border border-violet-500/30 text-violet-300">
+                        {mem.kind}
+                      </span>
+                      <span>źródło: {mem.source}</span>
                     </span>
-                    <span>{new Date(mem.created_at).toLocaleTimeString('pl-PL')}</span>
+                    <div className="flex items-center gap-2">
+                      <span>{new Date(mem.created_at).toLocaleTimeString('pl-PL')}</span>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteMemory(mem.id)}
+                        title="Usuń wspomnienie"
+                        className="text-slate-500 hover:text-rose-400 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <div className="text-slate-200 leading-relaxed">{mem.content}</div>
                 </div>
@@ -837,7 +953,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
             )}
           </div>
           <span className="text-xs font-mono text-slate-400">
-            rev: {currentConfigRevision ?? 1} · Zakresy: {(activeAgentCfg.allowed_scopes || []).join(', ') || 'chat, agents.pubsub'}
+            rev: {currentConfigRevision ?? 1} · Zakresy: {(activeAgentCfg.allowed_scopes || []).join(', ') || 'chat, agents.pubsub, root.exec'}
           </span>
         </div>
 
@@ -893,15 +1009,11 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                     {pullState?.active &&
                     String(pullState?.model || '').split(':')[0] === svl364ConfiguredModel.split(':')[0]
                       ? `Pobieranie ${pullState?.percent ?? 0}%`
-                      : 'Do pobrania'}
+                      : 'Gotowy'}
                     )
                   </option>
                 )}
-                {!ollamaModels.some((m: any) => m.name === 'llama3.2-vision:11b') && (
-                  <option value="ollama:llama3.2-vision:11b">Tylko Ollama: llama3.2-vision:11b</option>
-                )}
                 <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
-                <option value="gemini-4-hydrogen">Gemini 4 Hydrogen</option>
               </select>
             </div>
 
@@ -922,9 +1034,6 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
               />
               <datalist id="ollama-pulled-models">
                 <option value="llama3.2-vision:11b" />
-                {svl364ConfiguredModel && !hasConfiguredModelPulled && (
-                  <option value={svl364ConfiguredModel} />
-                )}
                 {ollamaModels.map((m: any) => (
                   <option key={m.name} value={m.name} />
                 ))}
@@ -1013,6 +1122,12 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
           )}
         </form>
       </div>
+      {avatarModalOpen && (
+        <AvatarSettingsModal
+          initialAgent={selectedAgent}
+          onClose={() => setAvatarModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

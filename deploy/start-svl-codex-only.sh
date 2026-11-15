@@ -28,6 +28,37 @@ if ! grep -Eqi 'logged in (using|with) chatgpt' <<< "$LOGIN_STATUS"; then
   exit 1
 fi
 
+# Install dependencies BEFORE loading application secrets. A pre-existing
+# node_modules directory is not proof that packages still match the repository.
+dependency_fingerprint() {
+  node -e '
+    const fs = require("node:fs");
+    const crypto = require("node:crypto");
+    const hash = crypto.createHash("sha256");
+    for (const file of ["package.json", "package-lock.json", "npm-shrinkwrap.json"]) {
+      if (fs.existsSync(file)) {
+        hash.update(file);
+        hash.update(fs.readFileSync(file));
+      }
+    }
+    process.stdout.write(hash.digest("hex"));
+  '
+}
+DEPENDENCY_STAMP="node_modules/.svl-dependencies.sha256"
+CURRENT_FINGERPRINT="$(dependency_fingerprint)"
+RECORDED_FINGERPRINT="$(cat "$DEPENDENCY_STAMP" 2>/dev/null || true)"
+if [[ "$RECORDED_FINGERPRINT" != "$CURRENT_FINGERPRINT" ||
+      ! -x node_modules/.bin/tsx || ! -x node_modules/.bin/vite ]]; then
+  echo "Dependencies changed or missing; installing before loading SVL secrets..."
+  if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
+    npm ci --no-audit --no-fund
+  else
+    npm install --no-audit --no-fund
+  fi
+  mkdir -p node_modules
+  dependency_fingerprint > "$DEPENDENCY_STAMP"
+fi
+
 CONFIG_DIR="$HOME/.config/svl-open"
 CONFIG_FILE="$CONFIG_DIR/local-codex.env"
 mkdir -p "$CONFIG_DIR"
@@ -52,10 +83,6 @@ export SVL_CODEX_CHAT_ENABLED=true
 export SVL_CODEX_AGENTS_ENABLED=true
 export SVL_GITHUB_AUTO_SYNC=false
 export SVL_GITHUB_APPLY_REMOTE_CHANGES=false
-
-if [[ ! -d node_modules ]]; then
-  npm ci
-fi
 
 echo "SVL_open ready to start with Codex CLI OAuth (same Linux runtime)."
 echo "Open the private Codespaces port 3000 preview; static IP not needed."

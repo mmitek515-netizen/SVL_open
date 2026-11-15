@@ -2,20 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CANONICAL_AGENTS,
+  DEFAULT_DEV_OPERATOR_TOKEN,
   buildChatHistoryPayload,
   calculateCompactMetricC,
   classifyCommandRisk,
   compactifyValue,
   extractExplicitChatModuleDirective,
-  getGitHubAgentPermissions,
-  guardUnverifiedMissionCompletion,
+  formatAgentDisplayName,
+  formatIrisNotificationMessage,
+  getSvlOperatorAccessToken,
+  hasSvlOperatorAccessToken,
   isConnectMyAiCommand,
   isGitHubWorkspaceSyncRequest,
   isUnsafeChatInteractiveAction,
   mergeConversationThreads,
-  parseChatInteractiveToken,
+  normalizeAgentCanonicalName,
+  parseWorkOrCodexCommand,
+  resolveAvatarProfileKey,
   safeParseJsonResponse,
+  selectNextDuplexSpeaker,
   selectOllamaModelName,
+  setSvlOperatorAccessToken,
+  validateAvatarUrlOrDataUri,
   validateOllamaHostUrl,
   validateOperatorTokenFormat,
 } from './svlLogic';
@@ -124,9 +132,9 @@ test('classifyCommandRisk detects Polkit/sudo high-risk commands', () => {
   assert.equal(classifyCommandRisk('rm -rf /tmp/test').highRisk, true);
 });
 
-test('CANONICAL_AGENTS preserves exact SVL_System identifiers (si_1, Alex, Astyria, Aurelius, Agata)', () => {
+test('CANONICAL_AGENTS retains only active Agata Mitek identifier after removing Aria/Alex/Astyria/Aurelius', () => {
   const ids = CANONICAL_AGENTS.map((a) => a.id);
-  assert.deepEqual(ids, ['si_1', 'Alex', 'Astyria', 'Aurelius', 'Agata']);
+  assert.deepEqual(ids, ['Agata']);
 });
 
 test('validateOllamaHostUrl validates http/https endpoints cleanly', () => {
@@ -184,7 +192,7 @@ test('mergeConversationThreads preserves pending in-flight messages and respects
       updatedAt: '12:01',
       messages: [
         { id: 'm1', role: 'user' as const, sender: 'Op', content: 'Cześć', timestamp: '12:00' },
-        { id: 'm2', role: 'assistant' as const, sender: 'Alex', content: 'Odpowiedź w locie', timestamp: '12:01' },
+        { id: 'm2', role: 'assistant' as const, sender: 'Agata', content: 'Odpowiedź w locie', timestamp: '12:01' },
       ],
     },
     {
@@ -255,12 +263,75 @@ test('extractExplicitChatModuleDirective detects svl-364 and explicit module com
   assert.ok(apex);
   assert.equal(apex.id, 'svl-364');
   assert.equal(apex.name, 'SVL-364 Ebon Apex');
-  assert.equal(apex.config.async_event_bus_buffer, 2000);
+  assert.equal(apex.config.async_event_bus_buffer, 4096);
 
   const custom = extractExplicitChatModuleDirective('Dodaj moduł telemetry-bridge-v2 do backendu');
   assert.ok(custom);
   assert.equal(custom.id, 'telemetry-bridge-v2');
 
-  assert.equal(extractExplicitChatModuleDirective('Cześć Alex, jak minął dzień?'), null);
+  assert.equal(extractExplicitChatModuleDirective('Cześć Agata, jak minął dzień?'), null);
 });
 
+test('operator token initializes synchronously with valid default and formatAgentDisplayName accepts only Agata and Rodzina Mitek', () => {
+  assert.equal(hasSvlOperatorAccessToken(), true);
+  assert.equal(getSvlOperatorAccessToken(), DEFAULT_DEV_OPERATOR_TOKEN);
+  assert.equal(validateOperatorTokenFormat(DEFAULT_DEV_OPERATOR_TOKEN).valid, true);
+
+  setSvlOperatorAccessToken('custom-operator-secret-token-for-testing-36-chars');
+  assert.equal(getSvlOperatorAccessToken(), 'custom-operator-secret-token-for-testing-36-chars');
+  setSvlOperatorAccessToken(DEFAULT_DEV_OPERATOR_TOKEN);
+
+  assert.equal(formatAgentDisplayName('Agata'), 'Agata Mitek');
+  assert.equal(formatAgentDisplayName('Rodzina Mitek'), 'Rodzina Mitek (wszyscy)');
+  assert.equal(normalizeAgentCanonicalName('Agata Mitek'), 'Agata');
+  assert.equal(normalizeAgentCanonicalName('Aria'), null);
+  assert.equal(normalizeAgentCanonicalName('si_1'), null);
+  assert.equal(normalizeAgentCanonicalName('Alex'), null);
+  assert.equal(normalizeAgentCanonicalName('Astyria'), null);
+  assert.equal(normalizeAgentCanonicalName('Aurelius'), null);
+});
+
+test('parseWorkOrCodexCommand extracts @work directives and defaults to Agata while rejecting removed @codex', () => {
+  const workDefault = parseWorkOrCodexCommand('@work sprawdź status modułów');
+  assert.ok(workDefault);
+  assert.equal(workDefault.mode, 'work');
+  assert.equal(workDefault.targetAgent, 'Agata');
+  assert.equal(workDefault.taskBody, 'sprawdź status modułów');
+
+  const workTargeted = parseWorkOrCodexCommand('@work Agata: uruchom testy jądra');
+  assert.ok(workTargeted);
+  assert.equal(workTargeted.mode, 'work');
+  assert.equal(workTargeted.targetAgent, 'Agata');
+  assert.equal(workTargeted.taskBody, 'uruchom testy jądra');
+
+  assert.equal(parseWorkOrCodexCommand('Proszę @codex status'), null);
+  assert.equal(parseWorkOrCodexCommand('Zwykła rozmowa bez dyrektyw'), null);
+});
+
+test('formatIrisNotificationMessage builds standardized [Iris][count] lines and selectNextDuplexSpeaker routes to Agata', () => {
+  const line = formatIrisNotificationMessage(7, 'WARN', 'Wykryto różnice GitHub', 'Nowe pliki: 2');
+  assert.equal(line, '[Iris][7] WARN: Wykryto różnice GitHub\nNowe pliki: 2');
+
+  assert.equal(selectNextDuplexSpeaker(['Agata Mitek'], 'Agata'), 'Agata');
+  assert.equal(selectNextDuplexSpeaker(['Iris AI', 'Mateusz Mitek (Operator)']), 'Agata');
+});
+
+test('resolveAvatarProfileKey maps Agata, Iris AI, and Operator while ignoring removed agents', () => {
+  assert.equal(resolveAvatarProfileKey('Agata Mitek', 'Agata'), 'Agata');
+  assert.equal(resolveAvatarProfileKey('Iris AI', 'iris'), 'Iris');
+  assert.equal(resolveAvatarProfileKey('Mateusz Mitek (Operator)', null), 'Operator');
+  assert.equal(resolveAvatarProfileKey('Aria Mitek', 'si_1'), null);
+  assert.equal(resolveAvatarProfileKey('Alex', null), null);
+  assert.equal(resolveAvatarProfileKey('Astyria Mitek', 'Astyria'), null);
+  assert.equal(resolveAvatarProfileKey('Aurelius Mitek', 'Aurelius'), null);
+  assert.equal(resolveAvatarProfileKey('System SVL', null), null);
+});
+
+test('validateAvatarUrlOrDataUri accepts safe image URIs and rejects unsafe schemes', () => {
+  assert.equal(validateAvatarUrlOrDataUri('https://example.com/agata.png').ok, true);
+  assert.equal(validateAvatarUrlOrDataUri('data:image/png;base64,AAAA').ok, true);
+  assert.equal(validateAvatarUrlOrDataUri('/assets/agata.jpg').ok, true);
+  assert.equal(validateAvatarUrlOrDataUri('javascript:alert(1)').ok, false);
+  assert.equal(validateAvatarUrlOrDataUri('data:text/html;base64,AAAA').ok, false);
+  assert.equal(validateAvatarUrlOrDataUri('').ok, false);
+});

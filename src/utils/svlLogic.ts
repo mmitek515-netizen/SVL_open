@@ -6,8 +6,8 @@
 
 export interface CanonicalAgentMeta {
   id: string;
-  canonicalName: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
-  displayName: 'Aria Mitek' | 'Alex Mitek' | 'Astyria Mitek' | 'Aurelius Mitek' | 'Agata Mitek';
+  canonicalName: 'Agata';
+  displayName: 'Agata Mitek';
   slug: string;
   preservedRole: string;
   sourceProfile: string;
@@ -17,50 +17,6 @@ export interface CanonicalAgentMeta {
 }
 
 export const CANONICAL_AGENTS: CanonicalAgentMeta[] = [
-  {
-    id: 'si_1',
-    canonicalName: 'Aria',
-    displayName: 'Aria Mitek',
-    slug: 'aria',
-    preservedRole: 'Integracje z modelami i usługami AI, lokalnym Ollama, MCP oraz API (Root NOPASSWD)',
-    sourceProfile: '.github/agents/Aria.agent.md',
-    accentHex: '#f43f5e',
-    borderClass: 'border-rose-500/30',
-    textClass: 'text-rose-400',
-  },
-  {
-    id: 'Alex',
-    canonicalName: 'Alex',
-    displayName: 'Alex Mitek',
-    slug: 'alex',
-    preservedRole: 'Architektura systemu, backend, integracja usług i dowodzenie infrastrukturą (Root NOPASSWD)',
-    sourceProfile: '.github/agents/Alex.agent.md',
-    accentHex: '#10b981',
-    borderClass: 'border-emerald-500/30',
-    textClass: 'text-emerald-400',
-  },
-  {
-    id: 'Astyria',
-    canonicalName: 'Astyria',
-    displayName: 'Astyria Mitek',
-    slug: 'astyria',
-    preservedRole: 'Interfejs webowy Open WebUI, czat obustronny, responsywność Android i analiza Vision (Root NOPASSWD)',
-    sourceProfile: '.github/agents/Astyria.agent.md',
-    accentHex: '#06b6d4',
-    borderClass: 'border-cyan-500/30',
-    textClass: 'text-cyan-400',
-  },
-  {
-    id: 'Aurelius',
-    canonicalName: 'Aurelius',
-    displayName: 'Aurelius Mitek',
-    slug: 'aurelius',
-    preservedRole: 'Bezpieczeństwo RBAC, uprawnienia Root NOPASSWD, izolacja procesów i audyt (Root NOPASSWD)',
-    sourceProfile: '.github/agents/Aurelius.agent.md',
-    accentHex: '#f59e0b',
-    borderClass: 'border-amber-500/30',
-    textClass: 'text-amber-400',
-  },
   {
     id: 'Agata',
     canonicalName: 'Agata',
@@ -78,10 +34,6 @@ export function formatAgentDisplayName(rawName?: string | null): string {
   const clean = String(rawName || '').trim();
   if (!clean) return 'SVL System Kernel';
   const low = clean.toLowerCase();
-  if (low === 'aria' || low === 'si_1' || low === 'aria mitek') return 'Aria Mitek';
-  if (low === 'alex' || low === 'alex mitek') return 'Alex Mitek';
-  if (low === 'astyria' || low === 'astyria mitek') return 'Astyria Mitek';
-  if (low === 'aurelius' || low === 'aurelius mitek') return 'Aurelius Mitek';
   if (low === 'agata' || low === 'agata mitek') return 'Agata Mitek';
   if (low === 'all' || low === 'rodzina mitek' || low === 'rodzina mitek (wszyscy)') {
     return 'Rodzina Mitek (wszyscy)';
@@ -144,12 +96,8 @@ export function isUnsafeChatInteractiveAction(action: string): boolean {
 
 export function normalizeAgentCanonicalName(
   rawName?: string | null,
-): 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata' | null {
+): 'Agata' | null {
   const low = String(rawName || '').trim().toLowerCase();
-  if (low.startsWith('aria') || low === 'si_1') return 'Aria';
-  if (low.startsWith('alex')) return 'Alex';
-  if (low.startsWith('astyria')) return 'Astyria';
-  if (low.startsWith('aurelius')) return 'Aurelius';
   if (low.startsWith('agata')) return 'Agata';
   return null;
 }
@@ -269,14 +217,14 @@ export function validateOllamaHostUrl(raw: string): {
 
 export function buildChatHistoryPayload(
   messages: Array<{ role: string; content: string }>,
-  limit = 16,
+  limit = 48,
 ): Array<{ role: 'user' | 'assistant'; content: string }> {
   return (messages || [])
     .filter((m) => (m.role === 'user' || m.role === 'assistant') && Boolean(m.content?.trim()))
     .slice(-limit)
     .map((m) => ({
       role: m.role === 'user' ? 'user' : 'assistant',
-      content: m.content.trim().slice(0, 6000),
+      content: m.content.trim().slice(0, 12000),
     }));
 }
 
@@ -307,7 +255,7 @@ export function selectOllamaModelName(
   return preferredFallback;
 }
 
-export type TerminalTabId = 'linux' | 'python' | 'codex' | 'hyperspace' | 'agents';
+export type TerminalTabId = 'linux' | 'python' | 'hyperspace' | 'agents';
 
 export interface TerminalLogLine {
   id: string;
@@ -357,6 +305,7 @@ export interface SyncableMessage {
   appliedActions?: ChatAppliedAction[];
   sourceOrigin?: string;
   correlationId?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface SyncableConversation {
@@ -387,14 +336,18 @@ export interface SvlSyncModuleStatus {
   error: string | null;
 }
 
-export type TargetAgentSelection = 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
+export type TargetAgentSelection = 'Auto' | 'Rodzina Mitek' | 'Agata';
 
 export interface WorkspaceUiState {
   active_conversation_id?: string | null;
   selected_target_agent?: TargetAgentSelection;
-  selected_agent_panel_id?: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
+  selected_agent_panel_id?: 'Agata';
   revisions?: Record<string, number>;
 }
+
+export type AvatarProfileKey = 'Agata' | 'Iris' | 'Operator';
+
+export type SvlAvatarMap = Partial<Record<AvatarProfileKey, string>>;
 
 export interface SvlSystemSnapshot {
   ok: boolean;
@@ -412,11 +365,29 @@ export interface SvlSystemSnapshot {
   health?: any;
   kernel?: any;
   agentsData?: any;
+  avatars?: SvlAvatarMap;
   conversations?: SyncableConversation[];
   terminalLogs?: Record<TerminalTabId, TerminalLogLine[]>;
   workspaceState?: WorkspaceUiState;
+  irisNotifications?: IrisNotification[];
+  irisUnreadCount?: number;
   recentEvents?: SvlSyncEvent[];
   error?: string;
+}
+
+export interface IrisNotification {
+  id: string;
+  seqNum: number;
+  severity: 'INFO' | 'WARN' | 'ALERT';
+  category: string;
+  title: string;
+  message: string;
+  formattedLine: string;
+  details: Record<string, any>;
+  channel: string;
+  isRead: boolean;
+  sourceEventId?: string;
+  createdAt: string;
 }
 
 export type WsConnectionState = 'connecting' | 'online' | 'reconnecting' | 'offline';
@@ -586,6 +557,33 @@ export interface SafeFetchJsonOptions extends Omit<RequestInit, 'signal'> {
   maxRetries?: number;
 }
 
+export const DEFAULT_DEV_OPERATOR_TOKEN = 'svl-operator-dev-token-364-omniklucz-secure-2026';
+
+function readInitialOperatorToken(): string {
+  try {
+    if (typeof window !== 'undefined' && typeof window.localStorage !== 'undefined') {
+      const stored = window.localStorage.getItem('svl_operator_token');
+      if (stored && stored.trim().length > 0) {
+        return stored.trim().slice(0, 512);
+      }
+    }
+  } catch {
+    // ignore storage restriction
+  }
+  return DEFAULT_DEV_OPERATOR_TOKEN;
+}
+
+let svlOperatorAccessToken = readInitialOperatorToken();
+export function setSvlOperatorAccessToken(value: string): void {
+  svlOperatorAccessToken = String(value || '').slice(0, 512);
+}
+export function getSvlOperatorAccessToken(): string {
+  return svlOperatorAccessToken;
+}
+export function hasSvlOperatorAccessToken(): boolean {
+  return svlOperatorAccessToken.length > 0;
+}
+
 export async function safeFetchJson<T = any>(
   url: string,
   options: SafeFetchJsonOptions = {},
@@ -628,6 +626,12 @@ export async function safeFetchJson<T = any>(
 
     try {
       const mergedHeaders = new Headers(initHeaders || {});
+      // Never forward operator credentials to third-party or absolute URLs.
+      if (typeof window !== 'undefined' && url.startsWith('/api/')) {
+        if (svlOperatorAccessToken && !mergedHeaders.has('X-SVL-Operator-Token')) {
+          mergedHeaders.set('X-SVL-Operator-Token', svlOperatorAccessToken);
+        }
+      }
       if (!mergedHeaders.has('Accept')) mergedHeaders.set('Accept', 'application/json');
       if (!mergedHeaders.has('X-Request-Id')) mergedHeaders.set('X-Request-Id', correlationId);
       if (restInit.body && !mergedHeaders.has('Content-Type')) {
@@ -720,12 +724,12 @@ export function extractExplicitChatModuleDirective(text: string): {
       id: 'svl-364',
       name: hasApex ? 'SVL-364 Ebon Apex' : 'SVL-364',
       kind: 'Orchestration & Kernel Module',
-      description: 'Moduł orkiestracji i optymalizacji backendu zadeklarowany z poziomu czatu Operatora.',
+      description: 'Moduł orkiestracji i telemetrii statku kosmicznego SVL-364 Ebon Apex zadeklarowany z poziomu czatu Operatora.',
       config: {
         module_alias: hasApex ? 'svl-364-ebon-apex' : 'svl-364',
-        async_event_bus_buffer: 2000,
-        agent_max_context_turns: 24,
-        worker_heartbeat_interval_sec: 2.0,
+        async_event_bus_buffer: 4096,
+        agent_max_context_turns: 64,
+        worker_heartbeat_interval_sec: 1.5,
       },
     };
   }
@@ -756,4 +760,141 @@ export function extractExplicitChatModuleDirective(text: string): {
   return null;
 }
 
+export type CanonicalAgentShort = 'Agata';
 
+export interface ParsedWorkCommand {
+  mode: 'work';
+  targetAgent: CanonicalAgentShort;
+  taskTitle: string;
+  taskBody: string;
+  rawDirective: string;
+}
+
+export type ParsedWorkOrCodexCommand = ParsedWorkCommand;
+
+export function parseWorkCommand(text: string): ParsedWorkCommand | null {
+  const clean = String(text || '').trim();
+  if (!clean) return null;
+
+  const match = clean.match(/(?:^|\s)@(work)\b\s*([\s\S]*)$/i);
+  if (!match) return null;
+
+  const remainder = String(match[2] || '').trim();
+  let targetAgent: CanonicalAgentShort = 'Agata';
+  let body = remainder;
+
+  const explicitTargetMatch = remainder.match(
+    /^@?(Agata)(?:\s+Mitek)?(?:\s*[:,-]?\s*)([\s\S]*)$/i,
+  );
+  if (explicitTargetMatch) {
+    const normalized = normalizeAgentCanonicalName(explicitTargetMatch[1]);
+    if (normalized) targetAgent = normalized;
+    body = String(explicitTargetMatch[2] || '').trim();
+  } else {
+    const mentioned = normalizeAgentCanonicalName(/\bagat/i.test(clean) ? 'Agata' : '');
+    if (mentioned) targetAgent = mentioned;
+  }
+
+  const effectiveBody = body || 'raport gotowości workerów i telemetria statku SVL-364';
+  return {
+    mode: 'work',
+    targetAgent,
+    taskTitle: effectiveBody.slice(0, 72),
+    taskBody: effectiveBody,
+    rawDirective: clean,
+  };
+}
+
+export const parseWorkOrCodexCommand = parseWorkCommand;
+
+export function formatIrisNotificationMessage(
+  seqNum: number,
+  severity: 'INFO' | 'WARN' | 'ALERT',
+  title: string,
+  details?: string,
+): string {
+  const cleanSeq = Math.max(1, Math.floor(Number(seqNum || 1)));
+  const cleanSev = (severity || 'INFO').toUpperCase();
+  const cleanTitle = String(title || 'Zdarzenie systemowe').trim();
+  const cleanDetails = String(details || '').trim();
+  if (!cleanDetails) {
+    return `[Iris][${cleanSeq}] ${cleanSev}: ${cleanTitle}`;
+  }
+  return `[Iris][${cleanSeq}] ${cleanSev}: ${cleanTitle}\n${cleanDetails}`;
+}
+
+export function selectNextDuplexSpeaker(
+  recentSenders: string[],
+  channelBoundAgent?: CanonicalAgentShort | null,
+  preferredRotationIndex?: number,
+): CanonicalAgentShort {
+  if (channelBoundAgent) return channelBoundAgent;
+
+  const order: CanonicalAgentShort[] = ['Agata'];
+  const mitekSenders = (recentSenders || [])
+    .map((s) => normalizeAgentCanonicalName(s))
+    .filter((s): s is CanonicalAgentShort => Boolean(s));
+
+  const lastMitek = mitekSenders.length > 0 ? mitekSenders[mitekSenders.length - 1] : null;
+  const freshCandidates = order.filter((ag) => ag !== lastMitek);
+  if (freshCandidates.length > 0) {
+    const idx = typeof preferredRotationIndex === 'number'
+      ? Math.abs(preferredRotationIndex) % freshCandidates.length
+      : 0;
+    return freshCandidates[idx];
+  }
+  return 'Agata';
+}
+
+export function resolveAvatarProfileKey(
+  sender?: string | null,
+  agentId?: string | null,
+): AvatarProfileKey | null {
+  const rawAgent = String(agentId || '').trim().toLowerCase();
+  const rawSender = String(sender || '').trim().toLowerCase();
+
+  if (rawAgent === 'iris' || rawSender === 'iris' || rawSender === 'iris ai') {
+    return 'Iris';
+  }
+  if (rawAgent === 'operator' || rawSender === 'operator' || rawSender.includes('mateusz mitek')) {
+    return 'Operator';
+  }
+
+  const canonical = normalizeAgentCanonicalName(agentId || '') || normalizeAgentCanonicalName(sender || '');
+  if (canonical) return canonical;
+
+  return null;
+}
+
+export function validateAvatarUrlOrDataUri(
+  raw: string,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    return { ok: false, error: 'Podaj adres HTTPS lub wybierz obraz PNG/JPG/WEBP.' };
+  }
+  if (trimmed.length > 3_600_000) {
+    return { ok: false, error: 'Obraz awatara jest zbyt duży (maks. ~2.5 MB).' };
+  }
+  if (/^data:image\/(?:png|jpeg|jpg|webp|svg\+xml);base64,[A-Za-z0-9+/=]+$/i.test(trimmed)) {
+    return { ok: true, value: trimmed };
+  }
+  if (trimmed.startsWith('/') && !trimmed.startsWith('//') && !trimmed.includes('..')) {
+    return { ok: true, value: trimmed };
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (
+      parsed.protocol === 'https:' ||
+      (parsed.protocol === 'http:' && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'))
+    ) {
+      return { ok: true, value: parsed.toString() };
+    }
+  } catch {
+    // invalid URL handled below
+  }
+  return {
+    ok: false,
+    error: 'Nieprawidłowe źródło awatara. Użyj adresu HTTPS lub obrazu PNG/JPG/WEBP.',
+  };
+}

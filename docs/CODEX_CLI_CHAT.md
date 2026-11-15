@@ -34,11 +34,16 @@ W tym trybie pięć procesów Aria, Alex, Astyria, Aurelius, Agata korzysta ze w
 
 Oprogramowanie uruchomione w osobnym AI Studio nadal nie będzie miało dostępu do lokalnego OAuth Codexa. Zmienne środowiskowe i dane logowania nie są kopiowane przez GitHub.
 
+## Podział uprawnień
+
+Token `SVL_CODEX_CHAT_ACCESS_TOKEN` pozwala wysyłać wiadomości, tworzyć rozmowy i czytać historię rozmów.
+Usunięcie rozmowy, wyczyszczenie całej historii, synchronizacja administracyjna i dostęp do systemowych narzędzi wymagają osobnego `SVL_OPERATOR_TOKEN`. Można go podać w górnym pasku SVL_open; jest przechowywany wyłącznie w pamięci karty przeglądarki.
+
 ## Bezpieczeństwo i ograniczenia
 
 - `SVL_CODEX_CHAT_ENABLED` jest domyślnie `false`. Włączenie wymaga prywatnego tokenu operatora długości minimum 32 znaków.
 - Backend uruchamia Codex CLI z `--sandbox read-only` w pustym, tymczasowym katalogu bez projektu, bez API key i z ograniczeniami czasu, rozmiaru odpowiedzi oraz liczby równoczesnych żądań. Nie wystawia sesji OAuth przez MCP HTTP.
-- Lokalny czat oraz pięć workerów używają wspólnej blokady `flock` (util-linux) dla tego samego użytkownika Linux. Nie potrzeba stałego IP. Gdy konto jest zajęte, serwer zgłasza stan zajętości zamiast uruchamiać równoległe generowanie.
+- Lokalny czat oraz pięć workerów używają wspólnej blokady `flock` (util-linux) dla tego samego użytkownika Linux, w prywatnym katalogu `~/.local/state/svl-open/codex-cli.lock`. Nie potrzeba stałego IP. Gdy konto jest zajęte, serwer zgłasza stan zajętości zamiast uruchamiać równoległe generowanie.
 - Szczegółowa diagnostyka zalogowania wymaga prywatnego tokenu operatora w nagłówku `X-SVL-Codex-Access`. Bez niego endpoint pokazuje jedynie ogólny stan konfiguracji.
 - Tryb jest tekstowy. Nie deklaruje obsługi obrazów ani uruchomionych usług Ollama.
 - Gdy jest to przydatne, model może zwrócić przyciski `[btn: Etykieta|akcja]`; czat renderuje je komponentem `@vector-im/compound-web`. Polecenia powłoki pozostają zablokowane. Biblioteka jest dostępna na licencji AGPL-3.0-or-later lub komercyjnej Element — sprawdź zgodność licencji przed wdrożeniem.

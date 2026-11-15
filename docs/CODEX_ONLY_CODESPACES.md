@@ -20,3 +20,17 @@ Wszystkie zadania tekstowe używają `--sandbox read-only`; odpowiedź AI ma sta
 **Google AI Studio** uruchamia odrębną kopię aplikacji i nie otrzymuje automatycznie sesji OAuth z GitHub Codespaces. Do korzystania z Codexa przez aplikację potrzebny jest runtime, w którym konto jest faktycznie zalogowane. Samo scalenie `main` nie udostępnia tej sesji.
 
 Ten projekt ma też inne endpointy niż czat i terminal. Utrzymuj port prywatny; tokeny chronią określone wrażliwe operacje, a nie zastępują pełnego logowania do całej aplikacji.
+
+**Instalacja pakietów:** skrypt sprawdza skrót `package.json` i obecnego pliku blokady zależności. Gdy pakiety zmienią się po `git pull` lub brakuje `tsx`/`vite`, zainstaluje zależności przed załadowaniem tokenów. Dla lockfile korzysta z `npm ci`, a bez niego z `npm install --no-audit --no-fund`. Nie uruchamia testów.
+
+
+## Diagnostyka bez testów, bez stałego IP
+
+Aby odczytać **rzeczywisty** stan działającego Codespace (zalogowanie ChatGPT OAuth, serwer Python, pięć workerów, ostatni błąd Codex CLI), uruchom w jego terminalu:
+
+```bash
+python3 deploy/svl-doctor.py
+python3 deploy/svl-doctor.py --logs --limit 30
+```
+
+Narzędzie kontaktuje się wyłącznie z `127.0.0.1:3000`, korzysta z prywatnego pliku konfiguracji, nie uruchamia testów ani misji, nie restartuje procesu i nie drukuje tokenów. Gdy serwer działa na innym porcie, można użyć `--port 3001`. Raport rozróżnia commit GitHub od faktycznie wdrożonej wersji serwera. Ogranicz uprawnienia do prywatnego pliku konfiguracji do `0600`; w przeciwnym razie diagnostyka odmówi automatycznego odczytu poświadczeń.

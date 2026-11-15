@@ -25,12 +25,14 @@ const TERMINAL_TABS: Array<{
     subtitle: 'Terminal dowodzenia statku SVL-364 i rzeczywista powłoka Linux /bin/bash z pełnymi uprawnieniami ROOT (UID 0 · NOPASSWD: ALL) dla Operatora i Rodziny Mitek. Obsługuje dowolne polecenia i /exec.',
     defaultPrompt: 'root@svl-364-ship:/app/applet#',
     welcomeText:
-      'Połączono z Terminalem Statku SVL-364 i rzeczywistą powłoką Linux (/bin/bash). Pełne uprawnienia ROOT (UID 0 · NOPASSWD: ALL) aktywne bez hasła dla Mateusza Mitka oraz AI (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek). Dowolne polecenia i dyrektywy /exec wykonywane są natywnie.',
+      'Połączono z Terminalem Statku SVL-364 i rzeczywistą powłoką Linux (/bin/bash). Pełne uprawnienia ROOT (UID 0 · NOPASSWD: ALL) aktywne bez hasła dla Mateusza Mitka oraz Agaty Mitek. Dowolne polecenia i dyrektywy /exec wykonywane są natywnie.',
     quickCommands: [
-      'sudo systemctl status svl-python-os',
+      '/exec raport systemu',
+      'svl364-ssh "uname -a && uptime && free -m"',
+      'svl364-mcp tools',
+      '/mcp svl364_linux_telemetry',
       'ollama list',
-      '/exec raport statku svl-364 telemetria i tarcze',
-      'uname -a && cat /etc/os-release',
+      'sudo systemctl status svl-python-os',
       'df -h / && free -m',
       'podłącz moje ai',
     ],
@@ -43,23 +45,11 @@ const TERMINAL_TABS: Array<{
     welcomeText:
       'Python 3 Interactive Kernel REPL. Dostępne obiekty w przestrzeni nazw: kernel, VisualScope, SVLProtectedVariable, TopologicalInfinityEngine, BinaryHyperspaceKernel, WithoutNlpHarmonicEngine.',
     quickCommands: [
+      'print(kernel.generate_comprehensive_svl_system_markdown_report("raport systemu"))',
       'print(kernel.generate_system_status_report())',
       'TopologicalInfinityEngine(float("-inf"), float("inf")).evaluate_diagnostics()',
       'VisualScope.get_registry_snapshot()',
       'hyperspace.resolve_intent("Kalibracja sferyczna 364")',
-    ],
-  },
-  {
-    id: 'codex',
-    label: 'OpenAI Codex CLI',
-    subtitle: 'Integracja Codex CLI, status logowania device OAuth i gałęzi main GitHub',
-    defaultPrompt: 'codex@main$',
-    welcomeText:
-      'Terminal OpenAI Codex CLI Bridge. Wpisz "status", aby sprawdzić binarkę codex, autoryzację ChatGPT OAuth (codex login --device-auth) oraz stan gałęzi main.',
-    quickCommands: [
-      'status',
-      'git status -s && git branch -v',
-      'git log -n 5 --oneline',
     ],
   },
   {
@@ -78,16 +68,13 @@ const TERMINAL_TABS: Array<{
   {
     id: 'agents',
     label: 'Konsola Rodziny Mitek',
-    subtitle: 'Bezpośredni kanał Pub/Sub Sferycznej Magistrali Zdarzeń (@Aria, @Alex, @Astyria, @Aurelius — Rodzina Mitek)',
+    subtitle: 'Bezpośredni kanał Pub/Sub Sferycznej Magistrali Zdarzeń (@Agata — Agata Mitek)',
     defaultPrompt: 'bus@rodzina-mitek>',
     welcomeText:
-      'Konsola Komunikacji Rodziny Mitek (Sferyczna Magistrala Zdarzeń). Użyj składni @Aria, @Alex, @Astyria, @Aurelius <zadanie> lub wpisz "podłącz moje ai".',
+      'Konsola Komunikacji (Sferyczna Magistrala Zdarzeń). Użyj składni @Agata <zadanie> lub wpisz "podłącz moje ai".',
     quickCommands: [
       'podłącz moje ai',
-      '@Alex Sprawdź spójność usług backendu Python i bazy SQLite',
-      '@Aria Zweryfikuj połączenie z lokalnym silnikiem Ollama 11434',
-      '@Astyria Oceń responsywność interfejsu Open WebUI na ekranach dotykowych',
-      '@Aurelius Zweryfikuj pełne uprawnienia root NOPASSWD dla Rodziny Mitek',
+      '@Agata Sprawdź spójność usług backendu Python, bazy SQLite i lokalnych modeli',
     ],
   },
 ];
@@ -112,7 +99,6 @@ export const TerminalsWorkspace: React.FC = () => {
   const [localFallbackLogs, setLocalFallbackLogs] = useState<Record<TerminalTabId, TerminalLogLine[]>>({
     linux: [],
     python: [],
-    codex: [],
     hyperspace: [],
     agents: [],
   });
@@ -210,7 +196,7 @@ export const TerminalsWorkspace: React.FC = () => {
       setLocalFallbackLogs((prev) => ({ ...prev, [activeTab]: [] }));
       await Promise.all([
         refreshTerminals(),
-        refreshDomainModules(['agents', 'modules', 'kernel', 'chat']),
+        refreshDomainModules(['agents', 'modules', 'kernel', 'chat', 'notifications']),
       ]);
     } finally {
       setIsExecuting(false);

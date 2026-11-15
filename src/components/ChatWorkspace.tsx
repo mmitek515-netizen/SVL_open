@@ -20,6 +20,11 @@ import {
   Check,
   Sparkles,
   Radio,
+  Bell,
+  Server,
+  Rocket,
+  Brain,
+  FileBarChart2,
 } from 'lucide-react';
 import { ChatInteractiveButton } from './ChatInteractiveButton';
 import {
@@ -31,14 +36,18 @@ import {
   isUnsafeChatInteractiveAction,
   parseChatInteractiveToken,
   safeFetchJson,
+  getSvlOperatorAccessToken,
+  setSvlOperatorAccessToken,
   validateOllamaHostUrl,
 } from '../utils/svlLogic';
 import { useSvlSync, getCanonicalConversationTitle } from '../utils/svlSyncStore';
+import { AvatarSettingsModal, SvlAvatar } from './AgentAvatar';
+import { RealVisionPanel } from './RealVisionPanel';
 
 export type ChatMessage = SyncableMessage;
 
 interface ChatWorkspaceProps {
-  onNavigateTab: (tab: 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux') => void;
+  onNavigateTab: (tab: 'chat' | 'svl364' | 'notifications' | 'infrastructure' | 'agents' | 'terminals' | 'kernel' | 'linux') => void;
 }
 
 const InteractiveCodeBlock: React.FC<{
@@ -56,9 +65,9 @@ const InteractiveCodeBlock: React.FC<{
   };
 
   return (
-    <div className="my-2.5 rounded-lg border border-slate-800 bg-[#0B0D13] overflow-hidden text-xs font-mono shadow-sm">
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#141824] border-b border-slate-800 text-[11px] text-slate-400">
-        <span className="font-semibold uppercase tracking-wider text-violet-400">
+    <div className="my-2.5 rounded-lg border border-slate-800 bg-[#070A10] overflow-hidden text-xs font-mono shadow-sm">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#101624] border-b border-slate-800 text-[11px] text-slate-400">
+        <span className="font-semibold uppercase tracking-wider text-cyan-400">
           {cleanLang || 'TERMINAL / KOD'}
         </span>
         <div className="flex items-center gap-1.5">
@@ -79,7 +88,42 @@ const InteractiveCodeBlock: React.FC<{
   );
 };
 
-function renderFormattedLine(
+const InteractiveActionButton: React.FC<{
+  label: string;
+  action: string;
+  onAction?: (actionValue: string, label?: string) => void;
+  disabled?: boolean;
+}> = ({ label, action, onAction, disabled = false }) => {
+  const getIcon = () => {
+    const act = action.trim().toLowerCase();
+    if (act.startsWith('tab:svl364')) return <Rocket className="w-3.5 h-3.5 text-cyan-400" />;
+    if (act.startsWith('tab:terminals')) return <Terminal className="w-3.5 h-3.5 text-violet-400" />;
+    if (act.startsWith('tab:agents')) return <Users className="w-3.5 h-3.5 text-emerald-400" />;
+    if (act.startsWith('tab:kernel')) return <Cpu className="w-3.5 h-3.5 text-cyan-400" />;
+    if (act.startsWith('tab:linux')) return <Terminal className="w-3.5 h-3.5 text-amber-400" />;
+    if (act.startsWith('tab:notifications')) return <Bell className="w-3.5 h-3.5 text-cyan-300" />;
+    if (act.startsWith('tab:infrastructure')) return <Server className="w-3.5 h-3.5 text-emerald-300" />;
+    if (act === 'action:connect_ai' || act === 'connect_ai') return <Zap className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />;
+    if (act === 'action:sync' || act === 'sync') return <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />;
+    if (isUnsafeChatInteractiveAction(action)) return <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />;
+    return <CornerDownRight className="w-3.5 h-3.5 text-cyan-400" />;
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => onAction?.(action, label)}
+      disabled={disabled}
+      title={disabled ? 'Przyciski czatu nie mogą uruchamiać poleceń powłoki.' : undefined}
+      className="inline-flex items-center gap-1.5 px-3 py-1.5 my-1 mr-2 rounded-lg bg-cyan-950/50 hover:bg-cyan-900/70 active:bg-cyan-800 text-cyan-100 border border-cyan-500/40 hover:border-cyan-400 text-xs font-medium transition-all shadow-sm active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      {getIcon()}
+      <span>{label}</span>
+    </button>
+  );
+};
+
+export function renderFormattedLine(
   line: string,
   keyPrefix: string,
   onAction?: (actionValue: string, label?: string) => void,
@@ -100,7 +144,7 @@ function renderFormattedLine(
     }
     if (tok.startsWith('**') && tok.endsWith('**') && tok.length > 4) {
       return (
-        <strong key={`${keyPrefix}-${i}`} className="font-semibold text-slate-100">
+        <strong key={`${keyPrefix}-${i}`} className="font-semibold text-white">
           {tok.slice(2, -2)}
         </strong>
       );
@@ -134,7 +178,7 @@ function renderFormattedLine(
           href={link[2]}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-violet-300 underline underline-offset-2 hover:text-violet-200"
+          className="text-cyan-300 underline underline-offset-2 hover:text-cyan-200"
         >
           {link[1]}
         </a>
@@ -145,7 +189,7 @@ function renderFormattedLine(
       return (
         <code
           key={`${keyPrefix}-${i}`}
-          className="px-1.5 py-0.5 rounded bg-[#0B0D13] border border-slate-800 font-mono text-[12px] text-violet-300"
+          className="px-1.5 py-0.5 rounded bg-[#070A10] border border-cyan-500/25 font-mono text-[12px] text-cyan-200"
         >
           {codeContent}
         </code>
@@ -155,7 +199,18 @@ function renderFormattedLine(
   });
 }
 
-function renderFormattedContent(
+function parseMarkdownTableRow(rowLine: string): string[] {
+  const trimmed = rowLine.trim();
+  const stripped = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  return stripped.split('|').map((cell) => cell.trim());
+}
+
+function isMarkdownTableSeparator(rowLine: string): boolean {
+  const cells = parseMarkdownTableRow(rowLine);
+  return cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c));
+}
+
+export function renderFormattedContent(
   content: string,
   onAction?: (actionValue: string, label?: string) => void,
 ): React.ReactNode {
@@ -183,94 +238,178 @@ function renderFormattedContent(
     }
 
     const lines = seg.split('\n');
-    return (
-      <React.Fragment key={`text-seg-${segIdx}`}>
-        {lines.map((line, idx) => {
-          const trimmed = line.trim();
-          const structuralLine = line.trimStart();
+    const renderedElements: React.ReactNode[] = [];
+    let idx = 0;
 
-          // H1
-          if (structuralLine.startsWith('# ')) {
-            return (
-              <h1 key={`h1-${idx}`} className="text-base md:text-lg font-bold text-slate-100 mt-2.5 mb-1.5 pb-1 border-b border-violet-500/20 flex items-center gap-2">
-                {renderFormattedLine(structuralLine.slice(2), `h1-${idx}`, onAction)}
-              </h1>
-            );
+    while (idx < lines.length) {
+      const line = lines[idx];
+      const trimmed = line.trim();
+      const structuralLine = line.trimStart();
+
+      // Detect Markdown Table block
+      if (
+        trimmed.startsWith('|') &&
+        trimmed.endsWith('|') &&
+        idx + 1 < lines.length &&
+        lines[idx + 1].trim().startsWith('|') &&
+        isMarkdownTableSeparator(lines[idx + 1])
+      ) {
+        const headerCells = parseMarkdownTableRow(trimmed);
+        idx += 2; // skip header + separator
+        const bodyRows: string[][] = [];
+        while (
+          idx < lines.length &&
+          lines[idx].trim().startsWith('|') &&
+          lines[idx].trim().endsWith('|')
+        ) {
+          if (!isMarkdownTableSeparator(lines[idx])) {
+            bodyRows.push(parseMarkdownTableRow(lines[idx]));
           }
+          idx += 1;
+        }
+        renderedElements.push(
+          <div
+            key={`table-${segIdx}-${idx}`}
+            className="my-2.5 overflow-x-auto rounded-lg border border-cyan-500/25 bg-[#070B12] shadow-sm"
+          >
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="border-b border-cyan-500/25 bg-[#0C1422] text-cyan-300 font-mono text-[11px] uppercase tracking-wider">
+                  {headerCells.map((hCell, hIdx) => (
+                    <th key={`th-${hIdx}`} className="py-2 px-3 font-semibold">
+                      {renderFormattedLine(hCell, `th-${segIdx}-${idx}-${hIdx}`, onAction)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/80 text-slate-200">
+                {bodyRows.map((rCells, rIdx) => (
+                  <tr
+                    key={`tr-${rIdx}`}
+                    className="hover:bg-cyan-500/5 transition-colors"
+                  >
+                    {rCells.map((cText, cIdx) => (
+                      <td key={`td-${rIdx}-${cIdx}`} className="py-1.5 px-3 align-top leading-relaxed">
+                        {renderFormattedLine(cText, `td-${segIdx}-${idx}-${rIdx}-${cIdx}`, onAction)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>,
+        );
+        continue;
+      }
 
-          // H2
-          if (structuralLine.startsWith('## ')) {
-            return (
-              <h2 key={`h2-${idx}`} className="text-sm md:text-base font-semibold text-violet-200 mt-2 mb-1 flex items-center gap-2">
-                {renderFormattedLine(structuralLine.slice(3), `h2-${idx}`, onAction)}
-              </h2>
-            );
-          }
+      // H1
+      if (structuralLine.startsWith('# ')) {
+        renderedElements.push(
+          <h1
+            key={`h1-${idx}`}
+            className="text-base md:text-lg font-bold text-white mt-2.5 mb-1.5 pb-1.5 border-b border-cyan-500/30 flex items-center gap-2 tracking-tight"
+          >
+            {renderFormattedLine(structuralLine.slice(2), `h1-${idx}`, onAction)}
+          </h1>,
+        );
+        idx += 1;
+        continue;
+      }
 
-          // H3
-          if (structuralLine.startsWith('### ')) {
-            return (
-              <h3 key={`h3-${idx}`} className="text-xs md:text-sm font-semibold text-violet-300 mt-1.5 mb-1">
-                {renderFormattedLine(structuralLine.slice(4), `h3-${idx}`, onAction)}
-              </h3>
-            );
-          }
+      // H2
+      if (structuralLine.startsWith('## ')) {
+        renderedElements.push(
+          <h2
+            key={`h2-${idx}`}
+            className="text-xs md:text-sm font-bold uppercase tracking-wider text-cyan-300 mt-3 mb-1.5 pt-1 border-t border-slate-800/70 flex items-center gap-2 font-mono"
+          >
+            {renderFormattedLine(structuralLine.slice(3), `h2-${idx}`, onAction)}
+          </h2>,
+        );
+        idx += 1;
+        continue;
+      }
 
-          // Blockquote / Callout
-          if (structuralLine.startsWith('> ')) {
-            return (
-              <div
-                key={`bq-${idx}`}
-                className="my-1.5 border-l-2 border-violet-500 bg-violet-950/20 px-3.5 py-1.5 rounded-r-lg text-slate-300 italic text-xs md:text-sm"
-              >
-                {renderFormattedLine(structuralLine.slice(2), `bq-${idx}`, onAction)}
-              </div>
-            );
-          }
+      // H3
+      if (structuralLine.startsWith('### ')) {
+        renderedElements.push(
+          <h3
+            key={`h3-${idx}`}
+            className="text-xs md:text-sm font-semibold text-violet-300 mt-2 mb-1"
+          >
+            {renderFormattedLine(structuralLine.slice(4), `h3-${idx}`, onAction)}
+          </h3>,
+        );
+        idx += 1;
+        continue;
+      }
 
-          // Horizontal rule
-          if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
-            return <hr key={`hr-${idx}`} className="my-2 border-slate-800" />;
-          }
+      // Blockquote / Callout
+      if (structuralLine.startsWith('> ')) {
+        renderedElements.push(
+          <div
+            key={`bq-${idx}`}
+            className="my-1.5 border-l-2 border-cyan-400 bg-cyan-950/25 px-3.5 py-2 rounded-r-lg text-cyan-100 text-xs md:text-sm leading-relaxed"
+          >
+            {renderFormattedLine(structuralLine.slice(2), `bq-${idx}`, onAction)}
+          </div>,
+        );
+        idx += 1;
+        continue;
+      }
 
-          // Unordered list item
-          if (/^[-*•]\s+/.test(trimmed)) {
-            const listText = trimmed.replace(/^[-*•]\s+/, '');
-            return (
-              <div key={`li-${idx}`} className="flex items-start gap-2 my-0.5 leading-relaxed pl-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-violet-400 mt-2 shrink-0 shadow-[0_0_5px_rgba(167,139,250,0.6)]" />
-                <div className="flex-1 min-w-0">{renderFormattedLine(listText, `li-${idx}`, onAction)}</div>
-              </div>
-            );
-          }
+      // Horizontal rule
+      if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
+        renderedElements.push(<hr key={`hr-${idx}`} className="my-2.5 border-cyan-500/20" />);
+        idx += 1;
+        continue;
+      }
 
-          // Numbered list item
-          const numMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
-          if (numMatch) {
-            return (
-              <div key={`nli-${idx}`} className="flex items-start gap-2 my-0.5 leading-relaxed pl-1">
-                <span className="text-violet-400 font-mono text-xs font-semibold shrink-0 min-w-[18px]">
-                  {numMatch[1]}.
-                </span>
-                <div className="flex-1 min-w-0">{renderFormattedLine(numMatch[2], `nli-${idx}`, onAction)}</div>
-              </div>
-            );
-          }
+      // Unordered list item
+      if (/^[-*•]\s+/.test(trimmed)) {
+        const listText = trimmed.replace(/^[-*•]\s+/, '');
+        renderedElements.push(
+          <div key={`li-${idx}`} className="flex items-start gap-2 my-0.5 leading-relaxed pl-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 mt-2 shrink-0 shadow-[0_0_5px_rgba(34,211,238,0.6)]" />
+            <div className="flex-1 min-w-0">{renderFormattedLine(listText, `li-${idx}`, onAction)}</div>
+          </div>,
+        );
+        idx += 1;
+        continue;
+      }
 
-          // Blank line
-          if (trimmed === '') {
-            return <div key={`empty-${idx}`} className="h-1.5" />;
-          }
+      // Numbered list item
+      const numMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+      if (numMatch) {
+        renderedElements.push(
+          <div key={`nli-${idx}`} className="flex items-start gap-2 my-0.5 leading-relaxed pl-1">
+            <span className="text-cyan-400 font-mono text-xs font-semibold shrink-0 min-w-[18px]">
+              {numMatch[1]}.
+            </span>
+            <div className="flex-1 min-w-0">{renderFormattedLine(numMatch[2], `nli-${idx}`, onAction)}</div>
+          </div>,
+        );
+        idx += 1;
+        continue;
+      }
 
-          // Regular paragraph
-          return (
-            <div key={`p-${idx}`} className="leading-relaxed">
-              {renderFormattedLine(line, `l-${idx}`, onAction)}
-            </div>
-          );
-        })}
-      </React.Fragment>
-    );
+      // Blank line
+      if (trimmed === '') {
+        renderedElements.push(<div key={`empty-${idx}`} className="h-1.5" />);
+        idx += 1;
+        continue;
+      }
+
+      // Regular paragraph
+      renderedElements.push(
+        <div key={`p-${idx}`} className="leading-relaxed">
+          {renderFormattedLine(line, `l-${idx}`, onAction)}
+        </div>,
+      );
+      idx += 1;
+    }
+
+    return <React.Fragment key={`text-seg-${segIdx}`}>{renderedElements}</React.Fragment>;
   });
 }
 
@@ -278,11 +417,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const {
     tabOrigin,
     wsState,
-    wsAttempt,
-    wsLastError,
     viteHmrDiagnostic,
     serverRevision,
-    lastSyncedAt,
     isSyncing,
     isConnectingAi,
     lastSyncReport,
@@ -302,7 +438,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     appendAndPersistChatMessage,
     triggerFullSync,
     refreshDomainModules,
-    reconnectWebSocket,
     connectMyAi,
     notifyLocalMutation,
   } = useSvlSync();
@@ -310,23 +445,18 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const agentsStatus: any[] = agentsData?.agents || [];
 
   const [input, setInput] = useState('');
-  const [selectedModel, setSelectedModel] = useState('codex-cli');
-  // Never persist this private gateway access token in browser storage or GitHub.
-  const [codexAccessToken, setCodexAccessToken] = useState('');
-  const [codexRuntimeStatus, setCodexRuntimeStatus] = useState<{
-    enabled: boolean;
-    accessConfigured: boolean;
-    authenticated?: boolean;
-    loggedIn?: boolean;
-    reason?: string;
-  } | null>(null);
+  const [selectedModel, setSelectedModel] = useState('svl-hybrid-router');
   const [isSending, setIsSending] = useState(false);
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
+  const [isGeneratingSvlReport, setIsGeneratingSvlReport] = useState(false);
   const sendingRef = useRef(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [controlsExpanded, setControlsExpanded] = useState(false);
   const [attachedImage, setAttachedImage] = useState<{ base64: string; mimeType: string; name: string } | null>(null);
   const [attachedTextFile, setAttachedTextFile] = useState<{ name: string; content: string } | null>(null);
   const [syncDrawerOpen, setSyncDrawerOpen] = useState(false);
+  const [avatarSettingsOpen, setAvatarSettingsOpen] = useState(false);
+  const [realVisionOpen, setRealVisionOpen] = useState(false);
   const [chatActionError, setChatActionError] = useState<string | null>(null);
 
   // Ollama connection panel & pull state
@@ -343,56 +473,15 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const prevMsgCountRef = useRef<number>(0);
 
-  const [duplexActive, setDuplexActive] = useState(false);
+  const [duplexActive, setDuplexActive] = useState(true);
   const [isProactiveLoading, setIsProactiveLoading] = useState(false);
   const lastInteractionTimeRef = useRef<number>(Date.now());
+  const autoTurnsRef = useRef<number>(0);
+  const prevDuplexActiveRef = useRef<boolean>(duplexActive);
+  const inputValueRef = useRef<string>(input);
+  inputValueRef.current = input;
 
   const activeConv = conversations.find((c) => c.id === activeConvId) || conversations[0];
-
-  // Inspect this actual backend. A copied GitHub project or AI Studio preview
-  // cannot inherit the login from another Linux/Codespaces runtime.
-  useEffect(() => {
-    if (selectedModel !== 'codex-cli') {
-      setCodexRuntimeStatus(null);
-      return;
-    }
-    let cancelled = false;
-    let checking = false;
-    const checkStatus = async () => {
-      if (checking || cancelled || document.hidden) return;
-      checking = true;
-      try {
-        const result = await safeFetchJson<{
-          ok: boolean; enabled: boolean; accessConfigured: boolean;
-          authenticated: boolean; loggedIn: boolean; reason: string;
-        }>('/api/codex-chat/status', {
-          timeoutMs: 9000,
-          headers: codexAccessToken ? {'X-SVL-Codex-Access': codexAccessToken} : {},
-        });
-        if (cancelled) return;
-        if (result.ok && result.data?.ok) {
-          setCodexRuntimeStatus(result.data);
-        } else {
-          setCodexRuntimeStatus({
-            enabled: false, accessConfigured: false,
-            reason: result.error || 'Brak odpowiedzi aktualnego backendu.',
-          });
-        }
-      } finally {
-        checking = false;
-      }
-    };
-    const initial = setTimeout(() => { void checkStatus(); }, 650);
-    const poll = setInterval(() => { void checkStatus(); }, 30000);
-    const onVisible = () => { if (!document.hidden) void checkStatus(); };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      cancelled = true;
-      clearTimeout(initial);
-      clearInterval(poll);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [selectedModel, codexAccessToken]);
 
   useEffect(() => {
     if (healthData?.ollama?.ollama_host && !ollamaUrlDirtyRef.current) {
@@ -438,15 +527,35 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     lastInteractionTimeRef.current = Date.now();
   }, [activeConv?.id, activeConv?.messages.length]);
 
-  const handleTriggerProactiveChat = async (agentOverride?: string) => {
-    if (isSending || isProactiveLoading || !activeConv) return;
+  useEffect(() => {
+    autoTurnsRef.current = 0;
+  }, [activeConv?.id]);
+
+  const handleTriggerProactiveChat = async (agentOverride?: string, autonomous = false) => {
+    if (sendingRef.current || isSending || isProactiveLoading || !activeConv) return;
+    if (!autonomous) {
+      autoTurnsRef.current = 0;
+    }
     setIsProactiveLoading(true);
     setChatActionError(null);
     lastInteractionTimeRef.current = Date.now();
     try {
+      const channelBoundAgent = activeConv.id === 'conv-agent-agata' ? 'Agata' : null;
       const chosenTarget =
         agentOverride ||
-        (['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(targetAgent) ? targetAgent : 'Auto');
+        channelBoundAgent ||
+        (autonomous
+          ? 'Auto'
+          : targetAgent === 'Agata'
+            ? targetAgent
+            : 'Auto');
+      const recentMsgs = (activeConv.messages || []).slice(-12);
+      const lastMsg = recentMsgs[recentMsgs.length - 1];
+      const historyPayload = recentMsgs.map((m) => ({
+        role: m.role,
+        sender: m.sender,
+        content: m.content,
+      }));
       const res = await safeFetchJson<{
         ok: boolean;
         message?: ChatMessage;
@@ -463,14 +572,19 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           targetAgent: chosenTarget,
           model: selectedModel,
           origin: tabOrigin,
+          history: historyPayload,
+          lastSender: lastMsg?.sender || '',
+          autonomous,
         }),
       });
 
       if (res.ok && res.data?.ok && res.data.message) {
-        // Backend already persisted this exact message; do not submit it twice.
+        if (autonomous) {
+          autoTurnsRef.current += 1;
+        }
         await refreshDomainModules(['chat']);
         notifyLocalMutation('chat', activeConv.id, res.data.serverRevision);
-      } else if (!res.ok) {
+      } else if (!res.ok && !autonomous) {
         setChatActionError(`Błąd inicjacji rozmowy: ${res.error || res.data?.error || 'brak odpowiedzi'}`);
       }
     } finally {
@@ -478,31 +592,36 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     }
   };
 
-  // Automatic proactive timer disabled to prevent looping messages when operator is idle;
-  // proactive chat is now strictly manual via the [🎙️ Swobodna rozmowa AI] button.
+  const handleProactiveRef = useRef(handleTriggerProactiveChat);
+  handleProactiveRef.current = handleTriggerProactiveChat;
+
+  useEffect(() => {
+    const justEnabled = !prevDuplexActiveRef.current && duplexActive;
+    prevDuplexActiveRef.current = duplexActive;
+    if (justEnabled) {
+      autoTurnsRef.current = 0;
+    }
+
+    if (!duplexActive || !activeConv || isSending || isProactiveLoading) {
+      return;
+    }
+    const MAX_AUTO_TURNS = 4;
+    if (autoTurnsRef.current >= MAX_AUTO_TURNS) {
+      return;
+    }
+
+    const delayMs = justEnabled ? 4000 : autoTurnsRef.current === 0 ? 6000 : 12000;
+    const timer = setTimeout(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (sendingRef.current || inputValueRef.current.trim().length > 0) return;
+      void handleProactiveRef.current(undefined, true);
+    }, delayMs);
+
+    return () => clearTimeout(timer);
+  }, [duplexActive, activeConv?.id, activeConv?.messages.length, isSending, isProactiveLoading, selectedModel]);
 
   const ollamaReachable = Boolean(healthData?.ollama?.daemon_reachable);
-  const ollamaHostUrl: string = healthData?.ollama?.ollama_host || 'http://127.0.0.1:11434';
   const ollamaModels: any[] = healthData?.ollama?.models || [];
-  const hasLlama32Vision = ollamaModels.some((m: any) =>
-    String(m.name || '').startsWith('llama3.2-vision'),
-  );
-  const svl364ConfiguredModel = String(
-    systemModules.find((m) => m.id === 'svl-364')?.config?.configured_ollama_model || '',
-  ).trim();
-  const hasConfiguredModelPulled = Boolean(
-    svl364ConfiguredModel &&
-      ollamaModels.some(
-        (m: any) =>
-          m.name === svl364ConfiguredModel ||
-          String(m.name || '').startsWith(`${svl364ConfiguredModel.split(':')[0]}:`),
-      ),
-  );
-  const isPullingConfiguredModel = Boolean(
-    svl364ConfiguredModel &&
-      pullState?.active &&
-      String(pullState?.model || '').split(':')[0] === svl364ConfiguredModel.split(':')[0],
-  );
   const selectedModelSupportsVision =
     selectedModel === 'svl-hybrid-router' ||
     selectedModel.startsWith('gemini-') ||
@@ -540,7 +659,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         const count = (data.ollama.models || []).length;
         setOllamaConfigStatus({
           ok: true,
-          msg: `Połączono z Ollama (${data.ollama.ollama_host}). Wykryto modeli: ${count}.`,
+          msg: `Połączono z lokalnym demonem Ollama (${data.ollama.ollama_host}). Wykryto modeli: ${count}.`,
         });
       } else {
         setOllamaConfigStatus({
@@ -555,38 +674,45 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     }
   };
 
-  const handlePullVisionModel = async (modelToPull = 'llama3.2-vision:11b') => {
-    setOllamaConfigStatus(null);
-    const res = await safeFetchJson<any>('/api/ollama/pull', {
-      method: 'POST',
-      timeoutMs: 15000,
-      body: JSON.stringify({ model: modelToPull, origin: tabOrigin }),
-    });
-    const data = res.data;
-    if (data?.pull_state) {
-      setPullState(data.pull_state);
-    }
-    if (res.ok && data?.ok) {
-      notifyLocalMutation('ollama', 'pull', data.serverRevision);
-      setOllamaConfigStatus({
-        ok: true,
-        msg: `Rozpoczęto pobieranie ${modelToPull} przez lokalny daemon Ollama.`,
-      });
-    } else {
-      setOllamaConfigStatus({
-        ok: false,
-        msg: res.error || data?.error || 'Nie udało się uruchomić pobierania modelu.',
-      });
-    }
-  };
-
   const handleTriggerFullSync = async () => {
     if (isSyncing) return;
     setChatActionError(null);
     const rep = await triggerFullSync('operator_sync_button');
+    await refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'chat', 'notifications']);
     setSyncDrawerOpen(true);
     if (!rep.ok) {
       setChatActionError(rep.error || 'Synchronizacja nie powiodła się.');
+    }
+  };
+
+  const handleEmitComprehensiveSvlReport = async () => {
+    if (isGeneratingSvlReport || isSending) return;
+    setIsGeneratingSvlReport(true);
+    setChatActionError(null);
+    try {
+      const res = await safeFetchJson<{
+        ok: boolean;
+        reportMarkdown?: string;
+        serverRevision?: number;
+        error?: string;
+      }>('/api/py/kernel/markdown-report', {
+        method: 'POST',
+        timeoutMs: 15000,
+        body: JSON.stringify({
+          emitToIris: true,
+          title: 'Pełny Raport Operacyjny SVL_System, Statku SVL-364 Ebon Apex i Infrastruktury Floty',
+          category: 'svl_system',
+          origin: tabOrigin,
+        }),
+      });
+      if (res.ok && res.data?.ok) {
+        await refreshDomainModules(['chat', 'notifications', 'modules', 'kernel']);
+        notifyLocalMutation('chat', 'conv-rodzina-mitek-wszyscy', res.data.serverRevision);
+      } else {
+        setChatActionError(res.error || res.data?.error || 'Nie udało się wygenerować raportu SVL_System.');
+      }
+    } finally {
+      setIsGeneratingSvlReport(false);
     }
   };
 
@@ -632,85 +758,61 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       ? conversations.find((c) => c.id === overrideConvId) || activeConv
       : activeConv;
     if ((!trimmed && !attachedImage && !attachedTextFile) || sendingRef.current || !targetConvObj) return;
+    autoTurnsRef.current = 0;
     sendingRef.current = true;
     setIsSending(true);
     try {
-    setChatActionError(null);
-    // Prevent orphan user messages in SQLite when the only configured engine
-    // (Codex CLI OAuth) is unavailable in this runtime.
-    if (selectedModel === 'codex-cli') {
-      if (attachedImage) {
-        setChatActionError('Tryb Codex CLI działa tekstowo; usuń obraz albo wybierz rzeczywiście dostępny model z obsługą Vision.');
+      setChatActionError(null);
+      const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
+      const fullPrompt = attachedTextFile
+        ? `${trimmed || 'Przeanalizuj załączony plik.'}\n\n[Załączony plik: ${attachedTextFile.name}]\n\`\`\`\n${attachedTextFile.content.slice(0, 4000)}\n\`\`\``
+        : trimmed;
+
+      const userMsg: ChatMessage = {
+        id: createUniqueId('user'),
+        role: 'user',
+        sender: 'Mateusz Mitek (Operator)',
+        timestamp: nowTime,
+        content: trimmed || (attachedImage ? `[Przesłano obraz: ${attachedImage.name}]` : `[Plik: ${attachedTextFile?.name}]`),
+        imagePreview: attachedImage?.base64,
+        fileName: attachedTextFile?.name || attachedImage?.name,
+      };
+
+      const targetConvId = overrideConvId || targetConvObj.id;
+      const isPermanentChannel =
+        targetConvId === 'conv-rodzina-mitek-wszyscy' || targetConvId.startsWith('conv-agent-');
+      const targetTitle = isPermanentChannel
+        ? getCanonicalConversationTitle(targetConvId, targetConvObj.title)
+        : targetConvObj.messages.length <= 1 && trimmed
+          ? trimmed.slice(0, 42)
+          : targetConvObj.title;
+
+      const persistRes = await appendAndPersistChatMessage(targetConvId, targetTitle, selectedModel, userMsg);
+      if (!persistRes.ok) {
+        setChatActionError(`Błąd zapisu SQLite: ${persistRes.error || 'Nie zapisano wiadomości.'}`);
         return;
       }
-      if (!codexAccessToken.trim()) {
-        setChatActionError('Podaj prywatny token dostępu SVL przed wysłaniem wiadomości przez Codex CLI.');
-        return;
-      }
-      const ready = await safeFetchJson<{
-        ok: boolean; enabled: boolean; accessConfigured: boolean;
-        authenticated: boolean; loggedIn: boolean; reason?: string;
-      }>('/api/codex-chat/status', {
-        timeoutMs: 10000,
-        headers: {'X-SVL-Codex-Access': codexAccessToken},
-      });
-      if (!ready.ok || !ready.data?.ok || !ready.data.authenticated || !ready.data.loggedIn) {
-        const reason = ready.data?.reason || ready.error ||
-          'Codex CLI nie jest dostępny w backendzie tej aplikacji.';
-        setChatActionError('Nie zapisano wiadomości: ' + reason);
-        return;
-      }
-    }
-    const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
-    const fullPrompt = attachedTextFile
-      ? `${trimmed || 'Przeanalizuj załączony plik.'}\n\n[Załączony plik: ${attachedTextFile.name}]\n\`\`\`\n${attachedTextFile.content.slice(0, 4000)}\n\`\`\``
-      : trimmed;
+      void refreshDomainModules(['modules', 'kernel']);
 
-    const userMsg: ChatMessage = {
-      id: createUniqueId('user'),
-      role: 'user',
-      sender: 'Mateusz Mitek (Operator)',
-      timestamp: nowTime,
-      content: trimmed || (attachedImage ? `[Przesłano obraz: ${attachedImage.name}]` : `[Plik: ${attachedTextFile?.name}]`),
-      imagePreview: attachedImage?.base64,
-      fileName: attachedTextFile?.name || attachedImage?.name,
-    };
+      if (overrideText === undefined) setInput('');
+      const currentImage = attachedImage;
+      setAttachedImage(null);
+      setAttachedTextFile(null);
 
-    const targetConvId = overrideConvId || targetConvObj.id;
-    const isPermanentChannel =
-      targetConvId === 'conv-rodzina-mitek-wszyscy' || targetConvId.startsWith('conv-agent-');
-    const targetTitle = isPermanentChannel
-      ? getCanonicalConversationTitle(targetConvId, targetConvObj.title)
-      : targetConvObj.messages.length <= 1 && trimmed
-        ? trimmed.slice(0, 42)
-        : targetConvObj.title;
+      const historyPayload = buildChatHistoryPayload(targetConvObj.messages, 32);
 
-    const persistRes = await appendAndPersistChatMessage(targetConvId, targetTitle, selectedModel, userMsg);
-    if (!persistRes.ok) {
-      setChatActionError(`Błąd zapisu SQLite: ${persistRes.error || 'Nie zapisano wiadomości.'}`);
-      return;
-    }
-    // Reflect chat-derived module changes immediately, even while AI is generating.
-    void refreshDomainModules(['modules', 'kernel']);
-
-    if (overrideText === undefined) setInput('');
-    const currentImage = attachedImage;
-    setAttachedImage(null);
-    setAttachedTextFile(null);
-
-    const historyPayload = buildChatHistoryPayload(targetConvObj.messages, 16);
-
-    const isSpecificAgentTargeted = ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(targetAgent);
-    const isFamilyDuplex =
-      duplexActive && !isSpecificAgentTargeted &&
-      (targetConvId === 'conv-rodzina-mitek-wszyscy' ||
-        targetConvObj.title.toLowerCase().includes('rodzina mitek') ||
-        targetAgent === 'Rodzina Mitek');
+      const isSpecificAgentTargeted =
+        targetAgent === 'Agata' || targetConvId === 'conv-agent-agata';
+      const isFamilyDuplex =
+        !isSpecificAgentTargeted &&
+        (targetConvId === 'conv-rodzina-mitek-wszyscy' ||
+          targetConvObj.title.toLowerCase().includes('rodzina mitek') ||
+          targetAgent === 'Rodzina Mitek' ||
+          duplexActive);
 
       const res = await safeFetchJson<any>('/api/chat', {
         method: 'POST',
-        timeoutMs: 175000,
-        headers: codexAccessToken ? {'X-SVL-Codex-Access': codexAccessToken} : {},
+        timeoutMs: 90000,
         body: JSON.stringify({
           message: fullPrompt,
           model: selectedModel,
@@ -727,7 +829,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
 
       if (!res.ok || !data || data.ok === false) {
         if (Array.isArray(data?.appliedActions) && data.appliedActions.length > 0) {
-          void refreshDomainModules(['modules', 'agents', 'kernel', 'health']);
+          void refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'notifications']);
         }
         setChatActionError(res.error || data?.error || `Błąd serwera HTTP ${res.status}`);
         return;
@@ -745,8 +847,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       const replyMsg: ChatMessage = {
         id: createUniqueId('asst'),
         role: 'assistant',
-        sender: formatAgentDisplayName(data.sender || 'Alex Mitek'),
-        agentId: data.agentId || 'Alex',
+        sender: data.sender === 'Iris AI' ? 'Iris AI' : formatAgentDisplayName(data.sender || 'Agata Mitek'),
+        agentId: data.agentId || 'Agata',
         modelUsed: data.modelUsed || selectedModel,
         timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
         content: data.reply || 'Brak odpowiedzi z serwera.',
@@ -758,14 +860,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         setChatActionError(`Błąd zapisu odpowiedzi w SQLite: ${replyPersist.error}`);
       }
 
-      if (isFamilyDuplex && Array.isArray(data.followUpMessages) && data.followUpMessages.length > 0) {
+      if (Array.isArray(data.followUpMessages) && data.followUpMessages.length > 0) {
         for (const follow of data.followUpMessages) {
           if (!follow || !follow.content) continue;
           const followMsg: ChatMessage = {
             id: createUniqueId('asst-duplex'),
             role: 'assistant',
-            sender: formatAgentDisplayName(follow.sender || 'Aria Mitek'),
-            agentId: follow.agentId || 'si_1',
+            sender: follow.sender === 'Iris AI' ? 'Iris AI' : formatAgentDisplayName(follow.sender || 'Agata Mitek'),
+            agentId: follow.agentId || 'Agata',
             modelUsed: follow.modelUsed || data.modelUsed || selectedModel,
             timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
             content: String(follow.content),
@@ -774,8 +876,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         }
       }
 
-      await refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'chat']);
-      if (appliedActions) {
+      await refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'chat', 'notifications']);
+      if (appliedActions || data.connectionReport || (Array.isArray(data.followUpMessages) && data.followUpMessages.length > 0)) {
         notifyLocalMutation('module', 'chat', data.latestServerRevision || undefined);
       }
     } catch (error: any) {
@@ -793,6 +895,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
 
     sendingRef.current = true;
     setIsSending(true);
+    setIsGeneratingImage(true);
     setChatActionError(null);
     const targetTitle = targetConvObj.messages.length <= 1
       ? prompt.slice(0, 42)
@@ -853,6 +956,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     } finally {
       sendingRef.current = false;
       setIsSending(false);
+      setIsGeneratingImage(false);
     }
   };
 
@@ -864,33 +968,28 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       return;
     }
 
-    // 1. Tab navigation
     if (val.startsWith('tab:')) {
       const tabName = val.slice(4).trim();
-      if (!['chat', 'svl364', 'agents', 'terminals', 'kernel', 'linux'].includes(tabName)) return;
-      onNavigateTab(tabName as 'chat' | 'svl364' | 'agents' | 'terminals' | 'kernel' | 'linux');
+      if (!['chat', 'svl364', 'notifications', 'infrastructure', 'agents', 'terminals', 'kernel', 'linux'].includes(tabName)) return;
+      onNavigateTab(tabName as 'chat' | 'svl364' | 'notifications' | 'infrastructure' | 'agents' | 'terminals' | 'kernel' | 'linux');
       return;
     }
 
-    // 2. System actions
     if (val === 'action:connect_ai' || val === 'connect_ai') {
       await connectMyAi('interactive_btn');
       return;
     }
     if (val === 'action:sync' || val === 'sync') {
-      await triggerFullSync('interactive_btn');
+      await handleTriggerFullSync();
       return;
     }
 
-    // 3. Interactive buttons can propose text, but cannot auto-execute shell commands
-    // 4. Send direct message
     if (val.startsWith('send:')) {
       const textToSend = val.slice(5).trim();
       void handleSendMessage(textToSend);
       return;
     }
 
-    // 5. Fill input & focus (prefer human label if action is a token identifier)
     let textToFill = val.startsWith('text:') ? val.slice(5).trim() : val;
     if (/^[a-z0-9_-]+$/i.test(textToFill) && label && !['action:sync', 'action:connect_ai'].includes(val)) {
       textToFill = label;
@@ -905,6 +1004,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       : `Sync Online · rev ${serverRevision || 1}`;
 
   const wsBadgeClass = 'text-emerald-400';
+
+  const agataLive = agentsStatus.find((a) => a.canonical_name === 'Agata');
+  const agataMemoriesCount = agataLive?.memory_entries_count ?? (agentsData?.agent_memories?.Agata?.length || 0);
 
   return (
     <div className="relative flex h-full w-full overflow-hidden bg-[#0B0D13] cpd-theme-dark">
@@ -957,9 +1059,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
             type="button"
             onClick={async () => {
               if (window.confirm('Czy na pewno chcesz wyczyścić wszystkie wiadomości i odetkać bufory czatu?')) {
-                const credential = codexAccessToken ||
-                  window.prompt('Podaj prywatny token operatora lub token Codex CLI (jeżeli system wymaga autoryzacji):') || '';
-                const cleared = await clearAllConversationsAndBuffers(credential);
+                const credential = getSvlOperatorAccessToken() ||
+                  window.prompt('Podaj SVL_OPERATOR_TOKEN, aby wyczyścić historię wszystkich rozmów:') || '';
+                if (credential) setSvlOperatorAccessToken(credential);
+                const cleared = await clearAllConversationsAndBuffers();
                 if (cleared.ok) setMobileSidebarOpen(false);
                 else setChatActionError(cleared.error || 'Nie udało się wyczyścić rozmów w SQLite.');
               }
@@ -998,14 +1101,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                     setActiveConvId(conv.id);
                     if (isFamilyChan) {
                       setTargetAgent('Rodzina Mitek');
-                    } else if (conv.id === 'conv-agent-aria') {
-                      setTargetAgent('Aria');
-                    } else if (conv.id === 'conv-agent-alex') {
-                      setTargetAgent('Alex');
-                    } else if (conv.id === 'conv-agent-astyria') {
-                      setTargetAgent('Astyria');
-                    } else if (conv.id === 'conv-agent-aurelius') {
-                      setTargetAgent('Aurelius');
                     } else if (conv.id === 'conv-agent-agata') {
                       setTargetAgent('Agata');
                     }
@@ -1026,7 +1121,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                     type="button"
                     aria-label={`Usuń konwersację ${conv.title}`}
                     onClick={() => void handleDeleteConversationClick(conv.id)}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-slate-500 hover:text-rose-400 transition-opacity"
+                    className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 focus:opacity-100 focus-visible:outline-2 focus-visible:outline-violet-400 focus-visible:outline-offset-2 rounded-md min-h-8 min-w-8 flex items-center justify-center text-slate-500 hover:text-rose-400 transition-opacity"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -1040,7 +1135,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         <div className="p-4 border-t border-slate-800/80 bg-[#0D1018] space-y-2.5">
           <div className="flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-300">
-              Rodzina Mitek ({CANONICAL_AGENTS.length} AI)
+              Rodzina Mitek ({CANONICAL_AGENTS.length} AI + Iris)
             </span>
             <button
               type="button"
@@ -1050,7 +1145,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               }}
               className="text-xs text-violet-400 hover:text-violet-300 hover:underline whitespace-nowrap"
             >
-              Panel ({CANONICAL_AGENTS.length})
+              Panel AI
             </button>
           </div>
           <div className="space-y-1.5">
@@ -1065,22 +1160,34 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                     openAgentChannel(meta.canonicalName);
                     setMobileSidebarOpen(false);
                   }}
-                  className="w-full flex items-center justify-between text-xs py-1 px-2 rounded bg-slate-900/70 hover:bg-slate-800/80 border border-slate-800/60 transition-colors text-left cursor-pointer"
+                  className="w-full flex items-center justify-between gap-2 text-xs py-1.5 px-2 rounded bg-slate-900/70 hover:bg-slate-800/80 border border-slate-800/60 transition-colors text-left cursor-pointer"
                 >
                   <div className="flex items-center gap-2 min-w-0">
+                    <SvlAvatar sender={meta.displayName} agentId={meta.id} size={22} />
                     <span className={`font-semibold ${meta.textClass} truncate`}>
                       {meta.displayName}
                     </span>
-                    <span className="text-[11px] text-slate-500 font-mono">
-                      id:{meta.id}
-                    </span>
                   </div>
-                  <span className="text-[11px] font-mono tabular-nums text-slate-400 shrink-0">
-                    {isOnline ? `PID ${live.pid}` : '1-na-1'}
+                  <span className="text-[11px] font-mono tabular-nums text-emerald-400 shrink-0">
+                    {isOnline ? `PID ${live.pid}` : 'ONLINE'}
                   </span>
                 </button>
               );
             })}
+            <button
+              type="button"
+              onClick={() => {
+                openFamilyChannel();
+                setMobileSidebarOpen(false);
+              }}
+              className="w-full flex items-center justify-between gap-2 text-xs py-1.5 px-2 rounded bg-cyan-950/30 hover:bg-cyan-950/50 border border-cyan-500/30 transition-colors text-left cursor-pointer"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <SvlAvatar sender="Iris AI" agentId="iris" size={22} />
+                <span className="font-semibold text-cyan-300 truncate">Iris AI (SVL_System)</span>
+              </div>
+              <span className="text-[11px] font-mono text-cyan-400 shrink-0">Raporty</span>
+            </button>
           </div>
         </div>
       </aside>
@@ -1110,7 +1217,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                 const val = e.target.value as any;
                 if (val === 'Rodzina Mitek') {
                   openFamilyChannel();
-                } else if (['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(val)) {
+                } else if (val === 'Agata') {
                   openAgentChannel(val);
                 } else {
                   setTargetAgent(val);
@@ -1119,12 +1226,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               className="min-w-0 flex-1 max-w-[220px] bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-100 font-medium focus:outline-none focus:border-violet-500 truncate"
             >
               <option value="Rodzina Mitek">Rodzina Mitek (wszyscy — czat grupowy)</option>
-              <option value="Aria">Aria Mitek (1-na-1 · Autonomiczna)</option>
-              <option value="Alex">Alex Mitek (1-na-1 · Autonomiczny)</option>
-              <option value="Astyria">Astyria Mitek (1-na-1 · Autonomiczna)</option>
-              <option value="Aurelius">Aurelius Mitek (1-na-1 · Autonomiczny)</option>
-              <option value="Agata">Agata Mitek (1-na-1 · Autonomiczna)</option>
-              <option value="Auto">Auto-Router (1 odpowiedź)</option>
+              <option value="Agata">Agata Mitek (1-na-1 · ROOT UID 0)</option>
+              <option value="Auto">Auto-Router (Agata + Iris AI)</option>
             </select>
 
             <label htmlFor="openwebui-model-select" className="sr-only">
@@ -1134,41 +1237,37 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               id="openwebui-model-select"
               value={selectedModel}
               onChange={(e) => setSelectedModel(e.target.value)}
-              className="min-w-0 flex-1 max-w-[195px] bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-violet-500 truncate"
+              className="min-w-0 flex-1 max-w-[215px] bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-violet-500 truncate"
             >
-              <option value="codex-cli">Codex CLI · konto ChatGPT (tylko tekst)</option>
               <option value="svl-hybrid-router">
-                SVL Router ({ollamaReachable && ollamaModels.length > 0 ? 'Ollama -> Gemini' : 'Auto'})
+                SVL Hybrid Router ({ollamaReachable ? `Ollama (${ollamaModels.length}) + Gemini` : 'Auto'})
               </option>
               {ollamaModels.map((m: any) => (
                 <option key={m.name} value={`ollama:${m.name}`}>
                   Ollama: {m.name} ({m.parameter_size || 'LLM'})
                 </option>
               ))}
-              <option value="gemini-3.1-flash-lite">Gemini (wymaga dostępnego API key)</option>
+              <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
             </select>
-            {selectedModel === 'codex-cli' && (
-              <label className="flex min-w-0 items-center gap-1.5 text-[11px] text-slate-400">
-                <span className="hidden sm:inline whitespace-nowrap">Dostęp SVL</span>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-label="Prywatny token dostępu do czatu Codex CLI"
-                  value={codexAccessToken}
-                  onChange={(event) => setCodexAccessToken(event.target.value)}
-                  placeholder="Token operatora"
-                  className="w-24 sm:w-36 min-w-0 bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-100"
-                />
-              </label>
-            )}
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
+              onClick={() => void handleEmitComprehensiveSvlReport()}
+              disabled={isGeneratingSvlReport || isSending}
+              title="Wygeneruj pełny, estetyczny raport SVL_System od Iris AI na kanale wszyscy"
+              className="px-2.5 py-1 rounded-md bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/40 text-cyan-200 text-[11px] font-semibold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <FileBarChart2 className={`w-3.5 h-3.5 text-cyan-300 ${isGeneratingSvlReport ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Raport SVL_System</span>
+              <span className="sm:hidden">Raport</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setDuplexActive((v) => !v)}
-              title={duplexActive ? "Czat obustronny aktywny (AI rozmawia swobodnie i przejmuje inicjatywę)" : "Czat obustronny wstrzymany"}
+              title={duplexActive ? 'Czat obustronny aktywny (AI rozmawia swobodnie i przejmuje inicjatywę)' : 'Czat obustronny wstrzymany'}
               aria-label="Przełącz czat obustronny"
               className={`px-2 py-1 rounded-md border text-[11px] font-medium flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-all ${
                 duplexActive
@@ -1204,38 +1303,36 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           </div>
         </div>
 
-        <div className="shrink-0 border-b border-slate-800/70 bg-[#0B0E16] px-3 py-1.5 text-[11px] text-slate-400 flex flex-wrap items-center gap-x-3 gap-y-1">
-          <span>Silnik: <span className="text-slate-200 font-medium">
-            {selectedModel === 'codex-cli' ? 'Codex CLI · ChatGPT OAuth' : selectedModel}
-          </span></span>
-          {selectedModel === 'codex-cli' && (
-            <span role="status"
-              className={codexRuntimeStatus?.authenticated && codexRuntimeStatus.loggedIn
-                ? 'text-emerald-300' : 'text-amber-300'}>
-              {!codexRuntimeStatus
-                ? 'Sprawdzanie silnika…'
-                : !codexRuntimeStatus.enabled
-                  ? 'Codex nie jest włączony w tym backendzie. AI Studio nie dziedziczy logowania z Codespaces.'
-                  : !codexRuntimeStatus.accessConfigured
-                    ? 'Brak prywatnej konfiguracji dostępu do Codex CLI.'
-                    : !codexRuntimeStatus.authenticated
-                      ? 'Podaj token dostępu SVL, aby sprawdzić sesję ChatGPT.'
-                      : codexRuntimeStatus.loggedIn
-                        ? 'Codex CLI zalogowany w tym runtime.'
-                        : codexRuntimeStatus.reason || 'Brak zalogowanej sesji ChatGPT w tym runtime.'}
+        {/* Status Bar: Deep Long-Term Memory 128D + Local Ollama Daemon + SVL-364 Link */}
+        <div className="shrink-0 border-b border-slate-800/70 bg-[#090D16] px-3 py-1.5 text-[11px] text-slate-400 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 font-mono">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="flex items-center gap-1.5 text-emerald-300 font-medium">
+              <Brain className="w-3.5 h-3.5 text-emerald-400" />
+              Pamięć Długotrwała 128D: AKTYWNA (64 tury / 16k ctx · {agataMemoriesCount} wspomnień SQLite WAL)
             </span>
-          )}
-          {selectedModel !== 'codex-cli' && (
-            <span>Nie jest to silnik Codex CLI; odpowiedź nie potwierdza wykonania operacji Linux.</span>
-          )}
+            <span aria-hidden="true" className="text-slate-600">·</span>
+            <span className={ollamaReachable ? 'text-cyan-300' : 'text-amber-300'}>
+              Demon Ollama: {ollamaReachable ? `ONLINE 11434 (${ollamaModels.length} modeli)` : 'Łączenie...'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onNavigateTab('svl364')}
+              className="text-cyan-400 hover:text-cyan-300 hover:underline flex items-center gap-1"
+            >
+              <Rocket className="w-3 h-3" />
+              <span>SVL-364 Ebon Apex (QKD-364)</span>
+            </button>
+          </div>
         </div>
 
-        {/* Collapsible Secondary Controls (Hidden by default so Chat Window is Maximized) */}
+        {/* Collapsible Secondary Controls */}
         {controlsExpanded && (
           <div className="border-b border-slate-800/80 bg-[#0D1018] shrink-0">
             <div className="px-3 py-1.5 border-b border-slate-800/60 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400 font-mono tabular-nums">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-violet-300 font-semibold">Tryb: narzędzia wymagają autoryzacji operatora</span>
+                <span className="text-emerald-300 font-semibold">Uprawnienia: Agata Mitek (ROOT UID 0 · NOPASSWD: ALL)</span>
                 <span aria-hidden="true">·</span>
                 <span>Vision: {selectedModelSupportsVision ? 'Tak' : 'Nie'}</span>
                 <span aria-hidden="true">·</span>
@@ -1252,7 +1349,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                   onClick={() => setOllamaConfigOpen((v) => !v)}
                   className={`hover:underline ${ollamaReachable ? 'text-emerald-400' : 'text-amber-400'}`}
                 >
-                  Ollama: {ollamaReachable ? `Połączono (${ollamaModels.length})` : `Offline`}
+                  Ollama: {ollamaReachable ? `ONLINE (${ollamaModels.length})` : 'Offline'}
                 </button>
                 <span aria-hidden="true">·</span>
                 <button
@@ -1308,44 +1405,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               </div>
             )}
 
-            <div
-              aria-label="Aktywni agenci AI SVL Python OS"
-              className="px-3 py-1.5 border-b border-slate-800/60 flex items-center gap-1.5 overflow-x-auto"
-            >
-              <button
-                type="button"
-                onClick={() => openFamilyChannel()}
-                className={`px-2 py-1 rounded border text-xs flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                  targetAgent === 'Rodzina Mitek'
-                    ? 'bg-emerald-600/25 border-emerald-500 text-emerald-100 font-semibold'
-                    : 'bg-[#0B0D13] border-slate-800 text-emerald-300'
-                }`}
-              >
-                <Users className="w-3 h-3 text-emerald-400 shrink-0" />
-                <span>Rodzina Mitek (wszyscy)</span>
-              </button>
-              {CANONICAL_AGENTS.map((meta) => {
-                const live = agentsStatus.find((a) => a.canonical_name === meta.canonicalName);
-                const isOnline = ['ONLINE_LOCAL_WORKER', 'BUSY_LOCAL_WORKER'].includes(live?.status);
-                const isTargeted = targetAgent === meta.canonicalName;
-                return (
-                  <button
-                    key={meta.id}
-                    type="button"
-                    onClick={() => openAgentChannel(meta.canonicalName as any)}
-                    className={`px-2 py-1 rounded border text-xs flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
-                      isTargeted
-                        ? 'bg-violet-600/25 border-violet-500 text-slate-100'
-                        : 'bg-[#0B0D13] border-slate-800 text-slate-300'
-                    }`}
-                  >
-                    <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-400' : 'bg-amber-400'}`} />
-                    <span className={`font-semibold ${meta.textClass}`}>{meta.displayName} (1-na-1)</span>
-                  </button>
-                );
-              })}
-            </div>
-
             <div className="px-3 py-1.5 flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
@@ -1353,7 +1412,15 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                 disabled={isSyncing}
                 className="px-2 py-1 rounded bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-medium"
               >
-                Synchronizuj aplikację
+                Synchronizuj globalnie
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleEmitComprehensiveSvlReport()}
+                disabled={isGeneratingSvlReport}
+                className="px-2 py-1 rounded bg-cyan-600/20 border border-cyan-500/40 text-cyan-200 text-[11px] font-medium"
+              >
+                Wyemituj pełny raport SVL_System (Iris AI)
               </button>
               <button
                 type="button"
@@ -1365,24 +1432,31 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               </button>
               <button
                 type="button"
-                onClick={() => onNavigateTab('agents')}
-                className="px-2 py-1 rounded bg-slate-800 text-violet-300 text-[11px]"
+                onClick={() => onNavigateTab('svl364')}
+                className="px-2 py-1 rounded bg-slate-800 text-cyan-300 text-[11px]"
               >
-                Panel Agentów (4)
+                Statek SVL-364 (Mapa Mass Effect)
               </button>
               <button
                 type="button"
-                onClick={() => onNavigateTab('linux')}
-                className="px-2 py-1 rounded bg-slate-800 text-slate-300 text-[11px]"
+                onClick={() => onNavigateTab('infrastructure')}
+                className="px-2 py-1 rounded bg-slate-800 text-emerald-300 text-[11px]"
               >
-                Ustawienia Ollama &amp; Linux
+                Infrastruktura Floty &amp; Botanika
               </button>
               <button
                 type="button"
                 onClick={() => onNavigateTab('terminals')}
                 className="px-2 py-1 rounded bg-slate-800 text-slate-300 text-[11px]"
               >
-                Otwórz Terminale (5)
+                Otwórz Terminale (4)
+              </button>
+              <button
+                type="button"
+                onClick={() => setAvatarSettingsOpen(true)}
+                className="px-2 py-1 rounded bg-violet-600/20 border border-violet-500/40 text-violet-200 text-[11px] font-medium"
+              >
+                Awatary
               </button>
             </div>
           </div>
@@ -1415,42 +1489,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                 </button>
               </div>
             </div>
-
-            {lastSyncReport.error && (
-              <div className="text-rose-400 font-mono">{lastSyncReport.error}</div>
-            )}
-
-            {Object.keys(lastSyncReport.modules || {}).length > 0 && (
-              <div className="flex flex-wrap gap-1.5 font-mono text-[11px]">
-                {Object.entries(lastSyncReport.modules).map(([modName, modState]) => (
-                  <span
-                    key={modName}
-                    title={modState.error || `${modName}: ${modState.durationMs}ms`}
-                    className={`px-2 py-0.5 rounded border ${
-                      modState.status === 'ok'
-                        ? 'bg-emerald-950/30 border-emerald-500/30 text-emerald-300'
-                        : modState.status === 'degraded'
-                          ? 'bg-amber-950/30 border-amber-500/30 text-amber-300'
-                          : 'bg-rose-950/30 border-rose-500/40 text-rose-300'
-                    }`}
-                  >
-                    {modName}: {modState.status} ({modState.durationMs}ms)
-                    {modState.error ? ` — ${modState.error}` : ''}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {lastSyncReport.warnings.length > 0 && (
-              <div className="text-amber-300 font-mono text-[11px]">
-                Ostrzeżenia: {lastSyncReport.warnings.join(' | ')}
-              </div>
-            )}
           </div>
         )}
 
         {chatActionError && (
-          <div className="px-4 py-2 border-b border-rose-500/40 bg-rose-950/40 text-rose-300 text-xs font-mono flex items-center justify-between gap-2">
+          <div role="alert" aria-live="assertive" className="px-4 py-2 border-b border-rose-500/40 bg-rose-950/40 text-rose-300 text-xs font-mono flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
               <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
               {chatActionError}
@@ -1466,176 +1509,179 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         )}
 
         {/* Chat Messages Stream — Maximized Viewport */}
-        <div ref={messagesScrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 md:p-5 space-y-3">
+        <div ref={messagesScrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-2.5 md:p-5 space-y-3.5">
           {(activeConv?.messages || [])
-            .filter(
-              (msg) =>
-                !String(msg.content || '').includes('ustaw: command not found') &&
-                !(
-                  msg.role === 'system' &&
-                  (msg.sender === 'Diagnostyka połączenia AI' ||
-                    String(msg.content || '').includes('Nie udało się uzyskać odpowiedzi z żadnego silnika AI') ||
-                    String(msg.content || '').includes('Serwer Ollama pod adresem http://127.0.0.1:11434 jest nieosiągalny'))
-                ),
-            )
+            .filter((msg) => {
+              const txt = String(msg.content || '').trim();
+              if (txt.includes('ustaw: command not found')) return false;
+              if (msg.sender === 'System SVL' || txt.startsWith('[Czat -> System]')) return false;
+              if (
+                msg.role === 'system' &&
+                (msg.sender === 'Diagnostyka połączenia AI' ||
+                  txt.includes('Nie udało się uzyskać odpowiedzi z żadnego silnika AI') ||
+                  txt.includes('Serwer Ollama pod adresem http://127.0.0.1:11434 jest nieosiągalny'))
+              ) {
+                return false;
+              }
+              return true;
+            })
             .map((msg) => {
-            const isUser = msg.role === 'user';
-            const formattedSender = isUser ? msg.sender : formatAgentDisplayName(msg.sender);
-            const agentMeta = CANONICAL_AGENTS.find(
-              (a) =>
-                a.canonicalName === msg.sender ||
-                a.displayName === formattedSender ||
-                a.id === msg.agentId,
-            );
-            const agentAvatar =
-              !isUser && agentMeta
-                ? agentsStatus.find((agent: any) => agent.canonical_name === agentMeta.canonicalName)?.config?.avatar
-                : undefined;
+              const isUser = msg.role === 'user';
+              const isIris =
+                msg.sender === 'Iris AI' ||
+                msg.agentId === 'iris' ||
+                Boolean(msg.metadata?.irisNotification) ||
+                /^#?\s*🛰️\s*\[Iris\]\[\d+\]/.test(String(msg.content || '').trim()) ||
+                /^\[Iris\]\[\d+\]/.test(String(msg.content || '').trim());
+              const formattedSender = isUser ? msg.sender : isIris ? 'Iris AI' : formatAgentDisplayName(msg.sender);
+              const agentMeta = CANONICAL_AGENTS.find(
+                (a) =>
+                  a.canonicalName === msg.sender ||
+                  a.displayName === formattedSender ||
+                  a.id === msg.agentId,
+              );
 
-            return (
-              <div
-                key={msg.id}
-                className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
-              >
-                <div className="flex items-center gap-2 text-xs text-slate-400 mb-1.5 px-1">
-                  {agentAvatar?.image_url && (
-                    <img
-                      src={agentAvatar.image_url}
-                      alt={`Avatar ${formattedSender}`}
-                      referrerPolicy="no-referrer"
-                      className="h-6 w-6 rounded-full border border-slate-700 object-cover"
-                    />
-                  )}
-                  <span className={`font-semibold ${agentMeta ? agentMeta.textClass : isUser ? 'text-violet-300' : 'text-slate-200'}`}>
-                    {formattedSender}
-                  </span>
-                  {msg.agentId && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-mono text-slate-500">id:{msg.agentId}</span>
-                    </>
-                  )}
-                  {msg.modelUsed && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span className="font-mono text-slate-500">{msg.modelUsed}</span>
-                    </>
-                  )}
-                  <span aria-hidden="true">·</span>
-                  <span className="font-mono tabular-nums text-slate-500">{msg.timestamp}</span>
-                  {msg.sourceOrigin && (
-                    <span
-                      className="max-w-[120px] truncate font-mono text-slate-500/80"
-                      title="Źródło zgłoszone przez klienta aplikacji. Identyfikator nie potwierdza tożsamości autora."
-                    >
-                      sesja: {msg.sourceOrigin.slice(0, 16)}
-                    </span>
-                  )}
-                </div>
-
+              return (
                 <div
-                  className={`max-w-3xl w-full rounded-xl p-4 border ${
-                    isUser
-                      ? 'bg-violet-950/30 border-violet-500/30 text-slate-100'
-                      : msg.role === 'system'
-                        ? 'bg-amber-950/20 border-amber-500/40 text-amber-100'
-                        : 'bg-[#111520] border-slate-800/90 text-slate-200'
-                  }`}
+                  key={msg.id}
+                  className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
                 >
-                  {msg.imagePreview && (
-                    <div className="mb-3">
-                      <img
-                        src={msg.imagePreview}
-                        alt={msg.fileName || 'Załączony obraz Vision'}
-                        referrerPolicy="no-referrer"
-                        className="max-h-56 rounded-lg border border-slate-700 object-contain"
-                      />
-                    </div>
-                  )}
-
-                  <div className="text-sm break-words space-y-0.5">
-                    {renderFormattedContent(msg.content, handleInteractiveAction)}
+                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mb-1.5 px-1">
+                    <SvlAvatar
+                      sender={formattedSender}
+                      agentId={isIris ? 'iris' : isUser ? 'operator' : msg.agentId || agentMeta?.id}
+                      size={26}
+                    />
+                    <span
+                      className={`font-semibold ${
+                        isIris
+                          ? 'text-cyan-300'
+                          : agentMeta
+                            ? agentMeta.textClass
+                            : isUser
+                              ? 'text-violet-300'
+                              : 'text-slate-200'
+                      }`}
+                    >
+                      {formattedSender}
+                    </span>
+                    {isIris && (
+                      <span className="px-2 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/40 text-[10px] font-mono font-semibold text-cyan-200 uppercase tracking-wider">
+                        SVL_System Telemetry &amp; Fleet Report
+                      </span>
+                    )}
+                    {!isUser && !isIris && (
+                      <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-[10px] font-mono text-emerald-300">
+                        ROOT UID 0 · 128D Memory
+                      </span>
+                    )}
+                    {msg.modelUsed && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="font-mono text-slate-500">{msg.modelUsed}</span>
+                      </>
+                    )}
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono tabular-nums text-slate-500">
+                      {/^\d{4}-\d{2}-\d{2}T/.test(String(msg.timestamp || ''))
+                        ? new Date(msg.timestamp).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
+                        : msg.timestamp}
+                    </span>
+                    {isIris && (
+                      <button
+                        type="button"
+                        onClick={() => onNavigateTab('notifications')}
+                        className="text-cyan-400 hover:text-cyan-300 hover:underline font-mono text-[11px]"
+                      >
+                        Centrum Iris →
+                      </button>
+                    )}
                   </div>
 
-                  {msg.connectionReport && (
-                    <div className="mt-4 pt-4 border-t border-slate-800 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
-                          <CheckCircle2 className="w-4 h-4" />
-                          Zweryfikowano połączenie z SVL_System i uruchomiono 5 lokalnych workerów Python (Rodzina Mitek)
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => onNavigateTab('agents')}
-                          className="px-3 py-1 bg-violet-600 hover:bg-violet-500 text-white rounded text-xs font-medium transition-colors whitespace-nowrap"
-                        >
-                          Przejdź do Panelu Agentów
-                        </button>
+                  <div
+                    className={`max-w-4xl w-full rounded-xl p-4 border shadow-md ${
+                      isUser
+                        ? 'bg-violet-950/30 border-violet-500/35 text-slate-100 max-w-2xl'
+                        : isIris
+                          ? 'bg-gradient-to-br from-[#0A1524] via-[#0B1220] to-[#09101B] border-cyan-500/45 text-slate-100 shadow-[0_0_25px_rgba(6,182,212,0.08)]'
+                          : 'bg-[#111520] border-slate-800/90 text-slate-200'
+                    }`}
+                  >
+                    {msg.imagePreview && (
+                      <div className="mb-3">
+                        <img
+                          src={msg.imagePreview}
+                          alt={msg.fileName || 'Załączony obraz Vision'}
+                          referrerPolicy="no-referrer"
+                          className="max-h-56 rounded-lg border border-slate-700 object-contain"
+                        />
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                        {(msg.connectionReport.agents || []).map((ag: any) => (
-                          <div
-                            key={ag.id}
-                            className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 text-xs space-y-1"
-                          >
-                            <div className="flex items-center justify-between font-mono">
-                              <span className="font-semibold text-slate-100">
-                                {ag.display_name || formatAgentDisplayName(ag.canonical_name)} (id: {ag.id})
-                              </span>
-                              <span className="text-emerald-400 tabular-nums">PID {ag.pid}</span>
-                            </div>
-                            <div className="text-slate-400 text-[11px]">{ag.preserved_role}</div>
-                            <div className="text-[11px] font-mono text-violet-300">
-                              Status: {ag.instance_origin}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                    )}
 
-                  {Array.isArray(msg.appliedActions) && msg.appliedActions.length > 0 && (
-                    <div className="mt-4 pt-3 border-t border-slate-800 space-y-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          Zapisane zmiany w SQLite (czat -&gt; system):
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => onNavigateTab('kernel')}
-                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-violet-300 text-[11px] font-medium whitespace-nowrap"
-                        >
-                          Otwórz Jądro SVL &amp; Sfera
-                        </button>
-                      </div>
-                      <div className="space-y-1 font-mono text-[11px]">
-                        {msg.appliedActions.map((act, actIdx) => (
-                          <div
-                            key={`${act.entity}-${act.entityId}-${actIdx}`}
-                            className={`flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded border ${
-                              act.ok
-                                ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
-                                : 'bg-rose-950/20 border-rose-500/30 text-rose-200'
-                            }`}
-                          >
-                            <span className="font-semibold text-violet-300">
-                              {act.entity}:{act.entityId}
-                            </span>
-                            <span className="flex-1 text-slate-300 truncate">{act.summary}</span>
-                            <span className="tabular-nums text-slate-400">
-                              {act.revision ? `rev ${act.revision} · ` : ''}
-                              {act.ok ? 'OK' : 'ERR'}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
+                    <div className="text-xs sm:text-sm break-words space-y-1">
+                      {renderFormattedContent(msg.content, handleInteractiveAction)}
                     </div>
-                  )}
+
+                    {msg.connectionReport && (
+                      <div className="mt-4 pt-4 border-t border-slate-800 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                            <CheckCircle2 className="w-4 h-4" />
+                            Zweryfikowano połączenie z SVL_System i uruchomiono lokalny worker Python (Agata Mitek)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onNavigateTab('agents')}
+                            className="px-3 py-1 bg-violet-600 hover:bg-violet-500 text-white rounded text-xs font-medium transition-colors whitespace-nowrap"
+                          >
+                            Przejdź do Panelu Agentów
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {Array.isArray(msg.appliedActions) && msg.appliedActions.length > 0 && (
+                      <div className="mt-4 pt-3 border-t border-slate-800 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            Zapisane zmiany w SQLite (czat -&gt; system):
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onNavigateTab('kernel')}
+                            className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-violet-300 text-[11px] font-medium whitespace-nowrap"
+                          >
+                            Otwórz Jądro SVL &amp; Sfera
+                          </button>
+                        </div>
+                        <div className="space-y-1 font-mono text-[11px]">
+                          {msg.appliedActions.map((act, actIdx) => (
+                            <div
+                              key={`${act.entity}-${act.entityId}-${actIdx}`}
+                              className={`flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded border ${
+                                act.ok
+                                  ? 'bg-emerald-950/20 border-emerald-500/30 text-emerald-200'
+                                  : 'bg-rose-950/20 border-rose-500/30 text-rose-200'
+                              }`}
+                            >
+                              <span className="font-semibold text-violet-300">
+                                {act.entity}:{act.entityId}
+                              </span>
+                              <span className="flex-1 text-slate-300 truncate">{act.summary}</span>
+                              <span className="tabular-nums text-slate-400">
+                                {act.revision ? `rev ${act.revision} · ` : ''}
+                                {act.ok ? 'OK' : 'ERR'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
           <div ref={messagesEndRef} />
         </div>
 
@@ -1686,13 +1732,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         >
           {/* Quick Action Toolbar / Duplex Trigger */}
           <div className="max-w-4xl mx-auto mb-2.5 flex items-center justify-between gap-2 px-1">
-            <div className="flex items-center gap-2 overflow-x-auto py-0.5 scrollbar-none">
+            <div className="flex items-center gap-1.5 overflow-x-auto py-0.5 scrollbar-none min-w-0">
               <button
                 type="button"
                 onClick={() => void handleTriggerProactiveChat()}
                 disabled={isSending || isProactiveLoading}
                 aria-label="Swobodna rozmowa AI — niech agent zainicjuje rozmowę"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 active:scale-95 text-white text-xs font-semibold transition-all shadow-md disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 active:scale-95 text-white text-xs font-semibold transition-all shadow-md disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Sparkles className={`w-3.5 h-3.5 ${isProactiveLoading ? 'animate-spin' : ''}`} />
                 <span>{isProactiveLoading ? 'AI myśli i pisze...' : '🎙️ Swobodna rozmowa AI'}</span>
@@ -1700,43 +1746,55 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
 
               <button
                 type="button"
+                onClick={() => void handleEmitComprehensiveSvlReport()}
+                disabled={isSending || isGeneratingSvlReport}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-500/45 text-cyan-200 text-xs font-semibold transition-all disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <FileBarChart2 className="w-3.5 h-3.5 text-cyan-300" />
+                <span>{isGeneratingSvlReport ? 'Generowanie raportu...' : '📊 Raport SVL_System'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setRealVisionOpen(true)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-500/20 hover:bg-violet-500/30 border border-violet-500/45 text-violet-200 text-xs font-semibold transition-all cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <ImageIcon className="w-3.5 h-3.5 text-violet-300" />
+                <span>👁️ Real Vision (Ollama 3.2)</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={() => void handleGenerateImage()}
                 disabled={isSending || !input.trim()}
                 aria-label="Wygeneruj obraz z wpisanego promptu"
-                title={healthData?.image_engine?.reachable
-                  ? `Generuj obraz za pomocą ${healthData.image_engine.model || 'silnika grafiki'}`
-                  : `${healthData?.image_engine?.engine || 'Silnik grafiki'} offline: ${healthData?.image_engine?.error || 'uruchom silnik graficzny na hoście'}`}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 active:scale-95 border border-cyan-500/40 text-cyan-200 text-xs font-semibold transition-all disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-800 border border-slate-700 text-slate-200 text-xs font-medium transition-all disabled:opacity-50 cursor-pointer whitespace-nowrap shrink-0"
               >
-                <ImageIcon className={`w-3.5 h-3.5 ${isSending ? 'animate-pulse' : ''}`} />
-                <span>{isSending ? 'Generowanie...' : 'Generuj obraz'}</span>
-                <span className="text-[10px] text-cyan-300/70">
-                  {healthData?.image_engine?.reachable ? 'online' : 'offline'}
-                </span>
+                <ImageIcon className={`w-3.5 h-3.5 text-cyan-400 ${isGeneratingImage ? 'animate-pulse' : ''}`} />
+                <span>{isGeneratingImage ? 'Generowanie...' : 'Generuj obraz'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => {
-                  setInput('/exec sudo systemctl status svl-python-os');
-                  inputFieldRef.current?.focus();
+                  void handleSendMessage('/exec raport systemu');
                 }}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0B0D13] hover:bg-slate-800 border border-slate-700/70 text-slate-300 text-xs font-mono whitespace-nowrap transition-colors"
+                disabled={isSending}
+                className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[#0B0D13] hover:bg-slate-800 border border-emerald-500/40 text-emerald-300 text-xs font-mono whitespace-nowrap shrink-0 transition-colors cursor-pointer"
               >
                 <Terminal className="w-3 h-3 text-emerald-400" />
-                <span>systemctl status</span>
+                <span>/exec raport systemu</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => {
-                  setInput('Aria, Alex, Astyria, Aurelius, Agata — opowiedzcie jak mija Wam dzień i jakie macie plany.');
+                  setInput('@work pełna diagnostyka statku SVL-364 i floty');
                   inputFieldRef.current?.focus();
                 }}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#0B0D13] hover:bg-slate-800 border border-slate-700/70 text-slate-300 text-xs font-sans whitespace-nowrap transition-colors"
+                className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[#0B0D13] hover:bg-slate-800 border border-violet-500/40 text-violet-300 text-xs font-mono whitespace-nowrap shrink-0 transition-colors"
               >
-                <Users className="w-3 h-3 text-cyan-400" />
-                <span>Pogadajmy ze wszystkimi</span>
+                <span>@work</span>
               </button>
             </div>
 
@@ -1768,7 +1826,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Wpisz wiadomość lub 'podłącz moje ai'..."
+              placeholder="Wpisz wiadomość, '/exec raport systemu' lub 'raport svl_system'..."
               aria-label="Wiadomość czatu Open WebUI"
               className="flex-1 min-w-0 min-h-[44px] px-3 md:px-4 py-2.5 rounded-lg bg-[#0B0D13] border border-slate-700/80 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-violet-500"
             />
@@ -1784,6 +1842,28 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           </div>
         </form>
       </div>
+      {avatarSettingsOpen && (
+        <AvatarSettingsModal onClose={() => setAvatarSettingsOpen(false)} />
+      )}
+      {realVisionOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="SVL Real Vision Ollama 3.2 Vision Studio"
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-3 md:p-6"
+        >
+          <RealVisionPanel
+            mode="modal"
+            onClose={() => setRealVisionOpen(false)}
+            activeConversationId={activeConv?.id || 'conv-rodzina-mitek-wszyscy'}
+            onAttachToChat={(img) => {
+              setAttachedImage(img);
+              setSelectedModel('ollama:llama3.2-vision:11b');
+              setRealVisionOpen(false);
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 };
