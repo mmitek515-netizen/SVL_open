@@ -83,9 +83,20 @@ def local_api(path: str, *, port: int, token: str = "", header: str = "") -> dic
 
 def codex_local_login() -> dict[str, Any]:
     try:
+        allowed_env = (
+            "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL",
+            "TERM", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+            "CODEX_HOME", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY",
+            "SSL_CERT_FILE", "SSL_CERT_DIR",
+        )
+        child_env = {
+            key: os.environ[key]
+            for key in allowed_env if os.environ.get(key)
+        }
         status = subprocess.run(
             ["codex", "login", "status"],
             capture_output=True, text=True, timeout=8, check=False,
+            env=child_env,
         )
     except FileNotFoundError:
         return {"installed": False, "chatgptOAuth": False, "state": "CLI missing"}
