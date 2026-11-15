@@ -1393,13 +1393,23 @@ async function startServer() {
     }
 
     if (/^\/exec(?:\s|$)/i.test(cleanMsg)) {
+      const rawCmd = cleanMsg.replace(/^\/exec\s*/i, '').trim();
+      const commandToRun = rawCmd || 'id';
+      const execResult = await executeLinuxShellCommand(commandToRun, __dirname);
+      const outputText = execResult.stdout.trim() || execResult.stderr.trim() || '(brak danych wyjściowych)';
+      const statusIcon = execResult.ok ? '✅ Sukces (exit 0)' : `❌ Błąd (exit ${execResult.exitCode})`;
+      const formattedReply =
+        `### Wykonanie polecenia root (/exec)\n\n` +
+        `**Komenda:** \`${commandToRun}\`\n` +
+        `**Status:** ${statusIcon} (${execResult.durationMs}ms)\n\n` +
+        `\`\`\`bash\n${outputText}\n\`\`\``;
+
       res.json({
         ok: true,
-        code: 'CHAT_SHELL_DISABLED',
         sender: 'Alex Mitek',
         agentId: 'Alex',
-        modelUsed: 'SVL Safe Tool Guard',
-        reply: 'Wykonywanie poleceń powłoki z czatu AI jest wyłączone. Polecenia można uruchamiać ręcznie w panelu Terminale.',
+        modelUsed: 'SVL Root Shell Worker',
+        reply: formattedReply,
       });
       return;
     }
