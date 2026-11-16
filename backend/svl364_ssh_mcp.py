@@ -10,9 +10,12 @@ Zapewnia:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
+import re
+import shlex
+import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -26,8 +29,8 @@ MCP_TOOLS_CATALOG: list[dict[str, Any]] = [
     {
         "name": "svl364_ssh_exec",
         "description": (
-            "Wykonuje polecenie administracyjne Linux (/bin/bash) na pokładzie statku kosmicznego "
-            "SVL-364 Ebon Apex przez szyfrowany mostek SSH (root@svl-364-ship:2222 · QKD-364)."
+            "Wykonywanie zdalnych poleceń jest dostępne wyłącznie w interaktywnym terminalu SSH "
+            "po potwierdzeniu operatora; wywołania MCP/AI nie mogą uruchamiać poleceń."
         ),
         "inputSchema": {
             "type": "object",
@@ -169,85 +172,32 @@ class SVL364SshMcpController:
     def __init__(self, kernel: Any) -> None:
         self.kernel = kernel
         self.project_root = Path(__file__).resolve().parent.parent
-        self.ssh_dir = self.project_root / "data" / "ssh"
-        self.ssh_dir.mkdir(parents=True, exist_ok=True)
-        self.private_key_path = self.ssh_dir / "svl364_ed25519"
-        self.public_key_path = self.ssh_dir / "svl364_ed25519.pub"
-        self.key_fingerprint = ""
-        self.public_key_text = ""
+        self.ssh_connected = False
         self.recent_activity: list[dict[str, Any]] = []
         self.ssh_sessions_count = 0
         self.mcp_calls_count = 0
 
-        self._ensure_ssh_keys()
         self._install_cli_wrappers()
         self._ensure_module_in_sqlite()
-
-    def _ensure_ssh_keys(self) -> None:
-        if not self.private_key_path.exists() or not self.public_key_path.exists():
-            keygen_bin = shutil.which("ssh-keygen")
-            if keygen_bin:
-                try:
-                    subprocess.run(
-                        [
-                            keygen_bin,
-                            "-t",
-                            "ed25519",
-                            "-f",
-                            str(self.private_key_path),
-                            "-N",
-                            "",
-                            "-C",
-                            "root@svl-364-ebon-apex.qkd.mesh",
-                        ],
-                        check=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=8,
-                    )
-                except Exception:
-                    pass
-
-        if not self.public_key_path.exists():
-            seed = hashlib.sha256(b"svl-364-ebon-apex-ed25519-qkd-key").hexdigest()
-            pub_b64 = (
-                "AAAAC3NzaC1lZDI1NTE5AAAAI"
-                + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:43]
-            )
-            self.public_key_path.write_text(
-                f"ssh-ed25519 {pub_b64} root@svl-364-ebon-apex.qkd.mesh\n",
-                encoding="utf-8",
-            )
-        if not self.private_key_path.exists():
-            self.private_key_path.write_text(
-                "-----BEGIN OPENSSH PRIVATE KEY-----\n"
-                "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n"
-                "QyNTUxOQAAACBTVkwzNjRFYm9uQXBleFFrZEtleUVkMjU1MTlTaGlwUm9vdAAAAEir9svl\n"
-                "-----END OPENSSH PRIVATE KEY-----\n",
-                encoding="utf-8",
-            )
-        try:
-            os.chmod(self.private_key_path, 0o600)
-        except OSError:
-            pass
-
-        self.public_key_text = self.public_key_path.read_text(encoding="utf-8").strip()
-        digest = hashlib.sha256(self.public_key_text.encode("utf-8")).digest()
-        import base64
-        b64_fp = base64.b64encode(digest).decode("ascii").rstrip("=")
-        self.key_fingerprint = f"SHA256:{b64_fp}"
 
     def _install_cli_wrappers(self) -> None:
         bin_dir = Path(__file__).resolve().parent / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
 
         ssh_script = """#!/usr/bin/env python3
-import json, sys, urllib.request
+import json, os, sys, urllib.request
 
-cmd = " ".join(sys.argv[1:]).strip() or "uname -a && uptime"
+cmd = " ".join(sys.argv[1:]).strip()
+target = os.environ.get("SVL_SSH_TARGET", "Ship")
+if not cmd:
+    sys.stderr.write("Usage: svl364-ssh <command>\\n")
+    sys.exit(2)
+if not sys.stdin.isatty() or input(f"Execute on {target}? [y/N] ").strip().lower() not in ("y", "yes"):
+    sys.stderr.write("SSH command cancelled.\\n")
+    sys.exit(2)
 req = urllib.request.Request(
     "http://127.0.0.1:8085/api/py/svl364/ssh/exec",
-    data=json.dumps({"command": cmd, "origin": "svl364-ssh-cli"}).encode("utf-8"),
+    data=json.dumps({"command": cmd, "confirmed": True, "origin": "svl364-ssh-cli"}).encode("utf-8"),
     headers={"Content-Type": "application/json"},
     method="POST",
 )
@@ -319,14 +269,10 @@ except Exception as exc:
     def _default_config(self) -> dict[str, Any]:
         return {
             "ssh_enabled": True,
-            "ssh_host": "svl-364-ship.qkd.mesh",
-            "ssh_port": 2222,
-            "ssh_user": "root",
-            "ssh_mode": "qkd-local-root-bridge",
-            "ssh_cipher": "chacha20-poly1305@openssh.com + QKD-BB84",
-            "ssh_key_path": str(self.private_key_path),
-            "ssh_pub_key_path": str(self.public_key_path),
-            "ssh_fingerprint": self.key_fingerprint,
+            "ssh_host": os.environ.get("SVL_SSH_TARGET", "Ship").strip() or "Ship",
+            "ssh_port": 22,
+            "ssh_user": "from OpenSSH config",
+            "ssh_mode": "openssh-config",
             "mcp_enabled": True,
             "mcp_server_name": "svl-364-linux-control-mcp",
             "mcp_protocol_version": "2025-03-26",
@@ -343,6 +289,19 @@ except Exception as exc:
             "connected_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    @staticmethod
+    def _configured_ssh_target(config: dict[str, Any]) -> str:
+        target = str(
+            os.environ.get("SVL_SSH_TARGET")
+            or config.get("ssh_host")
+            or "Ship"
+        ).strip()
+        if target in {"svl-364-ship.qkd.mesh", "svl-364-ship"}:
+            target = "Ship"
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@:-]{0,252}", target):
+            raise ValueError("SVL_SSH_TARGET must be an OpenSSH alias or user@host.")
+        return target
+
     def _ensure_module_in_sqlite(self) -> None:
         mods = {m["id"]: m for m in self.kernel.list_system_modules()}
         existing = mods.get("svl-364-ssh-mcp")
@@ -350,9 +309,14 @@ except Exception as exc:
         if existing and isinstance(existing.get("config"), dict):
             merged = dict(cfg)
             merged.update(existing["config"])
-            merged["ssh_fingerprint"] = self.key_fingerprint
+            merged["ssh_host"] = self._configured_ssh_target(merged)
+            merged["ssh_mode"] = "openssh-config"
+            for key in ("ssh_key_path", "ssh_pub_key_path", "ssh_fingerprint", "ssh_cipher"):
+                merged.pop(key, None)
             merged["mcp_tools_count"] = len(MCP_TOOLS_CATALOG)
             cfg = merged
+        else:
+            cfg["ssh_host"] = self._configured_ssh_target(cfg)
 
         self.kernel.upsert_system_module(
             module_id="svl-364-ssh-mcp",
@@ -360,9 +324,8 @@ except Exception as exc:
             kind="Starship SSH & MCP Bridge",
             status="ACTIVE",
             description=(
-                "Szyfrowany tunel SSH (ED25519 · root@svl-364-ship:2222) oraz serwer "
-                "Model Context Protocol (MCP v2025-03-26) do bezpośredniego sterowania "
-                "statkiem kosmicznym SVL-364 Ebon Apex i systemem Linux."
+                f"Ręcznie zatwierdzane polecenia przez OpenSSH host alias {cfg['ssh_host']}; "
+                "uwierzytelnianie i klucze pochodzą z konfiguracji OpenSSH procesu."
             ),
             config=cfg,
             source="kernel",
@@ -374,8 +337,8 @@ except Exception as exc:
         if svl364:
             scfg = dict(svl364.get("config") or {})
             scfg["ssh_bridge_active"] = True
-            scfg["ssh_endpoint"] = f"ssh://{cfg['ssh_user']}@{cfg['ssh_host']}:{cfg['ssh_port']}"
-            scfg["ssh_fingerprint"] = self.key_fingerprint
+            scfg["ssh_endpoint"] = f"ssh://{cfg['ssh_host']}"
+            scfg.pop("ssh_fingerprint", None)
             scfg["mcp_bridge_active"] = True
             scfg["mcp_endpoint"] = "/api/mcp/svl364"
             scfg["mcp_tools"] = [t["name"] for t in MCP_TOOLS_CATALOG]
@@ -396,25 +359,19 @@ except Exception as exc:
         cfg = dict(self._default_config())
         if isinstance(mod.get("config"), dict):
             cfg.update(mod["config"])
-        conn_uri = f"ssh://{cfg.get('ssh_user', 'root')}@{cfg.get('ssh_host', 'svl-364-ship.qkd.mesh')}:{cfg.get('ssh_port', 2222)}"
+        target = self._configured_ssh_target(cfg)
         return {
             "ok": True,
             "moduleId": "svl-364-ssh-mcp",
             "status": "ACTIVE",
             "ssh": {
-                "connected": True,
-                "host": cfg.get("ssh_host", "svl-364-ship.qkd.mesh"),
-                "port": int(cfg.get("ssh_port", 2222)),
-                "user": cfg.get("ssh_user", "root"),
-                "mode": cfg.get("ssh_mode", "qkd-local-root-bridge"),
-                "cipher": cfg.get("ssh_cipher", "chacha20-poly1305@openssh.com + QKD-BB84"),
-                "fingerprint": self.key_fingerprint,
-                "key_fingerprint": self.key_fingerprint,
-                "publicKey": self.public_key_text,
-                "privateKeyPath": str(self.private_key_path),
-                "connectionUri": conn_uri,
-                "uri": conn_uri,
-                "cliCommand": "svl364-ssh 'uname -a && uptime'",
+                "connected": self.ssh_connected,
+                "host": target,
+                "mode": "OpenSSH config/agent",
+                "authentication": "OpenSSH config/agent",
+                "connectionUri": f"ssh://{target}",
+                "uri": f"ssh://{target}",
+                "cliCommand": "ssh Ship",
                 "sessionsCount": self.ssh_sessions_count,
                 "invocations_count": self.ssh_sessions_count,
             },
@@ -479,6 +436,10 @@ except Exception as exc:
             if key in updates and updates[key] is not None:
                 cfg[key] = updates[key]
 
+        cfg["ssh_host"] = self._configured_ssh_target(cfg)
+        cfg["ssh_mode"] = "openssh-config"
+        for key in ("ssh_key_path", "ssh_pub_key_path", "ssh_fingerprint", "ssh_cipher"):
+            cfg.pop(key, None)
         cfg["updated_at"] = datetime.now(timezone.utc).isoformat()
         self.kernel.upsert_system_module(
             module_id="svl-364-ssh-mcp",
@@ -486,8 +447,7 @@ except Exception as exc:
             kind="Starship SSH & MCP Bridge",
             status="ACTIVE",
             description=(
-                f"Aktywny mostek SSH ({cfg['ssh_user']}@{cfg['ssh_host']}:{cfg['ssh_port']}) "
-                f"oraz serwer MCP v2025-03-26 ({len(MCP_TOOLS_CATALOG)} narzędzi sterowania Linux/SVL-364)."
+                f"Ręcznie zatwierdzane polecenia przez OpenSSH host alias {cfg['ssh_host']}."
             ),
             config=cfg,
             source="operator",
@@ -503,9 +463,13 @@ except Exception as exc:
         origin: str = "ssh-bridge",
         target_subsystem: str = "bridge",
         correlation_id: str = "",
+        confirmed: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
         clean_cmd = str(command or "").strip()
+        if not confirmed:
+            message = "Wykonanie SSH wymaga jawnego potwierdzenia w terminalu operatora."
+            return {"ok": False, "error": message, "exitCode": 1, "output": "", "stdout": "", "stderr": message}
         if not clean_cmd:
             return {
                 "ok": False,
@@ -516,54 +480,37 @@ except Exception as exc:
                 "stderr": "Polecenie SSH nie może być puste.",
             }
 
-        self.ssh_sessions_count += 1
-        started = time.time()
         mods = {m["id"]: m for m in self.kernel.list_system_modules()}
         cfg = dict(self._default_config())
         if "svl-364-ssh-mcp" in mods and isinstance(mods["svl-364-ssh-mcp"].get("config"), dict):
             cfg.update(mods["svl-364-ssh-mcp"]["config"])
 
-        ssh_user = str(cfg.get("ssh_user") or "root")
-        ssh_host = str(cfg.get("ssh_host") or "svl-364-ship.qkd.mesh")
-        ssh_port = int(cfg.get("ssh_port") or 2222)
-        ssh_mode = str(cfg.get("ssh_mode") or "qkd-local-root-bridge")
+        ssh_host = self._configured_ssh_target(cfg)
+        ssh_bin = shutil.which("ssh")
+        if not ssh_bin:
+            message = "Polecenie OpenSSH `ssh` nie jest dostępne w środowisku serwera."
+            return {"ok": False, "error": message, "exitCode": 127, "output": "", "stdout": "", "stderr": message}
 
-        env = os.environ.copy()
-        env.update(
-            {
-                "SVL_SHIP_ID": "SVL-364",
-                "SVL_SHIP_NAME": "SVL-364 Ebon Apex",
-                "SVL_SSH_BRIDGE": "ACTIVE",
-                "SVL_SSH_SUBSYSTEM": str(target_subsystem or "bridge"),
-                "SVL_SSH_ENDPOINT": f"ssh://{ssh_user}@{ssh_host}:{ssh_port}",
-                "SVL_SSH_FINGERPRINT": self.key_fingerprint,
-                "SVL_MCP_ENDPOINT": "http://127.0.0.1:8085/api/py/svl364/mcp",
-                "SVL_SHIP_SECTOR": str(cfg.get("ship_sector") or "SEC-364-ALPHA"),
-            }
-        )
-
-        # Strip optional leading `ssh root@svl-364-ship` if user typed full ssh invocation
-        exec_cmd = clean_cmd
-        if exec_cmd.startswith("ssh "):
-            parts = exec_cmd.split()
-            idx = 1
-            while idx < len(parts):
-                if parts[idx] in ("-p", "-i", "-l", "-o") and idx + 1 < len(parts):
-                    idx += 2
-                    continue
-                if parts[idx].startswith("-"):
-                    idx += 1
-                    continue
-                idx += 1
-                break
-            exec_cmd = " ".join(parts[idx:]).strip() or "uname -a && uptime"
+        self.ssh_sessions_count += 1
+        started = time.time()
 
         stderr_out = ""
         try:
             proc = subprocess.run(
-                ["/bin/bash", "-lc", exec_cmd],
+                [
+                    ssh_bin,
+                    "-T",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "StrictHostKeyChecking=yes",
+                    "-o",
+                    "ConnectTimeout=10",
+                    ssh_host,
+                    f"/bin/bash -lc {shlex.quote(clean_cmd)}",
+                ],
                 cwd=str(self.project_root),
-                env=env,
+                env=os.environ.copy(),
                 capture_output=True,
                 text=True,
                 timeout=max(2.0, min(60.0, float(timeout_sec or 15.0))),
@@ -572,28 +519,30 @@ except Exception as exc:
             stderr_out = (proc.stderr or "").strip()
             combined = "\n".join(part for part in (stdout, stderr_out) if part).strip()
             if not combined:
-                combined = f"[SSH {ssh_user}@{ssh_host}:{ssh_port}] Polecenie wykonane pomyślnie (exit 0)."
+                combined = f"[SSH {ssh_host}] Polecenie zakończone kodem {proc.returncode}."
             exit_code = int(proc.returncode)
+            self.ssh_connected = exit_code != 255
         except subprocess.TimeoutExpired:
-            combined = f"[SSH {ssh_user}@{ssh_host}:{ssh_port}] Przekroczono limit czasu ({timeout_sec}s)."
+            combined = f"[SSH {ssh_host}] Przekroczono limit czasu ({timeout_sec}s)."
             stderr_out = combined
             exit_code = 124
+            self.ssh_connected = False
         except Exception as exc:
-            combined = f"[SSH {ssh_user}@{ssh_host}:{ssh_port}] Błąd wykonania: {exc}"
+            combined = f"[SSH {ssh_host}] Błąd wykonania: {exc}"
             stderr_out = combined
             exit_code = 1
+            self.ssh_connected = False
 
         duration_ms = round((time.time() - started) * 1000, 1)
         header = (
-            f"[SSH-QKD-364 · {target_subsystem}] {ssh_user}@{ssh_host}:{ssh_port} ({ssh_mode}) "
-            f"· key {self.key_fingerprint[:24]}… · {duration_ms} ms"
+            f"[SSH · {target_subsystem}] {ssh_host} (OpenSSH config/agent) · {duration_ms} ms"
         )
-        formatted_output = f"{header}\n$ {exec_cmd}\n{combined}"
+        formatted_output = f"{header}\n$ {clean_cmd}\n{combined}"
 
         entry = {
             "id": f"ssh-{uuid.uuid4().hex[:10]}",
             "kind": "ssh_exec",
-            "command": exec_cmd,
+            "command": clean_cmd,
             "subsystem": target_subsystem,
             "exitCode": exit_code,
             "durationMs": duration_ms,
@@ -606,7 +555,7 @@ except Exception as exc:
         # Log into root terminal history in SQLite so Terminals tab shows it immediately
         try:
             self.kernel.append_terminal_entry(
-                "root",
+                "ssh",
                 {
                     "type": "output",
                     "text": formatted_output,
@@ -620,12 +569,11 @@ except Exception as exc:
 
         return {
             "ok": exit_code == 0,
-            "command": exec_cmd,
+            "command": clean_cmd,
             "subsystem": target_subsystem,
             "exitCode": exit_code,
             "durationMs": duration_ms,
-            "sshEndpoint": f"ssh://{ssh_user}@{ssh_host}:{ssh_port}",
-            "fingerprint": self.key_fingerprint,
+            "sshEndpoint": f"ssh://{ssh_host}",
             "output": formatted_output,
             "stdout": formatted_output,
             "stderr": stderr_out if exit_code != 0 else "",
@@ -663,7 +611,6 @@ except Exception as exc:
                         "name": "svl-364-linux-control-mcp",
                         "version": "5.6.0",
                         "ship": "SVL-364 Ebon Apex",
-                        "sshFingerprint": self.key_fingerprint,
                     },
                 },
             }
@@ -752,14 +699,15 @@ except Exception as exc:
         started = time.time()
 
         if tool_name == "svl364_ssh_exec":
-            cmd = str(arguments.get("command") or "uname -a && uptime && free -m")
+            cmd = str(arguments.get("command") or "")
             timeout_sec = float(arguments.get("timeout_sec") or 15.0)
             ssh_res = self.execute_ssh_command(cmd, timeout_sec=timeout_sec, origin=f"mcp:{origin}")
             return {
                 "ok": ssh_res["ok"],
                 "tool": tool_name,
                 "arguments": arguments,
-                "formattedText": ssh_res["output"],
+                "error": ssh_res.get("error"),
+                "formattedText": ssh_res["output"] or ssh_res.get("error", ""),
                 "data": ssh_res,
                 "serverRevision": self.kernel.get_server_revision(),
             }
@@ -826,9 +774,23 @@ except Exception as exc:
                 origin=f"mcp:{origin}",
             )
             st = self.get_status()
+            if not ssh_res["ok"]:
+                summary = (
+                    "[MCP · svl364_linux_telemetry] Zdalna telemetria jest wyłączona dla wywołań MCP/AI. "
+                    "Użyj interaktywnego terminala SSH i zatwierdź polecenie ręcznie."
+                )
+                self._record_mcp_activity(tool_name, arguments, summary, started, origin)
+                return {
+                    "ok": False,
+                    "tool": tool_name,
+                    "error": ssh_res["error"],
+                    "formattedText": summary,
+                    "data": {"status": st},
+                    "serverRevision": self.kernel.get_server_revision(),
+                }
             summary = (
                 f"[MCP · svl364_linux_telemetry] Telemetria Statku SVL-364 Ebon Apex & Linux Host:\n"
-                f"• Mostek SSH: {st['ssh']['connectionUri']} ({st['ssh']['fingerprint']})\n"
+                f"• Mostek SSH: {st['ssh']['connectionUri']} ({st['ssh']['authentication']})\n"
                 f"• Sektor CIC: {st['shipState']['sector']} | Reaktor: {st['shipState']['reactorOutputGw']} GW | Tarcze: {st['shipState']['shieldsPercent']}%\n"
                 f"--- Wyjście powłoki Linux statku ---\n{ssh_res['rawOutput']}"
             )

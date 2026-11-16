@@ -10,8 +10,11 @@ import {
   CheckCircle2,
   RefreshCw,
   MessageSquare,
+  Cpu,
   Trash2,
   AlertTriangle,
+  BellRing,
+  CornerDownRight,
   Users,
   ChevronDown,
   ChevronUp,
@@ -24,6 +27,7 @@ import {
   Server,
   Rocket,
   Brain,
+  Zap,
   FileBarChart2,
   Shield,
 } from 'lucide-react';
@@ -826,17 +830,27 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         setChatActionError(`Błąd zapisu SQLite: ${persistRes.error || 'Nie zapisano wiadomości.'}`);
         return;
       }
-      void refreshDomainModules(['modules', 'kernel']);
+      void refreshDomainModules(['modules', 'kernel'])
+        .then((report) => {
+          if (!report.ok) {
+            setChatActionError(`Błąd synchronizacji zmian z czatu: ${report.error}`);
+          }
+        })
+        .catch((error: unknown) => {
+          setChatActionError(
+            `Błąd synchronizacji zmian z czatu: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
 
       if (overrideText === undefined) setInput('');
       const currentImage = attachedImage;
       setAttachedImage(null);
       setAttachedTextFile(null);
 
-      const historyPayload = buildChatHistoryPayload(targetConvObj.messages, 32);
+      const historyPayload = buildChatHistoryPayload(targetConvObj.messages, 16);
 
       const isSpecificAgentTargeted =
-        targetAgent === 'Agata' || targetConvId === 'conv-agent-agata';
+        ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(targetAgent);
       const isFamilyDuplex =
         !isSpecificAgentTargeted &&
         (targetConvId === 'conv-rodzina-mitek-wszyscy' ||
@@ -852,7 +866,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           model: selectedModel,
           targetAgent: isSpecificAgentTargeted ? targetAgent : isFamilyDuplex ? 'Rodzina Mitek' : targetAgent,
           conversationId: targetConvId,
-          duplexMode: isFamilyDuplex,
           history: historyPayload,
           imageBase64: currentImage?.base64 || '',
           imageMimeType: currentImage?.mimeType || 'image/png',
@@ -894,26 +907,24 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         setChatActionError(`Błąd zapisu odpowiedzi w SQLite: ${replyPersist.error}`);
       }
 
-      if (Array.isArray(data.followUpMessages) && data.followUpMessages.length > 0) {
-        for (const follow of data.followUpMessages) {
-          if (!follow || !follow.content) continue;
-          const followMsg: ChatMessage = {
-            id: createUniqueId('asst-duplex'),
-            role: 'assistant',
-            sender: follow.sender === 'Iris AI' ? 'Iris AI' : formatAgentDisplayName(follow.sender || 'Agata Mitek'),
-            agentId: follow.agentId || 'Agata',
-            modelUsed: follow.modelUsed || data.modelUsed || selectedModel,
-            timestamp: new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
-            content: String(follow.content),
-          };
-          await appendAndPersistChatMessage(targetConvId, targetTitle, selectedModel, followMsg);
-        }
-      }
-
-      await refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'chat', 'notifications']);
-      if (appliedActions || data.connectionReport || (Array.isArray(data.followUpMessages) && data.followUpMessages.length > 0)) {
+      if (appliedActions || data.connectionReport) {
         notifyLocalMutation('module', 'chat', data.latestServerRevision || undefined);
       }
+      void refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'chat'])
+        .then((report) => {
+          if (!report.ok) {
+            setChatActionError(`Błąd synchronizacji zmian z czatu: ${report.error}`);
+          } else {
+            setChatActionError((current) =>
+              current?.startsWith('Błąd synchronizacji zmian z czatu:') ? null : current,
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          setChatActionError(
+            `Błąd synchronizacji zmian z czatu: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        });
     } catch (error: any) {
       setChatActionError(`Błąd wysyłania wiadomości: ${error?.message || String(error)}`);
     } finally {
@@ -1260,8 +1271,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               className="min-w-0 flex-1 max-w-[220px] bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-100 font-medium focus:outline-none focus:border-violet-500 truncate"
             >
               <option value="Rodzina Mitek">Rodzina Mitek (wszyscy — czat grupowy)</option>
-              <option value="Agata">Agata Mitek (1-na-1 · ROOT UID 0)</option>
-              <option value="Auto">Auto-Router (Agata + Iris AI)</option>
+              <option value="Aria">Aria Mitek (1-na-1)</option>
+              <option value="Alex">Alex Mitek (1-na-1)</option>
+              <option value="Astyria">Astyria Mitek (1-na-1)</option>
+              <option value="Aurelius">Aurelius Mitek (1-na-1)</option>
+              <option value="Agata">Agata Mitek (1-na-1)</option>
+              <option value="Auto">Auto-Router (1 odpowiedź)</option>
             </select>
 
             <label htmlFor="openwebui-model-select" className="sr-only">
@@ -1539,18 +1554,35 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
         )}
 
         {chatActionError && (
-          <div role="alert" aria-live="assertive" className="px-4 py-2 border-b border-rose-500/40 bg-rose-950/40 text-rose-300 text-xs font-mono flex items-center justify-between gap-2">
-            <span className="flex items-center gap-2">
-              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-              {chatActionError}
-            </span>
-            <button
-              type="button"
-              onClick={() => setChatActionError(null)}
-              className="text-rose-300 hover:text-white"
-            >
-              Zamknij
-            </button>
+          <div role="alert" aria-live="assertive" className="shrink-0 border-b border-rose-500/20 bg-[#0B0D13]/95 px-3 py-2.5 md:px-5">
+            <div className="mx-auto flex max-w-5xl items-start gap-3 rounded-xl border border-rose-500/35 bg-gradient-to-r from-rose-950/70 via-[#17131d] to-[#111520] p-3 shadow-lg shadow-rose-950/20">
+              <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-400/25 bg-rose-500/10 text-rose-300">
+                <AlertTriangle className="h-4 w-4" aria-hidden="true" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-[11px] font-bold uppercase tracking-[0.12em] text-rose-200">
+                    Powiadomienie
+                  </span>
+                  {activeConv?.title && (
+                    <span className="rounded-full border border-rose-300/15 bg-black/20 px-2 py-0.5 text-[10px] text-slate-400">
+                      {activeConv.title}
+                    </span>
+                  )}
+                </div>
+                <div className="break-words text-sm leading-relaxed text-rose-100">
+                  {renderFormattedContent(chatActionError, handleInteractiveAction)}
+                </div>
+              </div>
+              <button
+                type="button"
+                aria-label="Zamknij powiadomienie"
+                onClick={() => setChatActionError(null)}
+                className="shrink-0 rounded-lg px-2 py-1 text-xs font-medium text-rose-200/75 transition-colors hover:bg-white/5 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-rose-300"
+              >
+                Zamknij
+              </button>
+            </div>
           </div>
         )}
 
@@ -1573,13 +1605,9 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
             })
             .map((msg) => {
               const isUser = msg.role === 'user';
-              const isIris =
-                msg.sender === 'Iris AI' ||
-                msg.agentId === 'iris' ||
-                Boolean(msg.metadata?.irisNotification) ||
-                /^#?\s*🛰️\s*\[Iris\]\[\d+\]/.test(String(msg.content || '').trim()) ||
-                /^\[Iris\]\[\d+\]/.test(String(msg.content || '').trim());
-              const formattedSender = isUser ? msg.sender : isIris ? 'Iris AI' : formatAgentDisplayName(msg.sender);
+              const isNotification = msg.role === 'system';
+              const isFamilyChannel = activeConv?.id === 'conv-rodzina-mitek-wszyscy';
+              const formattedSender = isUser ? msg.sender : formatAgentDisplayName(msg.sender);
               const agentMeta = CANONICAL_AGENTS.find(
                 (a) =>
                   a.canonicalName === msg.sender ||
@@ -1595,32 +1623,20 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400 mb-1.5 px-1">
                     <SvlAvatar
                       sender={formattedSender}
-                      agentId={isIris ? 'iris' : isUser ? 'operator' : msg.agentId || agentMeta?.id}
+                      agentId={isUser ? 'operator' : msg.agentId || agentMeta?.id}
                       size={26}
                     />
                     <span
                       className={`font-semibold ${
-                        isIris
-                          ? 'text-cyan-300'
-                          : agentMeta
-                            ? agentMeta.textClass
-                            : isUser
-                              ? 'text-violet-300'
-                              : 'text-slate-200'
+                        agentMeta
+                          ? agentMeta.textClass
+                          : isUser
+                            ? 'text-violet-300'
+                            : 'text-slate-200'
                       }`}
                     >
                       {formattedSender}
                     </span>
-                    {isIris && (
-                      <span className="px-2 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/40 text-[10px] font-mono font-semibold text-cyan-200 uppercase tracking-wider">
-                        SVL_System Telemetry &amp; Fleet Report
-                      </span>
-                    )}
-                    {!isUser && !isIris && (
-                      <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-[10px] font-mono text-emerald-300">
-                        ROOT UID 0 · 128D Memory
-                      </span>
-                    )}
                     {msg.modelUsed && (
                       <>
                         <span aria-hidden="true">·</span>
@@ -1633,13 +1649,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                         ? new Date(msg.timestamp).toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' })
                         : msg.timestamp}
                     </span>
-                    {isIris && (
+                    {msg.sourceOrigin && (
+                      <span
+                        className="max-w-[120px] truncate font-mono text-slate-500/80"
+                        title="Źródło zgłoszone przez klienta aplikacji. Identyfikator nie potwierdza tożsamości autora."
+                      >
+                        sesja: {msg.sourceOrigin.slice(0, 16)}
+                      </span>
+                    )}
+                    {isNotification && (
                       <button
                         type="button"
                         onClick={() => onNavigateTab('notifications')}
                         className="text-cyan-400 hover:text-cyan-300 hover:underline font-mono text-[11px]"
                       >
-                        Centrum Iris →
+                        Powiadomienia →
                       </button>
                     )}
                   </div>
@@ -1648,11 +1672,26 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
                     className={`max-w-4xl w-full rounded-xl p-4 border shadow-md ${
                       isUser
                         ? 'bg-violet-950/30 border-violet-500/35 text-slate-100 max-w-2xl'
-                        : isIris
-                          ? 'bg-gradient-to-br from-[#0A1524] via-[#0B1220] to-[#09101B] border-cyan-500/45 text-slate-100 shadow-[0_0_25px_rgba(6,182,212,0.08)]'
+                        : isNotification
+                          ? isFamilyChannel
+                            ? 'bg-gradient-to-br from-amber-950/45 via-[#171520] to-[#111520] border-amber-400/40 text-amber-50 shadow-lg shadow-amber-950/10'
+                            : 'bg-amber-950/20 border-amber-500/40 text-amber-100'
                           : 'bg-[#111520] border-slate-800/90 text-slate-200'
                     }`}
                   >
+                    {isNotification && (
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-amber-300/15 pb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-200/80">
+                        <span className="inline-flex items-center gap-1.5">
+                          <BellRing className="h-3.5 w-3.5" aria-hidden="true" />
+                          {isFamilyChannel ? 'Powiadomienie · kanał grupowy' : 'Wiadomość systemowa'}
+                        </span>
+                        {isFamilyChannel && (
+                          <span className="rounded-full border border-amber-200/20 bg-amber-200/5 px-2 py-0.5 text-[9px]">
+                            Wszyscy
+                          </span>
+                        )}
+                      </div>
+                    )}
                     {msg.imagePreview && (
                       <div className="mb-3">
                         <img

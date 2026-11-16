@@ -25,13 +25,9 @@ export const KernelDiagnosticsView: React.FC = () => {
 
   // SVLProtectedVariable RBAC Test State (token strictly entered by operator, never leaked from API)
   const [targetVarName, setTargetVarName] = useState('SYS_VERSION');
-  const [newVarValue, setNewVarValue] = useState('5.6.2-QuantumWheel-Verified');
+  const [newVarValue, setNewVarValue] = useState('unversioned');
   const [tokenToTest, setTokenToTest] = useState('');
   const [varUpdateFeedback, setVarUpdateFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
-
-  // Update History Toggle (Real vs Marked Demo Fixtures)
-  const [showDemoFixtures, setShowDemoFixtures] = useState(false);
-  const [demoReportData, setDemoReportData] = useState<any>(null);
 
   const [topoError, setTopoError] = useState<string | null>(null);
 
@@ -107,29 +103,13 @@ export const KernelDiagnosticsView: React.FC = () => {
     } else {
       setVarUpdateFeedback({
         ok: false,
-        msg:
-          tokenUsed === '364_OMNIKLUCZ_ROOT'
-            ? 'ZABLOKOWANO: Historyczny zahardkodowany token "364_OMNIKLUCZ_ROOT" został odrzucony przez SVLProtectedVariable i zapisany w dzienniku audytu!'
-            : 'ODMOWA DOSTĘPU: Nieprawidłowy SVL_OPERATOR_TOKEN (wymagany sekret backendu >= 32 znaki).',
+        msg: 'ODMOWA DOSTĘPU: Nieprawidłowy SVL_OPERATOR_TOKEN (wymagany sekret backendu >= 32 znaki).',
       });
     }
     await refreshDomainModules(['kernel', 'health']);
   };
 
-  const handleToggleDemoHistory = async (checked: boolean) => {
-    setShowDemoFixtures(checked);
-    if (checked) {
-      const res = await safeFetchJson<any>('/api/py/kernel/report?include_demo=true', { timeoutMs: 10000 });
-      if (res.ok && res.data?.report) {
-        setDemoReportData(res.data.report);
-      }
-    } else {
-      setDemoReportData(null);
-    }
-  };
-
-  const displayedUpdates: any[] =
-    (showDemoFixtures && demoReportData?.Update_History) || report.Update_History || [];
+  const displayedUpdates: any[] = report.Update_History || [];
 
   const handleUpsertModule = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,12 +122,18 @@ export const KernelDiagnosticsView: React.FC = () => {
     setIsSavingModule(true);
     setModFeedback(null);
     try {
+      const existingModule = modulesList.find(
+        (module: any) => String(module.id || '').toLowerCase() === id.toLowerCase(),
+      );
       const res = await upsertSystemModule({
         id,
         name: name || id.toUpperCase(),
         kind: modKindInput,
-        status: 'ACTIVE',
-        description: modDescInput.trim() || `Moduł ${id} zarejestrowany w Jądrze SVL.`,
+        status: existingModule?.status || 'CONFIGURED',
+        description:
+          modDescInput.trim() ||
+          existingModule?.description ||
+          'Wpis konfiguracyjny; implementacja modułu nie została zweryfikowana.',
       });
       if (res.ok) {
         setModFeedback({
@@ -187,7 +173,7 @@ export const KernelDiagnosticsView: React.FC = () => {
             Rzeczywiste moduły Python (<code className="text-violet-300">VisualScope</code>,{' '}
             <code className="text-violet-300">SVLProtectedVariable</code>,{' '}
             <code className="text-violet-300">TopologicalInfinityEngine</code>,{' '}
-            <code className="text-violet-300">SVLSystemKernel</code>) oraz moduł <code className="text-emerald-300">svl-duplex-chat</code> (Rodzina Mitek · ROOT UID 0 NOPASSWD, rev {serverRevision}).
+            <code className="text-violet-300">SVLSystemKernel</code>) oraz moduł <code className="text-emerald-300">svl-duplex-chat</code> (kanał rozmów agentów, rev {serverRevision}).
           </p>
         </div>
         <button
@@ -205,13 +191,13 @@ export const KernelDiagnosticsView: React.FC = () => {
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-100">
-              02. SVLProtectedVariable (Usunięto token 364_OMNIKLUCZ_ROOT)
+              02. SVLProtectedVariable — chronione zmienne
             </h2>
             <span className="text-xs font-mono text-emerald-400">HMAC-SHA256 RBAC</span>
           </div>
 
           <p className="text-xs text-slate-400 leading-relaxed">
-            Zahardkodowany w pierwotnym kodzie token <code className="text-rose-400">364_OMNIKLUCZ_ROOT</code> został usunięty i zastąpiony weryfikacją stałoczasową (<code className="text-slate-300">hmac.compare_digest</code>) względem sekretu backendu <code className="text-violet-300">SVL_OPERATOR_TOKEN</code> (min. 32 znaki, nigdy nieudostępniany przez API).
+            Zmiany wymagają sekretu backendu <code className="text-violet-300">SVL_OPERATOR_TOKEN</code> (min. 32 znaki), weryfikowanego po stronie serwera.
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -259,13 +245,6 @@ export const KernelDiagnosticsView: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
-            <button
-              type="button"
-              onClick={() => void handleTestProtectedUpdate('364_OMNIKLUCZ_ROOT')}
-              className="px-3 py-2 rounded-lg bg-rose-950/60 hover:bg-rose-900/60 border border-rose-500/40 text-rose-300 text-xs font-medium transition-colors whitespace-nowrap"
-            >
-              Testuj odrzucenie: 364_OMNIKLUCZ_ROOT
-            </button>
             <button
               type="button"
               onClick={() => void handleTestProtectedUpdate(tokenToTest)}
@@ -627,33 +606,20 @@ export const KernelDiagnosticsView: React.FC = () => {
         )}
       </div>
 
-      {/* Bottom Section: Verified Update History in SQLite vs Optional Demo Fixtures & JSON Report */}
+      {/* Recorded Update History in SQLite */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-slate-100">
-              07. Trwała Historia Aktualizacji w SQLite (Bez fikcyjnych dat w raportach produkcyjnych)
+              07. Zapisana historia aktualizacji w SQLite
             </h2>
-            <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={showDemoFixtures}
-                onChange={(e) => void handleToggleDemoHistory(e.target.checked)}
-                className="rounded border-slate-700 bg-[#0B0D13]"
-              />
-              <span>Pokaż oznaczone dane demonstracyjne z kodu wejściowego</span>
-            </label>
           </div>
 
           <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
             {displayedUpdates.map((u: any, idx: number) => (
               <div
                 key={`${u.wersja}-${idx}`}
-                className={`p-3 rounded-lg border text-xs space-y-1 ${
-                  u.is_demo
-                    ? 'bg-amber-950/20 border-amber-500/30 text-amber-200'
-                    : 'bg-[#0B0D13] border-slate-800 text-slate-200'
-                }`}
+                className="p-3 rounded-lg border text-xs space-y-1 bg-[#0B0D13] border-slate-800 text-slate-200"
               >
                 <div className="flex items-center justify-between font-mono tabular-nums text-[11px]">
                   <span className="font-semibold text-violet-300">
@@ -673,7 +639,7 @@ export const KernelDiagnosticsView: React.FC = () => {
             08. Rzeczywisty Zrzut Stanu Systemu (SVLSystemKernel.generate_system_status_report)
           </h2>
           <pre className="p-3.5 rounded-lg bg-[#07090E] border border-slate-800 text-[11px] font-mono text-slate-300 overflow-x-auto max-h-64 leading-relaxed">
-            {JSON.stringify(showDemoFixtures && demoReportData ? demoReportData : report, null, 2)}
+            {JSON.stringify(report, null, 2)}
           </pre>
         </div>
       </div>

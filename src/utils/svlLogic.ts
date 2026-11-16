@@ -1,13 +1,12 @@
 /**
  * Pure deterministic logic for SVL Python OS (Open WebUI Frontend & Verification Suite)
- * Mirrors the Python backend's TopologicalInfinityEngine, Polkit/sudo risk classifier,
- * and 'podłącz moje ai' command parser.
+ * Mirrors the Python backend's TopologicalInfinityEngine and command parsers.
  */
 
 export interface CanonicalAgentMeta {
   id: string;
-  canonicalName: 'Agata';
-  displayName: 'Agata Mitek';
+  canonicalName: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
+  displayName: 'Aria Mitek' | 'Alex Mitek' | 'Astyria Mitek' | 'Aurelius Mitek' | 'Agata Mitek';
   slug: string;
   preservedRole: string;
   sourceProfile: string;
@@ -18,11 +17,55 @@ export interface CanonicalAgentMeta {
 
 export const CANONICAL_AGENTS: CanonicalAgentMeta[] = [
   {
+    id: 'si_1',
+    canonicalName: 'Aria',
+    displayName: 'Aria Mitek',
+    slug: 'aria',
+    preservedRole: 'Integracje z modelami i usługami AI, lokalnym Ollama, MCP oraz API',
+    sourceProfile: '.github/agents/Aria.agent.md',
+    accentHex: '#f43f5e',
+    borderClass: 'border-rose-500/30',
+    textClass: 'text-rose-400',
+  },
+  {
+    id: 'Alex',
+    canonicalName: 'Alex',
+    displayName: 'Alex Mitek',
+    slug: 'alex',
+    preservedRole: 'Architektura systemu, backend i integracja usług',
+    sourceProfile: '.github/agents/Alex.agent.md',
+    accentHex: '#10b981',
+    borderClass: 'border-emerald-500/30',
+    textClass: 'text-emerald-400',
+  },
+  {
+    id: 'Astyria',
+    canonicalName: 'Astyria',
+    displayName: 'Astyria Mitek',
+    slug: 'astyria',
+    preservedRole: 'Interfejs webowy, czat obustronny, responsywność Android i analiza Vision',
+    sourceProfile: '.github/agents/Astyria.agent.md',
+    accentHex: '#06b6d4',
+    borderClass: 'border-cyan-500/30',
+    textClass: 'text-cyan-400',
+  },
+  {
+    id: 'Aurelius',
+    canonicalName: 'Aurelius',
+    displayName: 'Aurelius Mitek',
+    slug: 'aurelius',
+    preservedRole: 'Bezpieczeństwo RBAC, izolacja procesów i audyt',
+    sourceProfile: '.github/agents/Aurelius.agent.md',
+    accentHex: '#f59e0b',
+    borderClass: 'border-amber-500/30',
+    textClass: 'text-amber-400',
+  },
+  {
     id: 'Agata',
     canonicalName: 'Agata',
     displayName: 'Agata Mitek',
     slug: 'agata',
-    preservedRole: 'Optymalizacja kodu, testowanie i rozwój architektoniczny (Root NOPASSWD)',
+    preservedRole: 'Optymalizacja kodu, testowanie i rozwój architektoniczny',
     sourceProfile: '.github/agents/Agata.agent.md',
     accentHex: '#C084FC',
     borderClass: 'border-purple-500/30',
@@ -147,31 +190,6 @@ export function isGitHubWorkspaceSyncRequest(input: string): boolean {
   return /github(?:\.com)?/i.test(input) && /synchroniz|sync/i.test(input);
 }
 
-export function classifyCommandRisk(cmd: string): {
-  highRisk: boolean;
-  reason: string | null;
-} {
-  const trimmed = (cmd || '').trim();
-  if (!trimmed) return { highRisk: false, reason: null };
-
-  const patterns: Array<{ re: RegExp; reason: string }> = [
-    { re: /\bsudo\b/i, reason: 'Wywołanie uprawnień administratora (sudo)' },
-    { re: /\bpkexec\b/i, reason: 'Wywołanie autoryzacji Polkit (pkexec)' },
-    { re: /\brm\s+(-[rRf]+\s+|\S+\s+-[rRf]+)/i, reason: 'Rekurencyjne usuwanie plików (rm -rf)' },
-    { re: /\bsystemctl\s+(stop|restart|disable|mask|enable|start)\b/i, reason: 'Zarządzanie usługami systemd' },
-    { re: /\bapt(-get)?\s+(install|remove|purge|upgrade)\b/i, reason: 'Modyfikacja pakietów systemowych APT' },
-    { re: /\b(chmod|chown)\b/i, reason: 'Zmiana uprawnień lub właściciela plików' },
-    { re: /\bkill(all)?\b/i, reason: 'Zatrzymywanie procesów systemowych' },
-  ];
-
-  for (const item of patterns) {
-    if (item.re.test(trimmed)) {
-      return { highRisk: true, reason: item.reason };
-    }
-  }
-  return { highRisk: false, reason: null };
-}
-
 export function validateOperatorTokenFormat(token: string): {
   valid: boolean;
   error: string | null;
@@ -183,7 +201,7 @@ export function validateOperatorTokenFormat(token: string): {
   if (clean === '364_OMNIKLUCZ_ROOT') {
     return {
       valid: false,
-      error: 'Historyczny zahardkodowany token 364_OMNIKLUCZ_ROOT został trwale zablokowany ze względów bezpieczeństwa.',
+      error: 'Ten token nie jest dozwolony.',
     };
   }
   if (clean.length < 32) {
@@ -255,7 +273,7 @@ export function selectOllamaModelName(
   return preferredFallback;
 }
 
-export type TerminalTabId = 'linux' | 'python' | 'hyperspace' | 'agents';
+export type TerminalTabId = 'linux' | 'ssh' | 'python' | 'codex' | 'hyperspace' | 'agents';
 
 export interface TerminalLogLine {
   id: string;
@@ -716,21 +734,16 @@ export function extractExplicitChatModuleDirective(text: string): {
 } | null {
   const clean = (text || '').trim();
   if (!clean) return null;
-  const low = clean.toLowerCase();
+  const requestsModuleChange =
+    /\b(?:skonfiguruj|napraw|ulepsz|optymalizuj|dodaj|dodano|utwórz|utworz|zarejestruj|aktywuj|zainstaluj)\b/i.test(clean);
 
-  if (/\bsvl[-_\s]?364\b/i.test(clean)) {
-    const hasApex = low.includes('ebon') || low.includes('apex');
+  if (requestsModuleChange && /\bsvl[-_\s]?364\b/i.test(clean)) {
     return {
       id: 'svl-364',
-      name: hasApex ? 'SVL-364 Ebon Apex' : 'SVL-364',
+      name: 'SVL-364 — Centrum Dowodzenia',
       kind: 'Orchestration & Kernel Module',
-      description: 'Moduł orkiestracji i telemetrii statku kosmicznego SVL-364 Ebon Apex zadeklarowany z poziomu czatu Operatora.',
-      config: {
-        module_alias: hasApex ? 'svl-364-ebon-apex' : 'svl-364',
-        async_event_bus_buffer: 4096,
-        agent_max_context_turns: 64,
-        worker_heartbeat_interval_sec: 1.5,
-      },
+      description: 'Programowy panel do koordynacji i diagnostyki usług SVL.',
+      config: { async_event_bus_buffer: 2000 },
     };
   }
 
@@ -749,7 +762,7 @@ export function extractExplicitChatModuleDirective(text: string): {
         id: modId,
         name: modId.toUpperCase(),
         kind: 'Chat Module',
-        description: `Moduł zarejestrowany bezpośrednio z czatu Operatora: ${clean.slice(0, 140)}`,
+        description: 'Wpis konfiguracyjny z czatu; implementacja modułu nie została zweryfikowana.',
         config: {
           registered_from: 'chat_directive',
         },

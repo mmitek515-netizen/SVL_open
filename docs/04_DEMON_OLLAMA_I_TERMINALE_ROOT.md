@@ -10,12 +10,10 @@ Obsługiwane endpointy:
 - `POST /api/pull` — natychmiastowa rejestracja/aktualizacja modelu.
 - `POST /api/chat` oraz `POST /api/generate` — lokalne wnioskowanie zintegrowane z telemetrią `SVLSystemKernel`.
 
-## 2. Terminale Systemowe i Polecenie `/exec raport systemu`
+## 2. Terminale Systemowe i Zdalny SSH
 
-Moduł **Terminale (4)** udostępnia:
-1. **Terminal Statku SVL-364 (ROOT CLI)**
-2. **Python 3 Console**
-3. **System Logs**
-4. **Ollama Local AI**
+Terminal **SSH · Ship** używa aliasu OpenSSH z `SVL_SSH_TARGET` (domyślnie `Ship`) i konfiguracji/uwierzytelniania konta uruchamiającego backendu. Host alias musi być skonfigurowany w `~/.ssh/config`; system nie generuje kluczy ani nie zakłada użytkownika `root`.
 
-Wpisanie `/exec raport systemu` (w terminalu lub na czacie) natychmiast generuje wielosekcyjny raport `SVL_System` z telemetrią statku `SVL-364 Ebon Apex`, stanem floty, botaniki i badań, zapisuje go jako `COMPLETED` w SQLite i publikuje na kanale **Rodzina Mitek (wszyscy)** jako **Iris AI**.
+Każde polecenie w terminalu SSH wymaga potwierdzenia operatora i jest przekazywane jako polecenie powłoki na wskazany host. Połączenie działa bez PTY; brak SSH, błąd uwierzytelnienia lub nieznany host kończy się błędem — polecenie nigdy nie przełącza się na lokalny shell. Wywołania Ollama/MCP nie mogą uruchamiać poleceń SSH.
+
+Pozostałe terminale (Linux, Python, Codex, hyperspace i agenci) zachowują swoje dotychczasowe lokalne funkcje. Polecenie `/exec raport systemu` nadal generuje raport `SVL_System`; nie jest specjalnie przechwytywane w terminalu SSH, gdzie każde wpisane polecenie trafia na host `Ship`.

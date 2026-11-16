@@ -4,14 +4,30 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { ChatWorkspace } from './components/ChatWorkspace';
-import { AgentsPanel } from './components/AgentsPanel';
-import { TerminalsWorkspace } from './components/TerminalsWorkspace';
-import { KernelDiagnosticsView } from './components/KernelDiagnosticsView';
-import { LinuxDeployDashboard } from './components/LinuxDeployDashboard';
-import { Svl364CommandCenter } from './components/Svl364CommandCenter';
-import { NotificationsWorkspace } from './components/NotificationsWorkspace';
-import { InfrastructureWorkspace } from './components/InfrastructureWorkspace';
+const ChatWorkspace = React.lazy(() =>
+  import('./components/ChatWorkspace').then(({ ChatWorkspace }) => ({ default: ChatWorkspace })),
+);
+const AgentsPanel = React.lazy(() =>
+  import('./components/AgentsPanel').then(({ AgentsPanel }) => ({ default: AgentsPanel })),
+);
+const TerminalsWorkspace = React.lazy(() =>
+  import('./components/TerminalsWorkspace').then(({ TerminalsWorkspace }) => ({ default: TerminalsWorkspace })),
+);
+const KernelDiagnosticsView = React.lazy(() =>
+  import('./components/KernelDiagnosticsView').then(({ KernelDiagnosticsView }) => ({ default: KernelDiagnosticsView })),
+);
+const LinuxDeployDashboard = React.lazy(() =>
+  import('./components/LinuxDeployDashboard').then(({ LinuxDeployDashboard }) => ({ default: LinuxDeployDashboard })),
+);
+const Svl364CommandCenter = React.lazy(() =>
+  import('./components/Svl364CommandCenter').then(({ Svl364CommandCenter }) => ({ default: Svl364CommandCenter })),
+);
+const NotificationsWorkspace = React.lazy(() =>
+  import('./components/NotificationsWorkspace').then(({ NotificationsWorkspace }) => ({ default: NotificationsWorkspace })),
+);
+const InfrastructureWorkspace = React.lazy(() =>
+  import('./components/InfrastructureWorkspace').then(({ InfrastructureWorkspace }) => ({ default: InfrastructureWorkspace })),
+);
 import { SvlSyncProvider, useSvlSync } from './utils/svlSyncStore';
 import { CANONICAL_AGENTS, getSvlOperatorAccessToken, safeFetchJson, setSvlOperatorAccessToken } from './utils/svlLogic';
 
@@ -274,18 +290,26 @@ function SVLWorkspaceShell() {
 
       {/* Main Workspace Viewport */}
       <main className="flex-1 min-h-0 w-full overflow-hidden">
-        {activeTab === 'chat' && <ChatWorkspace onNavigateTab={setActiveTab} />}
-        {activeTab === 'svl364' && <Svl364CommandCenter onNavigate={setActiveTab} />}
-        {activeTab === 'notifications' && <NotificationsWorkspace onNavigateTab={setActiveTab} />}
-        {activeTab === 'infrastructure' && <InfrastructureWorkspace onNavigateTab={setActiveTab} />}
-        {activeTab === 'agents' && (
-          <AgentsPanel
-            onNavigateToChat={() => setActiveTab('chat')}
-          />
-        )}
-        {activeTab === 'terminals' && <TerminalsWorkspace />}
-        {activeTab === 'kernel' && <KernelDiagnosticsView />}
-        {activeTab === 'linux' && <LinuxDeployDashboard />}
+        <React.Suspense
+          fallback={
+            <div className="flex h-full items-center justify-center text-sm text-slate-400" role="status">
+              Ładowanie widoku…
+            </div>
+          }
+        >
+          {activeTab === 'chat' && <ChatWorkspace onNavigateTab={setActiveTab} />}
+          {activeTab === 'svl364' && <Svl364CommandCenter onNavigate={setActiveTab} />}
+          {activeTab === 'notifications' && <NotificationsWorkspace onNavigateTab={setActiveTab} />}
+          {activeTab === 'infrastructure' && <InfrastructureWorkspace onNavigateTab={setActiveTab} />}
+          {activeTab === 'agents' && (
+            <AgentsPanel
+              onNavigateToChat={() => setActiveTab('chat')}
+            />
+          )}
+          {activeTab === 'terminals' && <TerminalsWorkspace />}
+          {activeTab === 'kernel' && <KernelDiagnosticsView />}
+          {activeTab === 'linux' && <LinuxDeployDashboard />}
+        </React.Suspense>
       </main>
     </div>
   );

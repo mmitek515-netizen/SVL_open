@@ -342,46 +342,40 @@ export const LinuxDeployDashboard: React.FC = () => {
               Stan Hosta Linux
             </h2>
             <span className="text-xs font-mono text-emerald-400">
-              {host.os_pretty_name || 'Debian Linux'}
+              {host.os_pretty_name || 'Niedostępne'}
             </span>
           </div>
 
           <div className="space-y-2 text-xs font-mono tabular-nums text-slate-300">
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Jądro (uname -r):</span>
-              <span>{host.kernel_release || 'Linux'}</span>
+              <span>{host.kernel_release || 'Niedostępne'}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Wersja dystrybucji:</span>
               <span>
-                Debian {host.os_version_id} ({host.os_codename})
+                {host.os_version_id || 'n/d'} ({host.os_codename || 'n/d'})
               </span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Python Runtime:</span>
-              <span className="text-violet-300">Python {host.python_version} (PID Aktywny)</span>
+              <span className="text-violet-300">{host.python_version ? `Python ${host.python_version}` : 'Niedostępne'}</span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Pamięć RAM (Użycie / Całość):</span>
               <span>
-                {telemetry.ram_used_mb ?? 0} MB / {telemetry.ram_total_mb ?? 0} MB (Wolne: {telemetry.ram_available_mb ?? 0} MB)
+                {telemetry.ram_used_mb ?? 'n/d'} MB / {telemetry.ram_total_mb ?? 'n/d'} MB (Wolne: {telemetry.ram_available_mb ?? 'n/d'} MB)
               </span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Dysk główny (/):</span>
               <span>
-                Wolne {telemetry.disk_free_gb ?? 0} GB z {telemetry.disk_total_gb ?? 0} GB
+                Wolne {telemetry.disk_free_gb ?? 'n/d'} GB z {telemetry.disk_total_gb ?? 'n/d'} GB
               </span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
-              <span className="text-slate-400">systemd / svl-python-os:</span>
-              <span className="text-emerald-400">
-                AKTYWNY (ROOT UID 0 · NOPASSWD: ALL)
-              </span>
-            </div>
-            <div className="flex justify-between py-1">
-              <span className="text-slate-400">Uprawnienia Rodziny Mitek:</span>
-              <span className="text-emerald-300 truncate max-w-[220px]">ROOT (Agata Mitek + Iris AI)</span>
+              <span className="text-slate-400">Dostęp do terminala:</span>
+              <span className="text-amber-300">Wymaga tokenu operatora</span>
             </div>
           </div>
         </div>

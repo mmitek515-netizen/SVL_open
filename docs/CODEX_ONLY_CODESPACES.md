@@ -13,6 +13,8 @@ Skrypt używa logowania przez `codex login status`, tworzy lokalne sekrety aplik
 
 W Codespaces otwórz **Ports → 3000 → Open in Browser**. Ustaw port jako **Private**. Adres przekierowany może się zmieniać i nie wymaga stałego IP.
 
+W trybie developerskim serwer nasłuchuje na interfejsach kontenera, aby podgląd hostowany (np. AI Studio) mógł się z nim połączyć. Używa `PORT`, jeśli platforma go ustawi; w przeciwnym razie używa portu 3000. W produkcji domyślnie pozostaje związany z `127.0.0.1`; `SVL_BIND_HOST` pozwala jawnie zmienić host.
+
 W czacie wybierz silnik **Codex CLI · konto ChatGPT**, a w polu dostępu wpisz `SVL_CODEX_CHAT_ACCESS_TOKEN`. Dla panelu agentów, terminali i ręcznej synchronizacji GitHub użyj osobnego `SVL_OPERATOR_TOKEN`. Skrypt podaje komendę pozwalającą lokalnie odczytać oba sekrety. Nie wklejaj ich do GitHuba, AI Studio ani publicznych logów.
 
 Wszystkie zadania tekstowe używają `--sandbox read-only`; odpowiedź AI ma status `ANSWER_READY`, który **nie jest dowodem zakończenia rzeczywistej operacji**. Jedno konto Codex CLI ma limity użytkowania; pięć agentów dzieli sesję, a zadania są szeregowane blokadą procesów.

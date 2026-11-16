@@ -1,8 +1,10 @@
 import base64
+import socket
 import tempfile
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
@@ -36,15 +38,20 @@ class TestSVLRealVisionSuite(unittest.TestCase):
     def test_end_to_end_ollama_32_vision_analysis_and_sqlite_module(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_file = str(Path(tmpdir) / "test_real_vision.sqlite3")
+            with socket.socket() as sock:
+                sock.bind(("127.0.0.1", 0))
+                ollama_port = sock.getsockname()[1]
+            ollama_host = f"http://127.0.0.1:{ollama_port}"
             kernel = SVLSystemKernel(
                 db_path=db_file,
                 operator_token="test_operator_token_with_more_than_32_chars_abcdef",
             )
-            daemon = SVLLocalOllamaDaemon(kernel_Getter=lambda: kernel)
-            daemon.start_if_needed()
+            daemon = SVLLocalOllamaDaemon(kernel_Getter=lambda: kernel, port=ollama_port)
+            with patch.object(daemon, "ensure_cli_binary"):
+                daemon.start_if_needed()
 
             engine = SVLRealVisionEngine(kernel, daemon)
-            status = engine.get_status()
+            status = engine.get_status(ollama_host=ollama_host)
             self.assertTrue(status["ok"])
             self.assertEqual(status["configuredModel"], PREFERRED_VISION_MODEL)
             self.assertIn("llama3.2-vision:11b", status["modelAliases"])
@@ -52,6 +59,7 @@ class TestSVLRealVisionSuite(unittest.TestCase):
             result = engine.analyze_image(
                 preset_id="svl364_l2_horizon",
                 prompt="Przetestuj Real Vision na modelu llama3.2-vision:11b.",
+                ollama_host=ollama_host,
                 emit_to_chat=True,
                 emit_to_iris=True,
             )

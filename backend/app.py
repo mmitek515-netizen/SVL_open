@@ -672,8 +672,7 @@ async def handle_api_request(
         return 200, {"ok": True, "valid": valid}
 
     if method == "GET" and path == "/api/py/kernel/report":
-        include_demo = query.get("include_demo", "false").lower() in ("1", "true", "yes")
-        raw_report = json.loads(runtime.kernel.generate_system_status_report(include_demo_history=include_demo))
+        raw_report = json.loads(runtime.kernel.generate_system_status_report())
         meta = runtime.kernel.get_sync_snapshot_meta()
         return 200, {
             "serverRevision": meta["serverRevision"],
@@ -881,7 +880,7 @@ async def handle_api_request(
             "revision": entry.get("revision"),
             "serverRevision": entry.get("serverRevision"),
             "event": entry.get("event"),
-            "history": runtime.kernel.get_update_history(include_demo=False),
+            "history": runtime.kernel.get_update_history(),
         }
 
     if method == "POST" and path == "/api/py/agents/connect":
@@ -1064,7 +1063,9 @@ async def handle_api_request(
             return 400, {"ok": False, "error": str(exc)}
 
     if method == "POST" and path == "/api/py/hyperspace/compute":
-        text = str(body.get("text", "SVL_SYSTEM_QUANTUM_WHEEL")).strip()
+        text = str(body.get("text", "")).strip()
+        if not text:
+            return 400, {"ok": False, "error": "Wymagany jest tekst do analizy."}
         omega = float(body.get("omega", 1.5))
         t_val = float(body.get("t", 1.0))
         hs = runtime.hyperspace.resolve_intent(text)
@@ -1126,7 +1127,7 @@ async def handle_api_request(
         cmd = str(body.get("command", ""))
         entry_id = str(body.get("id") or "").strip() or None
         display_ts = str(body.get("timestamp") or "").strip() or None
-        if tab not in ("linux", "python", "hyperspace", "agents"):
+        if tab not in ("linux", "ssh", "python", "hyperspace", "agents"):
             return 400, {"ok": False, "error": f"Unknown terminal tab: {tab}"}
         res = runtime.kernel.record_terminal_entry(
             tab=tab,
@@ -1143,7 +1144,7 @@ async def handle_api_request(
 
     if method == "POST" and path == "/api/py/terminal/clear":
         tab = str(body.get("tab", "linux")).strip()
-        if tab not in ("linux", "python", "hyperspace", "agents"):
+        if tab not in ("linux", "ssh", "python", "hyperspace", "agents"):
             return 400, {"ok": False, "error": f"Unknown terminal tab: {tab}"}
         res = runtime.kernel.clear_terminal_history(
             tab=tab,
@@ -1314,6 +1315,7 @@ async def handle_api_request(
                 **saved,
                 "conversations": runtime.kernel.list_conversations_with_messages(),
                 "moduleWarning": module_warning,
+                "events": chat_mutations.get("events", []) if chat_mutations else [],
             }
         except RevisionConflictError as conflict_exc:
             return 409, {
@@ -1437,12 +1439,18 @@ async def handle_api_request(
 
     if method == "POST" and path == "/api/py/svl364/ssh/exec":
         cmd = str(body.get("command") or "").strip()
+        if body.get("confirmed") is not True:
+            return 400, {
+                "ok": False,
+                "error": "Wykonanie SSH wymaga jawnego potwierdzenia w terminalu operatora.",
+            }
         target_sub = str(body.get("target_subsystem") or body.get("subsystem") or "bridge").strip()
         res = runtime.svl364_ssh_mcp.execute_ssh_command(
             cmd,
             target_subsystem=target_sub,
             origin=origin,
             correlation_id=corr,
+            confirmed=True,
         )
         return (200 if res.get("ok") else 400), res
 
@@ -1609,7 +1617,7 @@ async def handle_api_request(
         system_modules = _time_module("modules_registry", True, runtime.kernel.list_system_modules)
 
         def _load_kernel() -> dict[str, Any]:
-            raw_report = json.loads(runtime.kernel.generate_system_status_report(include_demo_history=False))
+            raw_report = json.loads(runtime.kernel.generate_system_status_report())
             return {
                 "report": raw_report,
                 "visual_scopes": VisualScope.get_registry_snapshot(),

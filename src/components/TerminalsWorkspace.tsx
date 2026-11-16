@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Play,
-  ShieldAlert,
   Trash2,
 } from 'lucide-react';
 import {
@@ -20,20 +19,31 @@ const TERMINAL_TABS: Array<{
   quickCommands: string[];
 }> = [
   {
-    id: 'linux',
-    label: 'Terminal Statku SVL-364 (ROOT CLI)',
-    subtitle: 'Terminal dowodzenia statku SVL-364 i rzeczywista powłoka Linux /bin/bash z pełnymi uprawnieniami ROOT (UID 0 · NOPASSWD: ALL) dla Operatora i Rodziny Mitek. Obsługuje dowolne polecenia i /exec.',
-    defaultPrompt: 'root@svl-364-ship:/app/applet#',
+    id: 'ssh',
+    label: 'SSH · Ship',
+    subtitle: 'Wykonuje polecenia wyłącznie na hoście SSH Ship; wymaga potwierdzenia. Przy błędzie SSH nie przełącza się na lokalny shell.',
+    defaultPrompt: 'Ship$',
     welcomeText:
-      'Połączono z Terminalem Statku SVL-364 i rzeczywistą powłoką Linux (/bin/bash). Pełne uprawnienia ROOT (UID 0 · NOPASSWD: ALL) aktywne bez hasła dla Mateusza Mitka oraz Agaty Mitek. Dowolne polecenia i dyrektywy /exec wykonywane są natywnie.',
+      'Zdalny terminal SSH używa aliasu OpenSSH Ship i istniejącego uwierzytelniania serwera. Każde polecenie wymaga osobnego potwierdzenia; Ollama nie wykonuje tu poleceń.',
     quickCommands: [
-      '/exec raport systemu',
-      'svl364-ssh "uname -a && uptime && free -m"',
-      'svl364-mcp tools',
-      '/mcp svl364_linux_telemetry',
-      'ollama list',
-      'sudo systemctl status svl-python-os',
+      'id',
+      'hostname',
+      'uname -a',
+      'df -h / && free -h',
+    ],
+  },
+  {
+    id: 'linux',
+    label: 'Powłoka Linux',
+    subtitle: 'Powłoka Bash środowiska aplikacji. Polecenia działają z uprawnieniami procesu serwera; brak automatycznego podnoszenia uprawnień.',
+    defaultPrompt: 'svl@debian13:/app/applet$',
+    welcomeText:
+      'Powłoka Linux wykonuje polecenia jako proces serwera. Dostęp do terminala wymaga SVL_OPERATOR_TOKEN; polecenia nie otrzymują automatycznie uprawnień administratora.',
+    quickCommands: [
+      'id',
+      'uname -a && cat /etc/os-release',
       'df -h / && free -m',
+      'ollama list',
       'podłącz moje ai',
     ],
   },
@@ -49,32 +59,48 @@ const TERMINAL_TABS: Array<{
       'print(kernel.generate_system_status_report())',
       'TopologicalInfinityEngine(float("-inf"), float("inf")).evaluate_diagnostics()',
       'VisualScope.get_registry_snapshot()',
-      'hyperspace.resolve_intent("Kalibracja sferyczna 364")',
+      'hyperspace.resolve_intent("status systemu i diagnostyka")',
+    ],
+  },
+  {
+    id: 'codex',
+    label: 'Codex CLI',
+    subtitle: 'Status binarki Codex CLI, logowania oraz bieżącej gałęzi repozytorium',
+    defaultPrompt: 'codex$',
+    welcomeText:
+      'Terminal OpenAI Codex CLI Bridge. Wpisz "status", aby sprawdzić binarkę codex, autoryzację ChatGPT OAuth (codex login --device-auth) oraz bieżącą gałąź repozytorium.',
+    quickCommands: [
+      'status',
+      'git status -s && git branch -v',
+      'git log -n 5 --oneline',
     ],
   },
   {
     id: 'hyperspace',
-    label: 'Binarna Hiperprzestrzeń',
+    label: 'Konsola obliczeń 128-bit',
     subtitle: 'Moduł obliczeniowy 128-bit BinaryHyperspaceKernel (Hamming) + Analiza Harmoniczna Eulera/Fouriera',
     defaultPrompt: 'hyper128>',
     welcomeText:
-      'Terminal Binarnej Hiperprzestrzeni (zaimportowany z SVL_System/Nowy_system/kernel/binary_hyperspace_kernel.py). Oblicza 128-bitowe wektory Hamminga i szereg Fouriera.',
+      'Konsola wywołuje silnik obliczeń wektorowych i harmonicznych dostępny w backendzie.',
     quickCommands: [
-      'SYSTEM_CALIBRATION_364_QUANTUM_WHEEL',
-      'Analiza widmowa Fouriera i fazora Eulera (128-bit)',
-      'DIAGNOSTIC_SPHERICAL_PXYZ_METRICS',
+      'system status and diagnostics',
+      'vector similarity with Hamming distance',
+      'spectral analysis of a sample signal',
     ],
   },
   {
     id: 'agents',
-    label: 'Konsola Rodziny Mitek',
-    subtitle: 'Bezpośredni kanał Pub/Sub Sferycznej Magistrali Zdarzeń (@Agata — Agata Mitek)',
-    defaultPrompt: 'bus@rodzina-mitek>',
+    label: 'Konsola agentów',
+    subtitle: 'Zapisuje dyrektywy jako zadania dla agentów; wykonanie zależy od dostępności workera.',
+    defaultPrompt: 'agents>',
     welcomeText:
-      'Konsola Komunikacji (Sferyczna Magistrala Zdarzeń). Użyj składni @Agata <zadanie> lub wpisz "podłącz moje ai".',
+      'Wpisz @Aria, @Alex, @Astyria, @Aurelius lub @Agata i treść zadania. Dyrektywa zostanie zapisana w kolejce; jej wykonanie zależy od aktywnego workera.',
     quickCommands: [
       'podłącz moje ai',
-      '@Agata Sprawdź spójność usług backendu Python, bazy SQLite i lokalnych modeli',
+      '@Alex Sprawdź spójność usług backendu Python i bazy SQLite',
+      '@Aria Zweryfikuj połączenie z lokalnym silnikiem Ollama 11434',
+      '@Astyria Oceń responsywność interfejsu Open WebUI na ekranach dotykowych',
+      '@Aurelius Sprawdź zakres uprawnień skonfigurowanych agentów',
     ],
   },
 ];
@@ -98,14 +124,14 @@ export const TerminalsWorkspace: React.FC = () => {
   const [terminalActionError, setTerminalActionError] = useState<string | null>(null);
   const [localFallbackLogs, setLocalFallbackLogs] = useState<Record<TerminalTabId, TerminalLogLine[]>>({
     linux: [],
+    ssh: [],
     python: [],
+    codex: [],
     hyperspace: [],
     agents: [],
   });
 
-  // Polkit high-risk confirmation modal state (token supplied strictly by operator input)
-  const [pendingPolkitCmd, setPendingPolkitCmd] = useState<{ cmd: string; reason: string } | null>(null);
-  const [polkitTokenInput, setPolkitTokenInput] = useState('');
+  const [operatorTokenInput, setOperatorTokenInput] = useState('');
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -160,16 +186,11 @@ export const TerminalsWorkspace: React.FC = () => {
     }));
   };
 
-  const executeTerminalCommand = async (
-    rawCmd: string,
-    polkitConfirmed = true,
-    tokenOverride?: string,
-  ) => {
+  const executeTerminalCommand = async (rawCmd: string) => {
     const trimmed = rawCmd.trim();
     if (!trimmed || isExecuting) return;
+    if (activeTab === 'ssh' && !window.confirm(`Wykonać na zdalnym hoście Ship?\n\n${trimmed}`)) return;
     setTerminalActionError(null);
-    setPendingPolkitCmd(null);
-
     setIsExecuting(true);
 
     try {
@@ -179,9 +200,9 @@ export const TerminalsWorkspace: React.FC = () => {
         body: JSON.stringify({
           terminalType: activeTab,
           command: trimmed,
-          polkitConfirmed: true,
-          operatorToken: tokenOverride ?? polkitTokenInput,
+          operatorToken: operatorTokenInput,
           origin: tabOrigin,
+          confirmed: activeTab === 'ssh',
         }),
       });
       const data = res.data;
@@ -216,7 +237,7 @@ export const TerminalsWorkspace: React.FC = () => {
     ? `WebSocket online · Terminal chroniony tokenem · rev ${serverRevision}`
     : `Sync HTTP · Terminal chroniony tokenem · rev ${serverRevision}`;
 
-  const wsClass = 'text-emerald-400';
+  const wsClass = wsState === 'online' ? 'text-emerald-400' : 'text-amber-400';
 
   return (
     <div className="flex flex-col h-full bg-[#0B0D13] overflow-hidden">
@@ -306,57 +327,13 @@ export const TerminalsWorkspace: React.FC = () => {
         <div ref={bottomRef} />
       </div>
 
-      {/* Polkit / Sudo High-Risk Confirmation Dialog */}
-      {pendingPolkitCmd && (
-        <div className="p-4 bg-amber-950/40 border-t border-amber-500/40 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="text-xs font-semibold text-amber-300 flex items-center gap-2">
-              <ShieldAlert className="w-4 h-4 shrink-0" />
-              Bramka bezpieczeństwa Polkit / sudo: {pendingPolkitCmd.reason}
-            </div>
-            <div className="text-xs text-slate-300 font-mono">
-              Polecenie: <code>{pendingPolkitCmd.cmd}</code>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <input
-              type="password"
-              value={polkitTokenInput}
-              onChange={(e) => setPolkitTokenInput(e.target.value)}
-              placeholder="SVL_OPERATOR_TOKEN (>=32 znaki)"
-              aria-label="Token operatora dla autoryzacji Polkit"
-              className="px-3 py-1.5 rounded bg-[#0B0D13] border border-amber-500/40 text-xs font-mono text-slate-100 w-64"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                const cmdToRun = pendingPolkitCmd.cmd;
-                setPendingPolkitCmd(null);
-                void executeTerminalCommand(cmdToRun, true, polkitTokenInput);
-              }}
-              disabled={!polkitTokenInput.trim()}
-              className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold whitespace-nowrap"
-            >
-              Autoryzuj i wykonaj
-            </button>
-            <button
-              type="button"
-              onClick={() => setPendingPolkitCmd(null)}
-              className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs whitespace-nowrap"
-            >
-              Anuluj
-            </button>
-          </div>
-        </div>
-      )}
-
       <div className="px-3 py-2 border-t border-slate-800 bg-[#111520]">
         <label className="text-[11px] text-slate-400 flex flex-wrap items-center gap-2">
           <span>Autoryzacja terminala</span>
           <input type="password" autoComplete="off" spellCheck={false}
             aria-label="Prywatny token operatora SVL"
-            value={polkitTokenInput}
-            onChange={(event) => setPolkitTokenInput(event.target.value)}
+            value={operatorTokenInput}
+            onChange={(event) => setOperatorTokenInput(event.target.value)}
             placeholder="SVL_OPERATOR_TOKEN"
             className="min-w-0 w-48 max-w-full rounded-md border border-slate-700 bg-[#0B0D13] px-2 py-1 text-xs text-slate-100"
           />

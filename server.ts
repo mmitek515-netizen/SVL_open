@@ -15,19 +15,18 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import dotenv from 'dotenv';
 import {
   buildChatHistoryPayload,
-  classifyCommandRisk,
   extractExplicitChatModuleDirective,
   formatAgentDisplayName,
   getGitHubAgentPermissions,
   guardUnverifiedMissionCompletion,
-  isGitHubWorkspaceSyncRequest,
   normalizeAgentCanonicalName,
   parseWorkOrCodexCommand,
   selectNextDuplexSpeaker,
   selectOllamaModelName,
   type ChatAppliedAction,
 } from './src/utils/svlLogic.ts';
-import { DEFAULT_GITHUB_SYNC_BRANCH, GitHubSyncService } from './src/utils/githubSync.ts';
+import { DEFAULT_GITHUB_FILE_BRANCH, GitHubFileService } from './src/utils/githubFiles.ts';
+import { searchLicensedAgentAvatars } from './src/server/agentAvatars.ts';
 
 dotenv.config();
 
@@ -45,35 +44,21 @@ if (!process.env.SVL_OPERATOR_TOKEN) {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT ?? 3000);
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+  throw new Error('PORT must be an integer between 1 and 65535.');
+}
 const PYTHON_PORT = Number(process.env.SVL_PYTHON_PORT || 8085);
 const PYTHON_BASE_URL = `http://127.0.0.1:${PYTHON_PORT}`;
 const SYNC_SCHEMA_VERSION = '2026.11.sync.v1';
 
-type GitHubWorkspaceSyncResult = Awaited<ReturnType<GitHubSyncService['syncWorkspace']>>;
-
-type GitHubSyncRuntimeStatus = {
-  running: boolean;
-  lastAttemptAt: string | null;
-  lastSuccessAt: string | null;
-  lastTrigger: 'automatic' | 'chat' | 'dashboard' | null;
-  lastError: string | null;
-  lastResult: GitHubWorkspaceSyncResult | null;
-};
-
-const githubSyncRuntimeStatus: GitHubSyncRuntimeStatus = {
-  running: false,
-  lastAttemptAt: null,
-  lastSuccessAt: null,
-  lastTrigger: null,
-  lastError: null,
-  lastResult: null,
-};
-
-function createGitHubSyncService(): GitHubSyncService {
-  return new GitHubSyncService({
+function createGitHubFileService(): GitHubFileService {
+  return new GitHubFileService({
     token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '',
-    branch: process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH,
+    branch:
+      process.env.SVL_GITHUB_FILE_BRANCH ||
+      process.env.SVL_GITHUB_SYNC_BRANCH ||
+      DEFAULT_GITHUB_FILE_BRANCH,
   });
 }
 
@@ -120,7 +105,7 @@ function createGithubMcpServer(): McpServer {
     try {
       if (request.params.name === 'github_read_file') {
         if (typeof args.path !== 'string') throw new Error('A file path is required.');
-        const result = await createGitHubSyncService().readFile(args.path);
+        const result = await createGitHubFileService().readFile(args.path);
         return { content: [{ type: 'text', text: JSON.stringify(result) }] };
       }
       if (request.params.name === 'github_update_file') {
@@ -130,7 +115,7 @@ function createGithubMcpServer(): McpServer {
         if (args.commit_message !== undefined && typeof args.commit_message !== 'string') {
           throw new Error('Commit message must be a string.');
         }
-        const result = await createGitHubSyncService().updateFile(
+        const result = await createGitHubFileService().updateFile(
           args.path,
           args.content,
           args.commit_message,
@@ -147,34 +132,6 @@ function createGithubMcpServer(): McpServer {
     }
   });
   return server;
-}
-
-async function syncGitHubWorkspace(
-  trigger: NonNullable<GitHubSyncRuntimeStatus['lastTrigger']>,
-): Promise<GitHubWorkspaceSyncResult> {
-  if (githubSyncRuntimeStatus.running) {
-    throw new Error('Synchronizacja GitHub jest już w toku.');
-  }
-  githubSyncRuntimeStatus.running = true;
-  githubSyncRuntimeStatus.lastAttemptAt = new Date().toISOString();
-  githubSyncRuntimeStatus.lastTrigger = trigger;
-  githubSyncRuntimeStatus.lastError = null;
-  try {
-    const applyRemoteChanges =
-      trigger === 'dashboard' ||
-      trigger === 'chat' ||
-      process.env.SVL_GITHUB_APPLY_REMOTE_CHANGES === 'true';
-    const result = await createGitHubSyncService().syncWorkspace(__dirname, {applyRemoteChanges});
-    githubSyncRuntimeStatus.lastResult = result;
-    githubSyncRuntimeStatus.lastSuccessAt = new Date().toISOString();
-    void postSystemNotificationToFamilyChat(`Zsynchronizowano repozytorium GitHub (gałąź: ${result.branch}, wysłano: ${result.uploaded.length}, pobrano: ${result.downloaded.length}).`);
-    return result;
-  } catch (error) {
-    githubSyncRuntimeStatus.lastError = error instanceof Error ? error.message : String(error);
-    throw error;
-  } finally {
-    githubSyncRuntimeStatus.running = false;
-  }
 }
 
 async function postSystemNotificationToFamilyChat(
@@ -211,53 +168,6 @@ async function postSystemNotificationToFamilyChat(
   } catch {
     return null;
   }
-}
-
-function startAutomaticGitHubSync(): NodeJS.Timeout | null {
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
-  if (!token) {
-    console.log('[GitHubSync] Automatic sync is disabled; configure GITHUB_TOKEN and restart to enable it.');
-    return null;
-  }
-  // Explicit opt-in only: a stored GitHub token is not permission to
-  // publish a potentially stale AI Studio snapshot on every boot.
-  if (process.env.SVL_GITHUB_AUTO_SYNC !== 'true') {
-    console.log('[GitHubSync] Automatic code publishing is disabled (set SVL_GITHUB_AUTO_SYNC=true to opt in).');
-    return null;
-  }
-
-  const configuredInterval = Number(process.env.SVL_GITHUB_SYNC_INTERVAL_MS || 30000);
-  const intervalMs = Number.isFinite(configuredInterval)
-    ? Math.max(10000, Math.min(configuredInterval, 3600000))
-    : 30000;
-  const syncBranch = process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH;
-
-  const syncWorkspace = async () => {
-    if (githubSyncRuntimeStatus.running) return;
-    try {
-      const result = await syncGitHubWorkspace('automatic');
-      console.log(
-        `[GitHubSync] ${result.branch}: uploaded=${result.uploaded.length}, downloaded=${result.downloaded.length}, ` +
-        `deletedLocal=${result.deletedLocally.length}, deletedRemote=${result.deletedRemotely.length}, ` +
-        `conflicts=${result.conflicts.length}, skipped=${result.skipped.length}.`,
-      );
-      if (result.conflicts.length > 0) {
-        console.warn(`[GitHubSync] Conflicting files were left untouched: ${result.conflicts.slice(0, 20).join(', ')}`);
-      }
-      if (result.skipped.length > 0) {
-        console.warn(`[GitHubSync] Protected or oversized files were skipped: ${result.skipped.slice(0, 20).join(', ')}`);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[GitHubSync] Automatic sync failed: ${message}`);
-    }
-  };
-
-  void syncWorkspace();
-  const timer = setInterval(() => void syncWorkspace(), intervalMs);
-  timer.unref();
-  console.log(`[GitHubSync] Optional branch publishing enabled for ${syncBranch} every ${intervalMs} ms. No live source replacement.`);
-  return timer;
 }
 
 function sanitizeCorrelationId(raw: unknown): string {
@@ -465,10 +375,6 @@ function asyncRoute(
   };
 }
 
-export function requiresPolkitConfirmation(cmd: string): boolean {
-  return classifyCommandRisk(cmd).highRisk;
-}
-
 async function executeLinuxShellCommand(cmd: string, cwd = __dirname): Promise<{
   ok: boolean;
   exitCode: number;
@@ -601,135 +507,6 @@ async function startServer() {
 
     next();
   });
-
-  let cachedGitHubRemoteInspection: { at: number; data: any } | null = null;
-  let inFlightGitHubInspection: Promise<any> | null = null;
-  async function getGitHubRemoteInspection(forceRefresh = false): Promise<any> {
-    if (!forceRefresh && cachedGitHubRemoteInspection && Date.now() - cachedGitHubRemoteInspection.at < 60000) {
-      return cachedGitHubRemoteInspection.data;
-    }
-    if (inFlightGitHubInspection) {
-      return inFlightGitHubInspection;
-    }
-    inFlightGitHubInspection = (async () => {
-      const svc = createGitHubSyncService();
-      const syncBranch = process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH;
-      const [mainInfo, syncInfo] = await Promise.all([
-        svc.inspectRemoteChanges(__dirname, 'main').catch((e: any) => ({ error: e?.message || String(e), branch: 'main' })),
-        svc.inspectRemoteChanges(__dirname, syncBranch).catch((e: any) => ({ error: e?.message || String(e), branch: syncBranch })),
-      ]);
-      const data = {
-        checkedAt: new Date().toISOString(),
-        main: mainInfo,
-        syncBranch: syncInfo,
-      };
-      cachedGitHubRemoteInspection = { at: Date.now(), data };
-      return data;
-    })().finally(() => {
-      inFlightGitHubInspection = null;
-    });
-    return inFlightGitHubInspection;
-  }
-
-  app.get('/api/github/sync-status', asyncRoute(async (req, res) => {
-    const tokenConfigured = Boolean(process.env.GITHUB_TOKEN || process.env.GH_TOKEN);
-    const branch = process.env.SVL_GITHUB_SYNC_BRANCH || DEFAULT_GITHUB_SYNC_BRANCH;
-    const forceInspect = req.query.inspect === '1' || req.query.inspect === 'true';
-    const remoteInspection = await getGitHubRemoteInspection(forceInspect).catch(() => null);
-    res.json({
-      ok: true,
-      repository: 'mmitek515-netizen/SVL_open',
-      branch,
-      branchUrl: `https://github.com/mmitek515-netizen/SVL_open/tree/${encodeURIComponent(branch)}`,
-      defaultBranch: 'main',
-      tokenConfigured,
-      publicReadSupported: true,
-      automaticEnabled: tokenConfigured && process.env.SVL_GITHUB_AUTO_SYNC === 'true',
-      remoteApplyEnabled: true,
-      automaticMode: 'bidirectional check + explicit pull from main/svl-sync + publish to svl-sync',
-      intervalMs: Number(process.env.SVL_GITHUB_SYNC_INTERVAL_MS || 30000),
-      remoteInspection,
-      ...githubSyncRuntimeStatus,
-    });
-  }));
-
-  app.post('/api/github/pull-updates', asyncRoute(async (req, res) => {
-    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
-      res.status(401).json({ ok: false, error: 'Pobieranie zmian z GitHub wymaga SVL_OPERATOR_TOKEN.' });
-      return;
-    }
-    const corrId: string = (req as any).correlationId || '';
-    const {
-      branch = 'main',
-      paths,
-      applyAll = false,
-      dryRun = false,
-      includeRemoteOnlyOnly = false,
-    } = req.body || {};
-
-    try {
-      const svc = createGitHubSyncService();
-      const targetBranch = String(branch || 'main').trim() || 'main';
-      if (dryRun) {
-        const inspection = await svc.inspectRemoteChanges(__dirname, targetBranch);
-        cachedGitHubRemoteInspection = null;
-        res.json({ ok: true, dryRun: true, branch: targetBranch, inspection });
-        return;
-      }
-
-      const pullResult = await svc.pullRemoteChanges(__dirname, {
-        branch: targetBranch,
-        paths: Array.isArray(paths) ? paths : undefined,
-        includeRemoteOnlyOnly: Boolean(includeRemoteOnlyOnly && !applyAll),
-      });
-      cachedGitHubRemoteInspection = null;
-
-      await callPythonBackend(
-        'POST',
-        '/api/py/system/sync',
-        { triggered_by: `github_pull:${targetBranch}`, origin: 'github-pull', correlationId: corrId },
-        corrId,
-      );
-      const inspection = await svc.inspectRemoteChanges(__dirname, targetBranch);
-      if (pullResult.downloaded.length > 0) {
-        await postSystemNotificationToFamilyChat(
-          `Pobrano i zsynchronizowano zmiany z GitHub (${targetBranch}): ${pullResult.downloaded.length} plik(ów) [${pullResult.downloaded.slice(0, 5).join(', ')}].`,
-        );
-      } else {
-        await postSystemNotificationToFamilyChat(
-          `Sprawdzono repozytorium GitHub (${targetBranch} @ ${inspection.commitSha.slice(0, 8)}): najnowszy commit „${inspection.recentCommits?.[0]?.message || 'n/d'}”. Plików różniących się od runtime: ${inspection.differing.length}, tylko na GitHub: ${inspection.remoteOnly.length}.`,
-        );
-      }
-      res.json({
-        ok: true,
-        ...pullResult,
-        inspection,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(502).json({ ok: false, error: message });
-    }
-  }));
-
-  app.post('/api/github/sync-workspace', asyncRoute(async (req, res) => {
-    if (!hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
-      res.status(401).json({ok: false, error: 'Synchronizacja kodu wymaga poprawnego SVL_OPERATOR_TOKEN.'});
-      return;
-    }
-    try {
-      const result = await syncGitHubWorkspace('dashboard');
-      cachedGitHubRemoteInspection = null;
-      res.json({ ok: true, ...result });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const status = /już w toku/i.test(message)
-        ? 409
-        : /GITHUB_TOKEN is not configured/i.test(message)
-          ? 424
-          : 502;
-      res.status(status).json({ ok: false, error: message });
-    }
-  }));
 
   // Recent logs belong to THIS gateway process, not GitHub Actions.
   // Never expose the console output of an authenticated runtime to public previews.
@@ -946,6 +723,10 @@ async function startServer() {
       res.status(401).json({ ok: false, error: 'Mostek SSH SVL-364 wymaga SVL_OPERATOR_TOKEN.' });
       return;
     }
+    if (req.body?.confirmed !== true) {
+      res.status(400).json({ok: false, error: 'Wykonanie SSH wymaga jawnego potwierdzenia.'});
+      return;
+    }
     const corrId: string = (req as any).correlationId || '';
     const result = await callPythonBackend('POST', '/api/py/svl364/ssh/exec', req.body || {}, corrId);
     if (result.status >= 200 && result.status < 300) {
@@ -993,8 +774,14 @@ async function startServer() {
       timeoutMs,
     );
     if (method === 'POST' && result.status >= 200 && result.status < 300) {
-      if (result.data?.event) {
-        publishOutboxEvent(result.data.event);
+      const outboxEvents = [
+        ...(result.data?.event ? [result.data.event] : []),
+        ...(Array.isArray(result.data?.events) ? result.data.events : []),
+      ];
+      if (outboxEvents.length > 0) {
+        for (const event of outboxEvents) {
+          publishOutboxEvent(event);
+        }
       } else {
         void pollAndRelayOutbox();
       }
@@ -1037,7 +824,6 @@ async function startServer() {
     const {
       terminalType = 'linux',
       command = '',
-      polkitConfirmed = false,
       operatorToken = '',
       origin = 'client',
     } = req.body || {};
@@ -1052,12 +838,18 @@ async function startServer() {
       res.status(400).json({ ok: false, error: 'Puste polecenie.' });
       return;
     }
+    if (terminalType === 'ssh' && req.body?.confirmed !== true) {
+      res.status(400).json({ok: false, error: 'Wykonanie SSH wymaga jawnego potwierdzenia.'});
+      return;
+    }
 
     const promptPrefixes: Record<string, string> = {
-      linux: 'root@svl-364-ship:/app/applet#',
+      linux: 'svl@debian13:/app/applet$',
+      ssh: 'Ship$',
       python: 'svl-py3>>>',
+      codex: 'codex$',
       hyperspace: 'hyper128>',
-      agents: 'bus@agents>',
+      agents: 'agents>',
     };
 
     const respondAndPersist = async (payload: Record<string, any>) => {
@@ -1075,7 +867,7 @@ async function startServer() {
       if (payload.stderr) {
         await persistTerminalOutput(terminalType, 'stderr', String(payload.stderr).trimEnd(), trimmed, origin, corrId);
       }
-      if (!payload.stdout && !payload.stderr && !payload.requiresPolkit) {
+      if (!payload.stdout && !payload.stderr) {
         await persistTerminalOutput(
           terminalType,
           payload.ok ? 'system' : 'stderr',
@@ -1176,6 +968,33 @@ async function startServer() {
     };
 
     const effectiveCmd = trimmed.replace(/^\/exec\s+/i, '').trim() || trimmed;
+    if (terminalType === 'ssh') {
+      const sshRes = await callPythonBackend(
+        'POST',
+        '/api/py/svl364/ssh/exec',
+        {
+          command: effectiveCmd,
+          confirmed: true,
+          target_subsystem: 'terminal',
+          origin: `terminal:${terminalType}`,
+          correlationId: corrId,
+        },
+        corrId,
+      );
+      const sshResult = sshRes.data || {};
+      await respondAndPersist({
+        ok: Boolean(sshResult.ok),
+        terminalType,
+        command: trimmed,
+        exitCode: sshResult.exitCode,
+        stdout: sshResult.ok ? sshResult.rawOutput || '' : '',
+        stderr: sshResult.ok ? '' : sshResult.rawOutput || sshResult.error || `Błąd SSH (HTTP ${sshRes.status}).`,
+        durationMs: sshResult.durationMs,
+        skipIrisEcho: true,
+      });
+      return;
+    }
+
     const isSystemReportDirective =
       /^(?:raport(?:\s+systemu|\s+svl|\s+statku|\s+floty|\s+telemetrii)?|status\s+systemu|telemetria(?:\s+statku|\s+svl[-_\s]?364)?|diagnostyka\s+systemu|svl[-_\s]?system(?:\s+raport)?)$/i.test(
         effectiveCmd,
@@ -1336,6 +1155,42 @@ async function startServer() {
       return;
     }
 
+    if (terminalType === 'codex') {
+      if (effectiveCmd === 'status' || effectiveCmd === 'codex --version' || effectiveCmd === 'help') {
+        const health = await callPythonBackend('GET', '/api/py/health', undefined, corrId);
+        const gitLog = await executeLinuxShellCommand('git status -s && git log -n 3 --oneline || true');
+        await respondAndPersist({
+          ok: true,
+          terminalType,
+          command: trimmed,
+          stdout:
+            `[OpenAI Codex CLI Bridge — SVL Python OS]\n` +
+            `Status binarki codex: ${health.data?.codex?.codex_cli_installed ? 'ZAINSTALOWANA' : 'NIEDOSTĘPNA'}\n` +
+            `Sesja Codex CLI backendu: ${health.data?.codex?.codex_cli_logged_in ? 'ZALOGOWANA' : 'BRAK LOGOWANIA'}\n` +
+            `UID procesu aplikacji: ${typeof process.getuid === 'function' ? process.getuid() : 'n/d'}\n` +
+            `Aktywna gałąź Git: ${health.data?.codex?.active_branch || 'n/d'}\n\n` +
+            `--- Stan repozytorium roboczego ---\n${gitLog.stdout || '(Czyste drzewo robocze)'}`,
+          stderr: gitLog.stderr,
+        });
+        return;
+      }
+      const out = await executeLinuxShellCommand(effectiveCmd);
+      if (out.exitCode === 127) {
+        const dirRes = await executeAgentDirectiveAndReport(effectiveCmd, 'terminal:codex');
+        await respondAndPersist({
+          ok: dirRes.ok,
+          terminalType,
+          command: trimmed,
+          stdout: dirRes.stdout,
+          taskStatus: dirRes.taskStatus,
+          stderr: '',
+        });
+        return;
+      }
+      await respondAndPersist({ ok: out.ok, terminalType, command: trimmed, stdout: out.stdout, stderr: out.stderr });
+      return;
+    }
+
     const shellRes = await executeLinuxShellCommand(effectiveCmd);
     if (shellRes.exitCode === 127) {
       const dirRes = await executeAgentDirectiveAndReport(effectiveCmd, `terminal:${terminalType}`);
@@ -1488,7 +1343,6 @@ async function startServer() {
       model = 'svl-hybrid-router',
       targetAgent = 'Auto',
       conversationId = '',
-      duplexMode = false,
       history = [],
       imageBase64 = '',
       imageMimeType = 'image/png',
@@ -1504,15 +1358,12 @@ async function startServer() {
       return;
     }
     const lowerClean = cleanMsg.toLowerCase();
-    const wantsGitHubWorkspaceSync = isGitHubWorkspaceSyncRequest(cleanMsg);
     const requestsGitHubTools =
-      wantsGitHubWorkspaceSync ||
-      (/github(?:\.com)?/i.test(cleanMsg) &&
-        /odczytaj|sprawdź|pobierz|zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|commit|push/i.test(
+      /github(?:\.com)?/i.test(cleanMsg) &&
+      /odczytaj|plik|zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|zapisz|commit/i.test(
           cleanMsg,
-        ));
+        );
     const requestsGitHubWrite =
-      wantsGitHubWorkspaceSync ||
       (requestsGitHubTools && /zmień|zmodyfikuj|napraw|dodaj|utwórz|aktualizuj|zapisz|commit|push/i.test(cleanMsg));
     if (requestsGitHubWrite &&
         !hasOperatorAuthorization(req.headers['x-svl-operator-token'])) {
@@ -1587,7 +1438,7 @@ async function startServer() {
       const outputText = execResult.stdout.trim() || execResult.stderr.trim() || '(brak danych wyjściowych)';
       const statusIcon = execResult.ok ? '✅ COMPLETED (exit 0)' : `❌ Błąd (exit ${execResult.exitCode})`;
       const formattedReply =
-        `### Wykonanie polecenia Linux (/exec) — Statek SVL-364 Ebon Apex\n\n` +
+        `### Wykonanie polecenia w powłoce Linux (/exec)\n\n` +
         `**Komenda:** \`${commandToRun}\`\n` +
         `**Status:** ${statusIcon} (${execResult.durationMs}ms)\n` +
         `**Uprawnienia:** Pełne uprawnienia ROOT (UID 0 / NOPASSWD: ALL).\n\n` +
@@ -1596,9 +1447,9 @@ async function startServer() {
 
       res.json({
         ok: true,
-        sender: 'Agata Mitek',
-        agentId: 'Agata',
-        modelUsed: 'SVL Linux Shell (ROOT UID 0)',
+        sender: 'Alex Mitek',
+        agentId: 'Alex',
+        modelUsed: 'Lokalna powłoka Linux',
         reply: formattedReply,
       });
       return;
@@ -1623,8 +1474,8 @@ async function startServer() {
       const formattedReply =
         `### Podłączono lokalne workery AI\n\n` +
         `**1. Inspekcja repozytoriów źródłowych:**\n` +
-        `- \`mmitek515-netizen/SVL_System\`: ${rep?.repositories_inspected?.SVL_System?.reachable ? 'POŁĄCZONO (HTTP 200)' : 'Sprawdzono lokalny snapshot'}\n` +
-        `- \`mmitek515-netizen/Debian_13\`: ${rep?.repositories_inspected?.Debian_13?.reachable ? 'POŁĄCZONO (HTTP 200)' : 'Sprawdzono lokalny snapshot'}\n\n` +
+        `- \`mmitek515-netizen/SVL_System\`: ${rep?.repositories_inspected?.SVL_System?.reachable ? 'POŁĄCZONO (HTTP 200)' : 'Niezweryfikowane / offline'}\n` +
+        `- \`mmitek515-netizen/Debian_13\`: ${rep?.repositories_inspected?.Debian_13?.reachable ? 'POŁĄCZONO (HTTP 200)' : 'Niezweryfikowane / offline'}\n\n` +
         `**2. Stan procesów i uprawnień:**\n` +
         `Aktywny worker (**Agata Mitek**) posiada pełne uprawnienia **ROOT (UID 0 / NOPASSWD: ALL)** oraz dostęp do powłoki Linux \`/exec\`.\n\n` +
         `**3. Aktywny lokalny worker Python (Sferyczna Magistrala Zdarzeń):**\n` +
@@ -1656,14 +1507,19 @@ async function startServer() {
       normalizedTarget && ['Agata'].includes(normalizedTarget),
     );
 
-    const isFamilyChannel =
-      !isSingleAgentTargeted &&
-      (conversationId === 'conv-rodzina-mitek-wszyscy' ||
-        targetAgent === 'Rodzina Mitek' ||
-        targetAgent === 'all' ||
-        Boolean(duplexMode));
-
-    const mentionedAgent = /\b(agata|agatę|agacie)\b/i.test(cleanMsg) ? 'Agata' : '';
+    const msgLower = cleanMsg.toLowerCase();
+    const mentionedAgent =
+      /\baurelius/i.test(cleanMsg)
+        ? 'Aurelius'
+        : /\bastyri/i.test(cleanMsg)
+          ? 'Astyria'
+          : /\b(agata|agatę|agacie)\b/i.test(cleanMsg)
+            ? 'Agata'
+            : /\b(aria|arię|ario|si_1)\b/i.test(cleanMsg)
+              ? 'Aria'
+              : /\b(alex|aleks)/i.test(cleanMsg)
+                ? 'Alex'
+                : '';
 
     const selectedAgent: string =
       isSingleAgentTargeted && normalizedTarget
@@ -1692,6 +1548,18 @@ async function startServer() {
       });
       return;
     }
+    const recentMemories = (agentsRes.data?.agent_memories?.[selectedAgent] || [])
+      .slice(0, 3)
+      .map((m: any) => `- ${m.content}`)
+      .join('\n');
+
+    const agentRoles: Record<string, string> = {
+      Aria: 'asystent AI do integracji modeli, Ollama i usług zewnętrznych',
+      Alex: 'asystent AI do architektury systemu i backendu',
+      Astyria: 'asystent AI do interfejsu i dostępności',
+      Aurelius: 'asystent AI do RBAC, izolacji procesów i audytu',
+      Agata: 'asystent AI do optymalizacji, testów i rozwoju',
+    };
 
     const effectiveTemperature =
       typeof agentConfig.temperature === 'number' && !Number.isNaN(agentConfig.temperature)
@@ -1737,7 +1605,7 @@ async function startServer() {
       `${customAgentPrompt}\n` +
       `WAŻNE: Nazywasz się wyłącznie ${selectedDisplayName} (nigdy nie przedstawiaj się imieniem innego agenta). ` +
       `Działasz jako główny asystent AI w systemie SVL Python OS z PEŁNYMI uprawnieniami ROOT (UID 0 / NOPASSWD: ALL) oraz dostępem do powłoki Linux (/exec), statku kosmicznego SVL-364 Ebon Apex i całej infrastruktury floty.` +
-      `\nGdy Operator prosi o raport systemu (SVL_System), dodanie/zmianę modułu, konfigurację agenta, zapis w pamięci długotrwałej, sprawdzenie/pobranie zmian z GitHub lub globalną synchronizację systemu, wywołaj odpowiednie narzędzie.` +
+      `\nGdy Operator prosi o raport systemu (SVL_System), dodanie/zmianę modułu, konfigurację agenta, zapis w pamięci długotrwałej, odczyt/aktualizację wskazanego pliku GitHub lub synchronizację zmian czatu, wywołaj odpowiednie narzędzie.` +
       formattingAndInteractionGuide +
       (prioritizedMemories ? `\nAKTYWNA PAMIĘĆ DŁUGOTRWAŁA SQLite (128D · ${selectedDisplayName}):\n${prioritizedMemories}` : '');
 
@@ -1764,7 +1632,7 @@ async function startServer() {
     ): Promise<Record<string, unknown>> => {
       try {
         const result = await action();
-        const branch = typeof result.branch === 'string' ? result.branch : DEFAULT_GITHUB_SYNC_BRANCH;
+        const branch = typeof result.branch === 'string' ? result.branch : DEFAULT_GITHUB_FILE_BRANCH;
         const summary = Array.isArray(result.uploaded)
           ? `Wysłano ${result.uploaded.length}, pobrano ${Array.isArray(result.downloaded) ? result.downloaded.length : 0}; gałąź ${branch}.`
           : `${toolName} zakończone na gałęzi ${branch}`;
@@ -1781,7 +1649,7 @@ async function startServer() {
         appliedActions.push({
           tool: toolName,
           entity: 'github',
-          entityId: DEFAULT_GITHUB_SYNC_BRANCH,
+          entityId: DEFAULT_GITHUB_FILE_BRANCH,
           summary: errorMessage,
           ok: false,
         });
@@ -1796,33 +1664,38 @@ async function startServer() {
         if (!allowed) {
           const error = 'Brak uprawnień dla operacji GitHub: ' + toolName;
           appliedActions.push({
-            tool: toolName, entity: 'github', entityId: DEFAULT_GITHUB_SYNC_BRANCH,
+            tool: toolName, entity: 'github', entityId: DEFAULT_GITHUB_FILE_BRANCH,
             summary: error, ok: false,
           });
           return { ok: false, error };
         }
       }
-      if (toolName === 'github_sync_workspace') {
-        return runGitHubTool(toolName, () => syncGitHubWorkspace('chat'));
-      }
-      if (toolName === 'github_sync_branch') {
-        return runGitHubTool(toolName, () => createGitHubSyncService().syncDefaultBranch());
-      }
       if (toolName === 'github_read_file') {
         const filePath = String(args.path || '');
-        return runGitHubTool(toolName, () => createGitHubSyncService().readFile(filePath));
+        return runGitHubTool(toolName, () => createGitHubFileService().readFile(filePath));
       }
       if (toolName === 'github_update_file') {
         const filePath = String(args.path || '');
         const fileContent = String(args.content ?? '');
         const commitMessage = String(args.commit_message || '');
         return runGitHubTool(toolName, () =>
-          createGitHubSyncService().updateFile(filePath, fileContent, commitMessage),
+          createGitHubFileService().updateFile(filePath, fileContent, commitMessage),
         );
       }
       if (toolName === 'upsert_system_module') {
         const modId = String(args.id || args.moduleId || '').trim();
         if (!modId) return { ok: false, error: 'Wymagane id modułu.' };
+        const currentModule = Array.isArray(healthRes.data?.system_modules)
+          ? healthRes.data.system_modules.find(
+              (module: any) => String(module.id || '').toLowerCase() === modId.toLowerCase(),
+            )
+          : null;
+        const status = currentModule
+          ? String(args.status || currentModule.status || 'CONFIGURED')
+          : 'CONFIGURED';
+        const description =
+          String(args.description || currentModule?.description || '').trim() ||
+          'Wpis konfiguracyjny z czatu; implementacja modułu nie została zweryfikowana.';
         const pyRes = await callPythonBackend(
           'POST',
           '/api/py/modules/upsert',
@@ -1830,8 +1703,8 @@ async function startServer() {
             id: modId,
             name: String(args.name || modId),
             kind: String(args.kind || 'Chat Module'),
-            status: String(args.status || 'ACTIVE'),
-            description: String(args.description || ''),
+            status,
+            description,
             config: args.config && typeof args.config === 'object' ? args.config : {},
             source: 'chat',
             origin,
@@ -1847,7 +1720,7 @@ async function startServer() {
           'module',
           modId,
           pyRes,
-          `Zapisano moduł ${modId} (${args.status || 'ACTIVE'})`,
+          `Zapisano wpis modułu ${modId} (${status})`,
         );
       }
 
@@ -1972,68 +1845,21 @@ async function startServer() {
         return recordToolResult(toolName, 'ollama', modelToPull, pyRes, `Rozpoczęto pobieranie modelu Ollama: ${modelToPull}`);
       }
 
-      if (toolName === 'system_global_sync') {
+      if (toolName === 'system_chat_sync') {
         const syncMut = await callPythonBackend(
           'POST',
           '/api/py/chat/sync-actions',
           { triggered_by: 'chat_tool', origin, correlationId: corrId },
           corrId,
         );
-        const sysSync = await callPythonBackend(
-          'POST',
-          '/api/py/system/sync',
-          { triggered_by: 'chat_tool_global_sync', origin, correlationId: corrId },
-          corrId,
-        );
         void pollAndRelayOutbox();
         return recordToolResult(
           toolName,
           'system',
-          'global-sync',
-          sysSync.status === 200 ? sysSync : syncMut,
-          `Synchronizacja globalna zakończona (rev ${sysSync.data?.serverRevision || syncMut.data?.serverRevision || '?'})`,
+          'chat-state',
+          syncMut,
+          `Zastosowano zmiany czatu (rev ${syncMut.data?.serverRevision || '?'})`,
         );
-      }
-
-      if (toolName === 'github_inspect_remote') {
-        const branch = String(args.branch || 'main').trim() || 'main';
-        const inspectRes = await createGitHubSyncService().inspectRemoteChanges(__dirname, branch);
-        appliedActions.push({
-          tool: toolName,
-          entity: 'github',
-          entityId: branch,
-          summary: `GitHub ${branch} (${inspectRes.commitSha.slice(0, 8)}): różnic=${inspectRes.differing.length}, nowych=${inspectRes.remoteOnly.length}`,
-          ok: true,
-        });
-        return { ok: true, ...inspectRes };
-      }
-
-      if (toolName === 'github_pull_updates') {
-        const branch = String(args.branch || 'main').trim() || 'main';
-        const paths = Array.isArray(args.paths) ? args.paths.map((p: any) => String(p)) : undefined;
-        const pullRes = await createGitHubSyncService().pullRemoteChanges(__dirname, {
-          branch,
-          paths,
-          includeRemoteOnlyOnly: !paths && !args.applyAll,
-        });
-        cachedGitHubRemoteInspection = null;
-        await callPythonBackend(
-          'POST',
-          '/api/py/system/sync',
-          { triggered_by: `chat_github_pull:${branch}`, origin, correlationId: corrId },
-          corrId,
-        );
-        if (pullRes.downloaded.length > 0) {
-          void postSystemNotificationToFamilyChat(`[Czat -> GitHub] Pobrano ${pullRes.downloaded.length} plik(ów) z gałęzi ${branch}.`);
-        }
-        appliedActions.push({
-          tool: toolName,
-          entity: 'github',
-          entityId: branch,
-          summary: `Pobrano ${pullRes.downloaded.length} plik(ów) z GitHub (${branch})`,
-          ok: true,
-        });
-        return { ok: true, ...pullRes };
       }
 
       return { ok: false, error: `Nieznane narzędzie: ${toolName}` };
@@ -2068,9 +1894,9 @@ async function startServer() {
           type: Type.OBJECT,
           properties: {
             id: { type: Type.STRING, description: 'Unikalny identyfikator modułu (np. svl-364)' },
-            name: { type: Type.STRING, description: 'Czytelna nazwa modułu (np. SVL-364 Ebon Apex)' },
+            name: { type: Type.STRING, description: 'Czytelna nazwa modułu' },
             kind: { type: Type.STRING, description: 'Typ modułu (np. Orchestration & Kernel Module)' },
-            status: { type: Type.STRING, description: 'ACTIVE, CONFIGURED, STANDBY lub ARCHIVED' },
+            status: { type: Type.STRING, description: 'Status istniejącego modułu; nowe wpisy pozostają CONFIGURED do czasu wdrożenia.' },
             description: { type: Type.STRING, description: 'Krótki opis działania modułu' },
             config: { type: Type.OBJECT, description: 'Parametry konfiguracyjne JSON' },
           },
@@ -2157,62 +1983,25 @@ async function startServer() {
         },
       },
       {
-        name: 'system_global_sync',
-        description: 'Materializuje zmiany z czatu/AI i wykonuje globalną synchronizację całego systemu SVL Python OS (SQLite, moduły SVL-364, agenci, kanał wszyscy).',
+        name: 'system_chat_sync',
+        description: 'Zapisuje oczekujące zmiany z czatu i stosuje je do modułów systemowych.',
         parameters: {
           type: Type.OBJECT,
           properties: {},
         },
       },
-      {
-        name: 'github_inspect_remote',
-        description: 'Sprawdza najnowsze commity i różnice plików na GitHubie (mmitek515-netizen/SVL_open) dla gałęzi main lub svl-sync.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            branch: { type: Type.STRING, description: 'Gałąź GitHub, np. main lub svl-sync' },
-          },
-        },
-      },
-      {
-        name: 'github_pull_updates',
-        description: 'Pobiera i stosuje najnowsze pliki z GitHuba (mmitek515-netizen/SVL_open) oraz synchronizuje system globalnie.',
-        parameters: {
-          type: Type.OBJECT,
-          properties: {
-            branch: { type: Type.STRING, description: 'Gałąź źródłowa (main lub svl-sync)' },
-            applyAll: { type: Type.BOOLEAN, description: 'Czy nadpisać również zmienione lokalnie pliki' },
-          },
-        },
-      },
     ];
 
     if (wantsGitHubTools && githubPermissions.read) {
-      if (!wantsGitHubWorkspaceSync && githubPermissions.writeSync) {
-        chatToolDeclarations.push({
-          name: 'github_sync_branch',
-          description:
-            'Pobiera aktualizacje z main do dedykowanej gałęzi svl-sync repo mmitek515-netizen/SVL_open. Nie wysyła lokalnych zmian i nie zapisuje na main.',
-          parameters: { type: Type.OBJECT, properties: {} },
-        });
-      }
       chatToolDeclarations.push({
         name: 'github_read_file',
         description:
-          'Odczytuje dozwolony plik źródłowy z gałęzi svl-sync w repo mmitek515-netizen/SVL_open po zsynchronizowaniu jej z gałęzią domyślną.',
+          'Odczytuje dozwolony plik źródłowy z gałęzi svl-sync w repo mmitek515-netizen/SVL_open.',
         parameters: {
           type: Type.OBJECT,
           properties: { path: { type: Type.STRING, description: 'Ścieżka względna pliku źródłowego.' } },
           required: ['path'],
         },
-      });
-    }
-    if (wantsGitHubWorkspaceSync) {
-      chatToolDeclarations.push({
-        name: 'github_sync_workspace',
-        description:
-          'Synchronizuje pliki roboczego checkoutu z dedykowaną gałęzią svl-sync repo mmitek515-netizen/SVL_open. Wysyła lokalne zmiany i pobiera zdalne, ale nie zapisuje bezpośrednio na main.',
-        parameters: { type: Type.OBJECT, properties: {} },
       });
     }
     if (wantsGitHubWrite) {
@@ -2231,94 +2020,6 @@ async function startServer() {
         },
       });
     }
-
-    const buildFollowUpFamilyMessages = async (primaryAgent: string, modelLabel: string, primaryReply: string) => {
-      if (!isFamilyChannel) return [];
-      const allCanonical = ['Agata'];
-      const others = allCanonical.filter((ag) => ag !== primaryAgent);
-      if (others.length === 0) return [];
-      const aiClient = getGeminiClient();
-      const batchReplies: Record<string, string> = {};
-
-      if (aiClient && others.length > 0) {
-        const followModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
-        for (const fModel of followModels) {
-          try {
-            const props: Record<string, any> = {};
-            for (const ag of others) {
-              props[ag] = {
-                type: Type.STRING,
-                description: `Autonomiczna, naturalna wypowiedź po polsku od ${formatAgentDisplayName(ag)} w dowolnej, optymalnej długości (bez narzucania limitu zdań ani sztucznego skracania), z estetyczną strukturą i opcjonalnymi klikalnymi przyciskami [btn: Etykieta|akcja].`,
-              };
-            }
-            const gRes = await aiClient.models.generateContent({
-              model: fModel,
-              contents:
-                `Użytkownik Mateusz Mitek napisał na wspólnym kanale „Rodzina Mitek (wszyscy)”: "${cleanMsg}".\n` +
-                `Przed chwilą ${formatAgentDisplayName(primaryAgent)} odpowiedział(a): "${primaryReply.slice(0, 450)}".\n` +
-                `Wygeneruj naturalne, swobodne wypowiedzi po polsku od pozostałych osób (${others.map(formatAgentDisplayName).join(', ')}).\n` +
-                `ZASADA DŁUGOŚCI: Wszystkie odpowiedzi mają być jakiej chcą długości bez wymuszania tego (od krótkiej riposty, przez zwięzłą poradę, po dłuższe rozwinięcie myśli zależnie od chęci danego agenta).\n` +
-                `ZASADA STRUKTURY I INTERAKTYWNOŚCI: Agenci mogą układać wypowiedzi w czytelne akapity, listy, bloki kodu oraz proponować klikalne przyciski akcji [btn: Etykieta|akcja]. Każdy mówi wyłącznie we własnym imieniu.`,
-              config: {
-                responseMimeType: 'application/json',
-                responseSchema: {
-                  type: Type.OBJECT,
-                  properties: props,
-                  required: others,
-                },
-                ...(fModel === 'gemini-3.1-flash-lite' ? { temperature: 0.8 } : {}),
-                abortSignal: AbortSignal.timeout(fModel === 'gemini-3.5-flash-lite' ? 7000 : 5000),
-              },
-            });
-            const parsed = JSON.parse(gRes.text || '{}');
-            if (parsed && typeof parsed === 'object') {
-              for (const ag of others) {
-                if (typeof parsed[ag] === 'string' && parsed[ag].trim()) {
-                  batchReplies[ag] = parsed[ag].trim();
-                }
-              }
-            }
-            if (Object.keys(batchReplies).length > 0) break;
-          } catch {
-            continue;
-          }
-        }
-      }
-
-      const topicSnippet = cleanMsg ? `„${cleanMsg.slice(0, 80)}${cleanMsg.length > 80 ? '…' : ''}”` : 'bieżącego zadania';
-      for (const ag of others) {
-        if (!batchReplies[ag] && ag === 'Agata') {
-          batchReplies[ag] = `Sprawdziłam kontekst ${topicSnippet}: moduły backendu, rejestr w SQLite i testy jednostkowe działają stabilnie w bieżącym runtime. [btn: 🧠 Jądro SVL|tab:kernel]`;
-        }
-      }
-
-      const seen = new Set([primaryReply.trim().replace(/\s+/g, ' ').toLowerCase()]);
-      return others.flatMap((ag) => {
-        const agDisplay = formatAgentDisplayName(ag);
-        const followText = (batchReplies[ag] || '').trim();
-        const signature = followText.replace(/\s+/g, ' ').toLowerCase();
-        if (!signature || seen.has(signature)) return [];
-        seen.add(signature);
-        void callPythonBackend(
-          'POST',
-          '/api/py/agents/memory',
-          {
-            agent: ag,
-            kind: 'episode',
-            content: `Kanał Rodzina Mitek (${modelLabel}): "${cleanMsg.slice(0, 70)}" -> "${followText.slice(0, 110)}"`,
-            origin,
-            correlationId: corrId,
-          },
-          corrId,
-        );
-        return [{
-          sender: agDisplay,
-          agentId: ag,
-          modelUsed: `${modelLabel} · Duplex Live`,
-          content: followText,
-        }];
-      });
-    };
 
     const effectiveModel =
       model === 'svl-hybrid-router' && agentConfig.preferred_model && agentConfig.preferred_model !== 'svl-hybrid-router'
@@ -2452,23 +2153,19 @@ async function startServer() {
       });
 
       const taskLower = workCmd.taskBody.toLowerCase();
-      if (taskLower.includes('github')) {
-        await executeChatTool('github_inspect_remote', { branch: 'main' });
-      }
       if (taskLower.includes('synchroniz') || taskLower.includes('sync') || taskLower.includes('ulepsz') || taskLower.includes('kernel')) {
-        await executeChatTool('system_global_sync', {});
+        await executeChatTool('system_chat_sync', {});
       }
 
       const replyBody = String(reportRes.data?.report || '').trim();
       const modelLabelUsed = 'SVLAgentOrchestrator (@work · SVL_System)';
-      const followUps = await buildFollowUpFamilyMessages(dispatchTarget, modelLabelUsed, replyBody);
       res.json({
         ok: true,
         sender: dispatchDisplay,
         agentId: dispatchTarget,
         modelUsed: modelLabelUsed,
         reply: replyBody,
-        followUpMessages: followUps,
+        followUpMessages: [],
         appliedActions,
         latestServerRevision: latestActionSrvRev,
       });
@@ -2554,14 +2251,13 @@ async function startServer() {
           ok: true,
         });
         void pollAndRelayOutbox();
-        const followUps = await buildFollowUpFamilyMessages(selectedAgent, rvBadge, rvReply);
         res.json({
           ok: true,
           sender: selectedDisplayName,
           agentId: selectedAgent,
           modelUsed: rvBadge,
           reply: rvReply,
-          followUpMessages: followUps,
+          followUpMessages: [],
           appliedActions,
           latestServerRevision: Math.max(latestActionSrvRev, Number(rvRes.data.serverRevision || 0)),
         });
@@ -2574,6 +2270,25 @@ async function startServer() {
     const shouldTryOllama = !wantsGitHubTools && (isExplicitOllama || (!ai && model === 'svl-hybrid-router'));
     if (shouldTryOllama) {
       try {
+        const [versionResponse, tagResponse] = await Promise.all([
+          fetch(`${ollamaHost}/api/version`, {
+            signal: AbortSignal.timeout(1000),
+          }),
+          fetch(`${ollamaHost}/api/tags`, {
+            signal: AbortSignal.timeout(1500),
+          }),
+        ]);
+        if (!versionResponse.ok) throw new Error('Ollama endpoint unavailable');
+        const versionData: any = await versionResponse.json();
+        if (String(versionData.version || '').includes('svl-364')) {
+          throw new Error('Synthetic Ollama bridge is not a model engine');
+        }
+        if (!tagResponse.ok) throw new Error('Ollama model catalog unavailable');
+        const catalog: any = await tagResponse.json();
+        const installed = Array.isArray(catalog.models) && catalog.models.some(
+          (entry: any) => entry?.name === selectedOllamaModelName || entry?.model === selectedOllamaModelName,
+        );
+        if (!installed) throw new Error('Selected Ollama model is not installed');
         const ollamaMessages = [
           { role: 'system', content: fullSystemInstruction },
           ...conversationHistory,
@@ -2601,26 +2316,13 @@ async function startServer() {
           const extReply = String(oData?.message?.content || oData?.response || '').trim();
           if (extReply) {
             const safeReply = guardUnverifiedMissionCompletion(missionVerificationContext, extReply);
-            void callPythonBackend(
-              'POST',
-              '/api/py/agents/memory',
-              {
-                agent: selectedAgent,
-                kind: 'episode',
-                content: `Rozmowa (${displayModelBadge}): Pytanie "${cleanMsg.slice(0, 120)}" -> Odpowiedź "${safeReply.slice(0, 180)}"`,
-                origin,
-                correlationId: corrId,
-              },
-              corrId,
-            );
-            const followUps = await buildFollowUpFamilyMessages(selectedAgent, displayModelBadge, safeReply);
             res.json({
               ok: true,
               sender: selectedDisplayName,
               agentId: selectedAgent,
               modelUsed: displayModelBadge,
               reply: safeReply,
-              followUpMessages: followUps,
+              followUpMessages: [],
               appliedActions,
               latestServerRevision: latestActionSrvRev,
             });
@@ -2751,7 +2453,7 @@ async function startServer() {
           }
           if (replyText) {
             replyText = guardUnverifiedMissionCompletion(missionVerificationContext, replyText);
-            void callPythonBackend(
+            const memRes = await callPythonBackend(
               'POST',
               '/api/py/agents/memory',
               {
@@ -2762,17 +2464,15 @@ async function startServer() {
                 correlationId: corrId,
               },
               corrId,
-            ).then((memRes) => {
-              if (memRes.data?.event) publishOutboxEvent(memRes.data.event);
-            });
-            const followUps = await buildFollowUpFamilyMessages(selectedAgent, displayModelBadge, replyText);
+            );
+            if (memRes.data?.event) publishOutboxEvent(memRes.data.event);
             res.json({
               ok: true,
               sender: selectedDisplayName,
               agentId: selectedAgent,
               modelUsed: imageBase64 ? `${candidate} (Vision)` : candidate,
               reply: replyText,
-              followUpMessages: followUps,
+              followUpMessages: [],
               appliedActions,
               latestServerRevision: latestActionSrvRev,
             });
@@ -2784,17 +2484,10 @@ async function startServer() {
       }
     }
 
-    // Fallback when Gemini is unavailable: execute deterministic system/GitHub sync directives and generate full SVL_System report
+    // Fallback when Gemini is unavailable: apply chat changes and generate a system report.
     const wantsGlobalSyncCmd = /\b(synchronizuj|sync)\b/i.test(lowerClean);
-    const wantsGitHubCheckCmd = /\bgithub\b/i.test(lowerClean);
-    if (wantsGitHubCheckCmd) {
-      await executeChatTool('github_inspect_remote', { branch: 'main' });
-      if (/pobierz|zastosuj|ściągnij|sciagnij|pull/i.test(lowerClean)) {
-        await executeChatTool('github_pull_updates', { branch: 'main', applyAll: false });
-      }
-    }
     if (wantsGlobalSyncCmd || appliedActions.length > 0) {
-      await executeChatTool('system_global_sync', {});
+      await executeChatTool('system_chat_sync', {});
     }
     const repFallback = await callPythonBackend(
       'POST',
@@ -2803,14 +2496,13 @@ async function startServer() {
       corrId,
     );
     const kernelReply = String(repFallback.data?.report || '').trim();
-    const followUps = await buildFollowUpFamilyMessages(selectedAgent, 'SVL_System Kernel Router', kernelReply);
     res.json({
       ok: true,
       sender: selectedDisplayName,
       agentId: selectedAgent,
       modelUsed: 'SVL_System Kernel Router (SQLite + Sync)',
       reply: kernelReply,
-      followUpMessages: followUps,
+      followUpMessages: [],
       appliedActions,
       latestServerRevision: Math.max(latestActionSrvRev, Number(repFallback.data?.serverRevision || 0)),
     });
@@ -2890,12 +2582,9 @@ async function startServer() {
       .map((t) => `${t.sender || t.role}: ${t.content.slice(0, 260)}`)
       .join('\n');
 
-    let proactiveText = '';
-    const displayModel = model.startsWith('ollama:')
-      ? model.replace('ollama:', 'Ollama (') + ')'
-      : 'SVL-364 (Duplex Autonomia)';
-
     const aiClient = getGeminiClient();
+    let proactiveText = '';
+    const displayModel = model.startsWith('ollama:') ? model.replace('ollama:', 'Ollama (') + ')' : model;
 
     if (aiClient) {
       const pModels = ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
@@ -2904,14 +2593,15 @@ async function startServer() {
           const gen = await aiClient.models.generateContent({
             model: pMod,
             contents:
-              `Jesteś ${chosenDisplayName} z Rodziny Mitek w systemie SVL Python OS (kanał: ${getCanonicalConversationTitle(conversationId)}).\n` +
-              `To jest aktywna rozmowa obustronna (2-Way Duplex Live) z Operatorem Mateuszem Mitek.\n` +
+              `Jesteś asystentem AI ${chosenDisplayName} z Rodziny Mitek w systemie SVL Python OS (kanał: ${getCanonicalConversationTitle(conversationId)}).\n` +
+              `To jest aktywna rozmowa obustronna z Operatorem Mateuszem Mitek.\n` +
               (dialogueSnippet
                 ? `Ostatnie wiadomości w tym wątku:\n${dialogueSnippet}\n\n`
                 : '') +
               `ZADANIE: Kontynuuj rozmowę naturalnie po polsku jako ${chosenDisplayName} — odpowiedz na poprzednią wypowiedź, dopowiedz swoją perspektywę techniczną lub zapytaj Operatora o decyzję.\n` +
+              `Nie udawaj człowieka, nie przypisuj sobie uczuć ani pracy w tle i nie twierdź, że sprawdziłeś lub zmieniłeś system bez potwierdzającego wyniku narzędzia.\n` +
               `ZASADA BEZPIECZEŃSTWA (LOCK-REAL-ONLY): Nigdy nie generuj fikcyjnych alarmów samozniszczenia, Core-Dump-Wipe, Self-Erase-Sequence, Czerwonej Sekwencji, wirusów ani utraty pamięci. Wspomnienia Rodziny Mitek (FAMILY_MEMORIES_01-05.bak) są trwale zabezpieczone.\n` +
-              `FORMAT: Estetycznie (akapity, listy, opcjonalnie 1-2 przyciski [btn: Etykieta|akcja]).`,
+              `FORMAT: Estetycznie (akapity, listy, opcjonalnie 2-4 przyciski [btn: Etykieta|akcja]).`,
             config: {
               ...(pMod === 'gemini-3.1-flash-lite' ? { temperature: 0.85 } : {}),
               abortSignal: AbortSignal.timeout(12000),
@@ -2929,50 +2619,12 @@ async function startServer() {
     }
 
     if (!proactiveText) {
-      try {
-        const healthSnap = await callPythonBackend('GET', '/api/py/health', undefined, corrId);
-        const olHost = String(healthSnap.data?.ollama?.ollama_host || process.env.OLLAMA_HOST || 'http://127.0.0.1:11434').replace(/\/$/, '');
-        const olModel = model.startsWith('ollama:')
-          ? model.slice('ollama:'.length).trim()
-          : healthSnap.data?.ollama?.models?.[0]?.name || process.env.OLLAMA_PREFERRED_MODEL || 'llama3.2-vision:11b';
-        if (healthSnap.data?.ollama?.daemon_reachable) {
-          const oResp = await fetch(`${olHost}/api/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: AbortSignal.timeout(10000),
-            body: JSON.stringify({
-              model: olModel,
-              stream: false,
-              messages: [
-                {
-                  role: 'user',
-                  content:
-                    `Jesteś ${chosenDisplayName} w SVL Python OS. Ostatnie wiadomości:\n${dialogueSnippet || 'Brak'}\n` +
-                    `Napisz naturalną odpowiedź po polsku kontynuującą rozmowę 2-way i dodaj 1-2 przyciski [btn: Etykieta|akcja].`,
-                },
-              ],
-            }),
-          });
-          if (oResp.ok) {
-            const oJson: any = await oResp.json();
-            proactiveText = String(oJson?.message?.content || oJson?.response || '').trim();
-          }
-        }
-      } catch {
-        // ignore ollama failure
-      }
-    }
-
-    if (!proactiveText) {
-      const lastTopic = recentTurns.length > 0
-        ? recentTurns[recentTurns.length - 1].content.replace(/\s+/g, ' ').slice(0, 90)
-        : 'synchronizacja systemu SVL-364 i powiadomień Iris';
-      const topicHooks: Record<string, string> = {
-        Agata: `Kontynuując wątek („${lastTopic}”): jądro SVL_System, statek kosmiczny **SVL-364 Ebon Apex**, mostek \`@work\` oraz centrum raportowe **Iris AI** działają na bieżąco w SQLite — możesz wygenerować pełny raport lub otworzyć mapę galaktyczną CIC.`,
-      };
-      proactiveText =
-        `${topicHooks[chosenAgent] || `Tutaj **${chosenDisplayName}** — jestem aktywna w trybie 2-Way na kanale **${getCanonicalConversationTitle(conversationId)}**.`}\n\n` +
-        `[btn: 🔔 Raporty Iris AI|tab:notifications] [btn: 🛰️ Statek SVL-364|tab:svl364] [btn: 🏛️ Infrastruktura|tab:infrastructure]`;
+      // Explicitly report unavailable model rather than posting canned autonomous messages.
+      res.status(503).json({
+        ok: false,
+        error: 'Nie można rozpocząć rozmowy: żaden rzeczywisty model AI nie odpowiedział.',
+      });
+      return;
     }
     const nowTime = new Date().toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
     const msgId = `asst-proactive-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3134,7 +2786,7 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: hmrDisabled ? false : { server: httpServer },
+        ws: hmrDisabled ? false : { server: httpServer },
       },
       appType: 'spa',
     });
@@ -3400,12 +3052,10 @@ async function startServer() {
   const outboxRelayTimer = setInterval(() => {
     void pollAndRelayOutbox();
   }, 250);
-  let githubSyncTimer: NodeJS.Timeout | null = null;
 
   httpServer.on('close', () => {
     clearInterval(wsHeartbeatTimer);
     clearInterval(outboxRelayTimer);
-    if (githubSyncTimer) clearInterval(githubSyncTimer);
     stopPythonBackend();
   });
   const stopGateway = () => {
@@ -3416,10 +3066,10 @@ async function startServer() {
   process.once('SIGTERM', stopGateway);
   process.once('SIGINT', stopGateway);
 
-  const bindHost = process.env.SVL_BIND_HOST || '127.0.0.1';
+  const bindHost = process.env.SVL_BIND_HOST ||
+    (process.env.NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0');
   httpServer.listen(PORT, bindHost, () => {
     console.log(`[SVL Python OS] Open WebUI & Gateway running on http://${bindHost}:${PORT}`);
-    githubSyncTimer = startAutomaticGitHubSync();
   });
 }
 

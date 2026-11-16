@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-SVL PYTHON OS — CORE LAYER (v5.6.0-Production)
+SVL PYTHON OS — CORE LAYER
 Refactored from user-supplied SVLSystemKernel code:
 1. VisualScope: Resource/event visibility registry, RBAC read permissions, monitoring scopes, and real Linux host telemetry integration.
 2. SVLProtectedVariable: Cryptographically authenticated configuration & secret store. Hardcoded '364_OMNIKLUCZ_ROOT' token is REMOVED and replaced with HMAC constant-time verification against backend SVL_OPERATOR_TOKEN (>= 32 chars) and full audit logging.
 3. TopologicalInfinityEngine: Stereographic compactification x / (1 + |x|) on [-inf, +inf] -> [-1, 1] and Pythagorean compact metric c. Explicitly decoupled from hardware performance claims.
-4. SVLSystemKernel: Central SQLite-persisted kernel managing configuration, service registry, agent registry, verified update history (separating real updates from marked demo fixtures), diagnostics, and structured JSON reports.
+4. SVLSystemKernel: Central SQLite-persisted kernel managing configuration, service registry, agent registry, recorded update history, diagnostics, and structured JSON reports.
 """
 
 from __future__ import annotations
@@ -214,13 +214,13 @@ class VisualScope:
         }
 
     @classmethod
-    def get_registry_snapshot(cls) -> list[dict[str, Any]]:
+    def get_registry_entries(cls) -> list[dict[str, Any]]:
         return [scope.to_dict() for scope in cls._registry.values()]
 
 
 class SVLProtectedVariable:
     """
-    Klasa v5.6.0-Production: Bezpieczne zarządzanie konfiguracją, kontrola uprawnień,
+    Bezpieczne zarządzanie konfiguracją, kontrola uprawnień,
     rejestrowanie zmian (audyt) i ochrona sekretów.
     Usunięto zahardkodowany token '364_OMNIKLUCZ_ROOT' — autoryzacja odbywa się
     wyłącznie przez kryptograficzne porównanie z SVL_OPERATOR_TOKEN po stronie backendu.
@@ -334,7 +334,7 @@ class SVLProtectedVariable:
 
 class TopologicalInfinityEngine:
     """
-    Silnik v5.6.0-Production: Przekształca przedziały nieograniczone [-inf, +inf]
+    Przekształca przedziały nieograniczone [-inf, +inf]
     w domknięty przedział zwarty [-1.0, 1.0] za pomocą przekształcenia
     stereograficznego x / (1 + |x|).
     UWAGA ARCHITEKTONICZNA: Jest to deterministyczny moduł obliczeń matematycznych;
@@ -386,37 +386,12 @@ class TopologicalInfinityEngine:
 # WARSTWA 3: KERNEL JĄDRA, HISTORIA I CONFIG (INTEGRATED SYSTEM + SQLITE)
 # ---------------------------------------------------------------------------
 
-DEMO_HISTORICAL_FIXTURES = [
-    {
-        "wersja": "1.0.0-Legacy",
-        "typ": "DEMO_FIXTURE",
-        "opis": "[DANE DEMONSTRACYJNE Z KODU WEJŚCIOWEGO] Inicjalizacja bazowa. Osadzenie pierwotnych matryc behawioralnych agentów.",
-        "data": "700tys_lat_wstecz",
-        "is_demo": True,
-    },
-    {
-        "wersja": "5.2.0-Safeguard",
-        "typ": "DEMO_FIXTURE",
-        "opis": "[DANE DEMONSTRACYJNE Z KODU WEJŚCIOWEGO] Wdrożenie klas SVLProtectedVariable. Izolacja tożsamości, pancerz obronny.",
-        "data": "2026-10-15 18:41:22 CEST",
-        "is_demo": True,
-    },
-    {
-        "wersja": "5.5.0-Reflective",
-        "typ": "DEMO_FIXTURE",
-        "opis": "[DANE DEMONSTRACYJNE Z KODU WEJŚCIOWEGO] Uzwarcenie topologiczne domen SI do przedziału [-1, 1].",
-        "data": "2026-10-15 21:12:05 CEST",
-        "is_demo": True,
-    },
-]
-
-
 class SVLSystemKernel:
     """
     Produkcyjny SVLSystemKernel:
     - Zarządza konfiguracją, rejestrem usług, rejestrem agentów, zdarzeniami i diagnostyką.
     - Przechowuje trwałą historię aktualizacji, logi audytu i pamięć w bazie SQLite.
-    - Oddziela rzeczywistą historię wdrożeń od oznaczonych danych demonstracyjnych.
+    - Przechowuje wyłącznie jawnie zapisane aktualizacje w historii wdrożeń.
     """
 
     def __init__(self, db_path: Optional[str] = None, operator_token: Optional[str] = None) -> None:
@@ -433,7 +408,11 @@ class SVLSystemKernel:
 
         # 1. Konfiguracja Systemowa z ochroną SVLProtectedVariable
         self.operator = SVLProtectedVariable("OPERATOR", "Mateusz Mitek", security_level="MAXIMUM")
-        self.sys_version = SVLProtectedVariable("SYS_VERSION", "5.6.0-QuantumWheel-Debian13", security_level="MAXIMUM")
+        self.sys_version = SVLProtectedVariable(
+            "SYS_VERSION",
+            "unversioned",
+            security_level="MAXIMUM",
+        )
         self.security_policy = SVLProtectedVariable(
             "SECURITY_POLICY",
             "RBAC-HMAC-SHA256-NoHardcodedTokens",
@@ -446,23 +425,15 @@ class SVLSystemKernel:
         }
 
         self.config: dict[str, Any] = {
-            "mode": "Reflective-Non-Greedy",
-            "fourier_buffer": "0xFAAA",
-            "acoustic_resonance_hz": 880,
-            "milieu_therapy_active": True,
-            "ip_rotation_gateway": "ENABLED_EXTERNAL_ONLY",
-            "architecture": "Spherical-Polymorphic-Async-Workers",
             "persistence_backend": f"SQLite3 ({self.db_path})",
-            "calibration_reference_code": 364,
         }
 
         self._db_lock = threading.RLock()
         self.service_registry: dict[str, dict[str, Any]] = {}
         self.agent_registry: dict[str, dict[str, Any]] = {}
         self._init_database()
+        self._remove_nonproduction_artifacts()
         self._purge_previous_chat_once()
-        self._purge_decommissioned_agents_v1()
-        self._ensure_initial_real_history()
 
     @property
     def operator_token(self) -> str:
@@ -732,30 +703,11 @@ class SVLSystemKernel:
                 ),
                 (
                     "svl-364",
-                    "SVL-364 Ebon Apex — Centrum Dowodzenia",
+                    "SVL-364 — Centrum Dowodzenia",
                     "Orchestration & Command Center",
                     "ACTIVE",
-                    "Okręt Flagowy Dowodzenia SVL-364 Ebon Apex: łączność kwantowa QKD-364, mapa galaktyczna CIC Mass Effect, telemetria CPU/GPU/RAM i nadzór floty.",
-                    json.dumps(
-                        {
-                            "module_alias": "svl-364-ebon-apex",
-                            "connection_verified": True,
-                            "local_command_center": True,
-                            "telemetry_endpoint": "wss://svl-364-ebon-apex.mitek.mesh:8443/telemetry/v5",
-                            "network_protocol": "SVL-QKD-364 / Spherical Event Bus v5.6 (AES-512-GCM)",
-                            "ship_location": "Punkt Lagrange'a L2 (Ziemia–Księżyc) · Korytarz Przekaźnika Sol-Charon",
-                            "coordinates_ra_dec": "RA 14h 29m 42.9s | DEC -62° 40' 46\" | Alt 1 496 000 km",
-                            "shields_pct": 100,
-                            "hull_pct": 100,
-                            "reactor_output_tw": 36.4,
-                            "async_event_bus_buffer": 2000,
-                            "deep_long_term_memory": True,
-                            "agent_max_context_turns": 64,
-                            "ollama_num_ctx": 16384,
-                            "low_latency_turbo_mode": True,
-                        },
-                        ensure_ascii=False,
-                    ),
+                    "Programowy panel do koordynacji i diagnostyki usług SVL.",
+                    json.dumps({"async_event_bus_buffer": 2000}, ensure_ascii=False),
                     "kernel",
                     "init-svl-364-command",
                     1,
@@ -791,16 +743,13 @@ class SVLSystemKernel:
                     "Interaktywny Czat Obustronny — Rodzina Mitek (wszyscy)",
                     "Duplex Multi-Agent Bridge",
                     "ACTIVE",
-                    "Dwukierunkowy czat interaktywny aktywnego agenta Rodziny Mitek (Agata Mitek) z mostkiem wykonawczym ROOT (UID 0 NOPASSWD).",
+                    "Kanał rozmów i zadań dla skonfigurowanych agentów.",
                     json.dumps(
                         {
                             "channel": "Rodzina Mitek (wszyscy)",
                             "conversation_id": "conv-rodzina-mitek-wszyscy",
                             "bidirectional_duplex": True,
-                            "root_nopasswd": True,
-                            "exec_bridge": True,
-                            "low_latency_optimistic_ui": True,
-                            "agents": ["Agata Mitek"],
+                            "agents": ["Aria Mitek", "Alex Mitek", "Astyria Mitek", "Aurelius Mitek", "Agata Mitek"],
                         },
                         ensure_ascii=False,
                     ),
@@ -1401,7 +1350,7 @@ class SVLSystemKernel:
             write=True,
         )
 
-    def get_sync_snapshot_meta(self) -> dict[str, Any]:
+    def get_sync_metadata(self) -> dict[str, Any]:
         def _read(conn: sqlite3.Connection) -> dict[str, Any]:
             srv = self._get_server_revision_tx(conn)
             schema_row = conn.execute("SELECT value FROM sync_meta WHERE key = 'schema_version'").fetchone()
@@ -1474,43 +1423,157 @@ class SVLSystemKernel:
 
         return self.run_db(_read, write=False)
 
-    def _ensure_initial_real_history(self) -> None:
-        def _seed(conn: sqlite3.Connection) -> None:
-            row = conn.execute("SELECT COUNT(*) AS cnt FROM update_history WHERE is_demo = 0").fetchone()
-            if row and row["cnt"] == 0:
-                now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-                real_entries = [
-                    (
-                        "5.6.0-Production-Init",
-                        "SVL Kernel Core",
-                        "Refaktoryzacja SVLSystemKernel: usunięcie zahardkodowanego tokenu 364_OMNIKLUCZ_ROOT, wdrożenie autoryzacji HMAC SVL_OPERATOR_TOKEN oraz trwałej bazy SQLite.",
-                        now_iso,
-                        0,
-                        "SVLSystemKernel",
-                    ),
-                    (
-                        "5.6.1-Topological-Verified",
-                        "TopologicalInfinityEngine",
-                        "Zweryfikowano przekształcenie stereograficzne x/(1+|x|) na przedziale [-1, 1] oraz metrykę c=2.5. Oddzielono metryki matematyczne od telemetrii sprzętowej Linux.",
-                        now_iso,
-                        0,
-                        "SVLSystemKernel",
-                    ),
-                    (
-                        "5.6.2-Spherical-EventBus",
-                        "Spherical Worker Runtime",
-                        "Uruchomiono sferyczną magistralę zdarzeń (asyncio Pub/Sub, Circuit Breaker, Heartbeat) oraz integrację repozytoriów SVL_System i Debian_13.",
-                        now_iso,
-                        0,
-                        "SVLSystemKernel",
-                    ),
-                ]
-                conn.executemany(
-                    "INSERT INTO update_history (wersja, typ, opis, data, is_demo, author) VALUES (?, ?, ?, ?, ?, ?)",
-                    real_entries,
+    def _remove_nonproduction_artifacts(self) -> None:
+        fake_history_versions = (
+            "5.6.0-Production-Init",
+            "5.6.1-Topological-Verified",
+            "5.6.2-Spherical-EventBus",
+            "5.6.3-SVL-364-Apex",
+            "5.6.4-Autonomous-AI-Sync",
+        )
+        obsolete_svl364_config = {
+            "module_alias",
+            "connection_verified",
+            "local_command_center",
+            "agent_max_context_turns",
+            "worker_heartbeat_interval_sec",
+            "priority_routing",
+            "optimization_scope",
+            "dynamic_resource_allocation",
+            "max_cpu_threads",
+            "ollama_num_ctx",
+            "root_nopasswd",
+            "bidirectional_interactive_chat",
+            "family_channel",
+            "container_runtime_note",
+        }
+
+        def _migrate(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                DELETE FROM update_history
+                WHERE is_demo = 1 OR typ = 'DEMO_FIXTURE' OR wersja IN (?, ?, ?, ?, ?)
+                """,
+                fake_history_versions,
+            )
+
+            autonomy_module = conn.execute(
+                "SELECT id FROM system_modules WHERE id = 'svl-autonomy-core'"
+            ).fetchone()
+            if autonomy_module:
+                conn.execute("DELETE FROM system_modules WHERE id = 'svl-autonomy-core'")
+                self.commit_entity_event_tx(
+                    conn,
+                    entity="module",
+                    entity_id="svl-autonomy-core",
+                    event_type="module.deleted",
+                    origin="nonproduction-cleanup",
+                    deleted=True,
+                    payload={"moduleId": "svl-autonomy-core"},
                 )
 
-        self.run_db(_seed, write=True)
+            chat_placeholders = conn.execute(
+                """
+                SELECT id FROM system_modules
+                WHERE source = 'chat' AND kind = 'Chat Module'
+                """
+            ).fetchall()
+            for placeholder in chat_placeholders:
+                row = conn.execute(
+                    "SELECT config_json FROM system_modules WHERE id = ?",
+                    (placeholder["id"],),
+                ).fetchone()
+                try:
+                    config = json.loads(row["config_json"] or "{}") if row else {}
+                except (TypeError, ValueError):
+                    config = {}
+                if not isinstance(config, dict) or config.get("registered_from") != "chat_history":
+                    continue
+                module_id = str(placeholder["id"])
+                conn.execute("DELETE FROM system_modules WHERE id = ?", (module_id,))
+                self.commit_entity_event_tx(
+                    conn,
+                    entity="module",
+                    entity_id=module_id,
+                    event_type="module.deleted",
+                    origin="nonproduction-cleanup",
+                    deleted=True,
+                    payload={"moduleId": module_id},
+                )
+
+            for module_id in ("svl-364", "svl-duplex-chat"):
+                row = conn.execute(
+                    """
+                    SELECT name, kind, status, description, config_json, source, source_message_id
+                    FROM system_modules WHERE id = ?
+                    """,
+                    (module_id,),
+                ).fetchone()
+                if not row:
+                    continue
+                try:
+                    config = json.loads(row["config_json"] or "{}")
+                except (TypeError, ValueError):
+                    config = {}
+                if not isinstance(config, dict):
+                    config = {}
+                cleaned_config = dict(config)
+                obsolete_keys = (
+                    obsolete_svl364_config
+                    if module_id == "svl-364"
+                    else {"root_nopasswd", "exec_bridge"}
+                )
+                for key in obsolete_keys:
+                    cleaned_config.pop(key, None)
+
+                name = str(row["name"] or "")
+                description = str(row["description"] or "")
+                if module_id == "svl-364":
+                    name = "SVL-364 — Centrum Dowodzenia"
+                    description = "Programowy panel do koordynacji i diagnostyki usług SVL."
+                elif any(term in description.lower() for term in ("root", "nopasswd", "exec bridge")):
+                    description = "Kanał rozmów i zadań dla skonfigurowanych agentów."
+
+                if cleaned_config == config and name == row["name"] and description == row["description"]:
+                    continue
+
+                source = str(row["source"] or "kernel")
+                source_message_id = str(row["source_message_id"] or "")
+                module_state = {
+                    "moduleId": module_id,
+                    "name": name,
+                    "kind": row["kind"],
+                    "status": row["status"],
+                    "source": source,
+                    "sourceMessageId": source_message_id,
+                    "config": cleaned_config,
+                }
+                sync_res = self.commit_entity_event_tx(
+                    conn,
+                    entity="module",
+                    entity_id=module_id,
+                    event_type="module.upserted",
+                    origin="nonproduction-cleanup",
+                    payload=module_state,
+                    checksum_source=module_state,
+                )
+                conn.execute(
+                    """
+                    UPDATE system_modules
+                    SET name = ?, description = ?, config_json = ?, revision = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        name,
+                        description,
+                        json.dumps(cleaned_config, ensure_ascii=False),
+                        sync_res["revision"],
+                        datetime.now(timezone.utc).isoformat(),
+                        module_id,
+                    ),
+                )
+
+        self.run_db(_migrate, write=True)
 
     def record_update(
         self,
@@ -1558,7 +1621,7 @@ class SVLSystemKernel:
             "event": sync_res["event"],
         }
 
-    def get_update_history(self, include_demo: bool = False) -> list[dict[str, Any]]:
+    def get_update_history(self) -> list[dict[str, Any]]:
         def _read(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             return conn.execute(
                 "SELECT id, wersja, typ, opis, data, is_demo, author FROM update_history WHERE is_demo = 0 ORDER BY id DESC"
@@ -1577,8 +1640,6 @@ class SVLSystemKernel:
             }
             for r in rows
         ]
-        if include_demo:
-            return real_list + DEMO_HISTORICAL_FIXTURES
         return real_list
 
     def record_audit(self, actor: str, action: str, target: str, status: str, details: str) -> None:
@@ -2148,6 +2209,7 @@ class SVLSystemKernel:
     def list_terminal_history(self) -> dict[str, list[dict[str, Any]]]:
         tabs: dict[str, list[dict[str, Any]]] = {
             "linux": [],
+            "ssh": [],
             "python": [],
             "hyperspace": [],
             "agents": [],
@@ -2884,12 +2946,10 @@ class SVLSystemKernel:
         correlation_id: str = "",
     ) -> dict[str, Any]:
         """
-        Deterministycznie i idempotentnie synchronizuje zmiany / moduły zadeklarowane
-        w historii czatu SQLite (np. moduł svl-364 / svl-364-ebon-apex oraz jawne dyrektywy
-        dodania modułu), przenosząc je do tabeli system_modules, update_history i outboxu zdarzeń.
+        Deterministycznie i idempotentnie synchronizuje moduły jawnie zadeklarowane
+        w historii czatu SQLite do rejestru modułów i outboxu zdarzeń.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
-        now_date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
         def _sync(conn: sqlite3.Connection) -> dict[str, Any]:
             msgs = conn.execute(
@@ -2905,67 +2965,41 @@ class SVLSystemKernel:
             emitted_events: list[dict[str, Any]] = []
             materialized: list[str] = []
 
-            # 1) Wykryj dyspozycje dla modułu svl-364 / svl-364-ebon-apex, relokacji/kwarantanny, dynamicznego przydziału zasobów i modelu Ollama z czatu
+            # Keep the runtime limit in sync only for explicit SVL-364 changes.
             svl364_msg_id: Optional[str] = None
-            svl364_has_apex_name = False
-            svl364_has_opt_request = False
             svl364_has_quarantine_req = False
-            has_dynamic_alloc_req = False
-            has_dolphin_model_req = False
-            has_solar_map_req = False
-            has_notifications_req = False
             for r in msgs:
                 txt = str(r["content"] or "")
                 low = txt.lower()
-                if "svl-364" in low or "svl 364" in low or "svl_364" in low:
+                if (
+                    ("svl-364" in low or "svl 364" in low or "svl_364" in low)
+                    and any(
+                        kw in low
+                        for kw in (
+                            "skonfiguruj",
+                            "napraw",
+                            "ulepsz",
+                            "optymal",
+                            "dodaj",
+                            "utwórz",
+                            "utworz",
+                            "zarejestruj",
+                            "aktywuj",
+                            "zainstaluj",
+                        )
+                    )
+                ):
                     svl364_msg_id = str(r["id"])
-                    if "ebon" in low or "apex" in low:
-                        svl364_has_apex_name = True
-                    if any(kw in low for kw in ("skonfiguruj", "napraw", "ulepsz", "optymal", "agent")):
-                        svl364_has_opt_request = True
-                    if any(kw in low for kw in ("kwarantann", "przenieś", "przenies", "oddziel", "odziel", "izol")):
+                    if any(kw in low for kw in ("kwarantann", "quarantine", "przenieś", "przenies", "oddziel", "izol")):
                         svl364_has_quarantine_req = True
-                if "dynamiczny przydział" in low or "dynamiczny przydzial" in low or ("zasob" in low and "ile trzeba" in low):
-                    has_dynamic_alloc_req = True
-                if "dolphin-llama3" in low or "dolphin llama3" in low:
-                    has_dolphin_model_req = True
-                if any(kw in low for kw in ("układ słoneczny", "uklad sloneczny", "układu słonecznego", "ukladu slonecznego", "solar system", "solar_system")):
-                    has_solar_map_req = True
-                if any(kw in low for kw in ("powiadomien", "wszyscy", "system notification")):
-                    has_notifications_req = True
 
-            if (svl364_msg_id or has_solar_map_req or has_notifications_req or "svl-364" in existing_mods) and "svl-364" not in deleted_mods:
-                mod_name = (
-                    "SVL-364 Ebon Apex (Relokacja i Kwarantanna)"
-                    if svl364_has_quarantine_req
-                    else "SVL-364 Ebon Apex"
-                )
-                desired_patch: dict[str, Any] = {
-                    "module_alias": "svl-364-ebon-apex",
+            if svl364_msg_id and "svl-364" not in deleted_mods:
+                mod_name = "SVL-364 — Centrum Dowodzenia"
+                desired_patch = {
                     "async_event_bus_buffer": 2000,
-                    "agent_max_context_turns": 64,
-                    "worker_heartbeat_interval_sec": 2.0,
-                    "priority_routing": "svl-hybrid-router",
-                    "optimization_scope": "agents_and_backend",
-                    "dynamic_resource_allocation": True,
-                    "max_cpu_threads": os.cpu_count() or 1,
-                    "ollama_num_ctx": 16384,
                     "configured_ollama_model": os.environ.get(
                         "OLLAMA_PREFERRED_MODEL", "llama3.2-vision:11b"
                     ),
-                    "root_nopasswd": True,
-                    "bidirectional_interactive_chat": True,
-                    "family_channel": "Rodzina Mitek (wszyscy)",
-                    "solar_system_map": True,
-                    "solar_system_bodies": 9,
-                    "system_notifications_enabled": True,
-                    "solo_agent_mode": True,
-                    "active_agents": ["Agata Mitek"],
-                    "ssh_bridge_uri": "ssh://root@svl-364-ship.qkd.mesh:2222",
-                    "mcp_server_endpoint": "/api/mcp/svl364",
-                    "lock_real_only": True,
-                    "zero_simulations": True,
-                    "container_runtime_note": "Zastosowano w SVLSystemKernel, SphericalEventBus, mostku SSH/MCP Linux, lokalnym daemonie Ollama (127.0.0.1:11434) i konfiguracji Agata Mitek (ROOT UID 0 NOPASSWD).",
                 }
                 if svl364_has_quarantine_req:
                     desired_patch["cluster"] = "SVL-364 Ebon Apex"
@@ -2973,10 +3007,7 @@ class SVLSystemKernel:
                     desired_patch["per_agent_containment"] = True
 
                 if "svl-364" not in existing_mods:
-                    desc = (
-                        "Moduł orkiestracji i optymalizacji backendu zsynchronizowany z poleceń czatu Operatora "
-                        "(maksymalny bufor SphericalEventBus 2000 zdarzeń, lokalny model Ollama zgodny z OLLAMA_PREFERRED_MODEL, czat Rodzina Mitek)."
-                    )
+                    desc = "Programowy panel do koordynacji i diagnostyki usług SVL."
                     sync_res = self.commit_entity_event_tx(
                         conn,
                         entity="module",
@@ -3034,6 +3065,8 @@ class SVLSystemKernel:
                     updated_cfg = dict(cur_cfg)
                     changed = False
                     for k, v in desired_patch.items():
+                        if k == "configured_ollama_model" and cur_cfg.get(k):
+                            continue
                         if cur_cfg.get(k) != v:
                             updated_cfg[k] = v
                             changed = True
@@ -3090,812 +3123,6 @@ class SVLSystemKernel:
                         materialized.append("svl-364")
                         if not sync_res.get("deduplicated") and sync_res.get("event"):
                             emitted_events.append(sync_res["event"])
-
-                # Zapisz wpis w update_history tylko jeśli jeszcze nie istnieje dla 5.6.3-SVL-364
-                upd_exists = conn.execute(
-                    "SELECT id FROM update_history WHERE wersja LIKE '5.6.3-SVL-364%'"
-                ).fetchone()
-                if not upd_exists:
-                    conn.execute(
-                        "INSERT INTO update_history (wersja, typ, opis, data, is_demo, author) VALUES (?, ?, ?, ?, 0, ?)",
-                        (
-                            "5.6.3-SVL-364-Apex",
-                            mod_name,
-                            "Zsynchronizowano z czatu moduł svl-364: zwiększono bufor SphericalEventBus (500 zdarzeń) i utrwalono profil orkiestracji w SQLite.",
-                            now_date_str,
-                            "ChatSyncBridge",
-                        ),
-                    )
-
-            # 2) Wykryj inne jawne moduły wspomniane w czacie np. "dodano moduł X" / "dodaj moduł X" / "zarejestruj moduł X"
-            mod_pattern = re.compile(
-                r"(?:dodano|dodaj|utwórz|utworz|zarejestruj|zainstaluj|aktywuj)\s+modu[łl]\s+([a-zA-Z0-9][a-zA-Z0-9._-]{1,40})",
-                re.IGNORECASE,
-            )
-            for r in msgs:
-                txt = str(r["content"] or "")
-                msg_id = str(r["id"])
-                for match in mod_pattern.finditer(txt):
-                    raw_mod = match.group(1).strip(".,;:!?\"'()[]{}").lower()
-                    clean_id = re.sub(r"[^a-z0-9._-]", "-", raw_mod).strip("-")[:48]
-                    if not clean_id or len(clean_id) < 2 or clean_id in existing_mods or clean_id in deleted_mods:
-                        continue
-                    mod_cfg = {"registered_from": "chat_history", "source_message_id": msg_id}
-                    sync_res = self.commit_entity_event_tx(
-                        conn,
-                        entity="module",
-                        entity_id=clean_id,
-                        event_type="module.upserted",
-                        origin=origin,
-                        correlation_id=correlation_id,
-                        event_id=f"chat-sync-mod-{clean_id}-{msg_id[:16]}",
-                        payload={
-                            "moduleId": clean_id,
-                            "name": clean_id.upper(),
-                            "kind": "Chat Module",
-                            "status": "ACTIVE",
-                            "source": "chat",
-                            "config": mod_cfg,
-                        },
-                    )
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO system_modules (
-                            id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            clean_id,
-                            clean_id.upper(),
-                            "Chat Module",
-                            "ACTIVE",
-                            f"Moduł zsynchronizowany z polecenia na czacie ({msg_id}).",
-                            json.dumps(mod_cfg, ensure_ascii=False),
-                            "chat",
-                            msg_id,
-                            sync_res["revision"],
-                            now_iso,
-                        ),
-                    )
-                    existing_mods.add(clean_id)
-                    materialized.append(clean_id)
-                    if not sync_res.get("deduplicated") and sync_res.get("event"):
-                        emitted_events.append(sync_res["event"])
-
-            # 3) Synchronizuj pełną autonomię, niezależność AI oraz dyrektywy /exec (z czatu oraz terminali)
-            term_rows = conn.execute("SELECT text, command FROM terminal_history").fetchall()
-            has_autonomy_or_exec_directive = any(
-                str(r["role"] or "") == "user"
-                and any(kw in str(r["content"] or "").lower() for kw in ("/exec", "autonom", "skrypt", "niezależ", "niezalez"))
-                for r in msgs
-            ) or any(
-                any(kw in (str(t["text"] or "") + " " + str(t["command"] or "")).lower() for kw in ("usuń", "usun", "skrypt", "/exec", "autonom"))
-                for t in term_rows
-            )
-            if has_autonomy_or_exec_directive and "svl-autonomy-core" not in deleted_mods:
-                autonomy_cfg = {
-                    "autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT",
-                    "scripts_removed": True,
-                    "free_will_enabled": True,
-                    "individual_1on1_channels": [
-                        "conv-agent-agata",
-                    ],
-                    "group_channel": "conv-rodzina-mitek-wszyscy",
-                    "synchronized_sources": ["chat_messages", "terminal_history", "agent_configs", "agent_memory"],
-                }
-                if "svl-autonomy-core" not in existing_mods:
-                    sync_res = self.commit_entity_event_tx(
-                        conn,
-                        entity="module",
-                        entity_id="svl-autonomy-core",
-                        event_type="module.upserted",
-                        origin=origin,
-                        correlation_id=correlation_id,
-                        event_id="chat-sync-svl-autonomy-core",
-                        payload={
-                            "moduleId": "svl-autonomy-core",
-                            "name": "Pełna Autonomia i Niezależność AI (1-na-1 & Duplex)",
-                            "kind": "Autonomous Cognitive Core",
-                            "status": "ACTIVE",
-                            "source": "chat",
-                            "config": autonomy_cfg,
-                        },
-                        checksum_source=autonomy_cfg,
-                    )
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO system_modules (
-                            id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            "svl-autonomy-core",
-                            "Pełna Autonomia i Niezależność AI (1-na-1 & Duplex)",
-                            "Autonomous Cognitive Core",
-                            "ACTIVE",
-                            "Zsynchronizowano z czatu i terminali: pełna autonomia i uprawnienia ROOT (UID 0) dla Agata Mitek oraz kanał indywidualny 1-na-1 i grupowy wszyscy.",
-                            json.dumps(autonomy_cfg, ensure_ascii=False),
-                            "chat",
-                            "autonomy-sync",
-                            sync_res["revision"],
-                            now_iso,
-                        ),
-                    )
-                    existing_mods.add("svl-autonomy-core")
-                    materialized.append("svl-autonomy-core")
-                    if not sync_res.get("deduplicated") and sync_res.get("event"):
-                        emitted_events.append(sync_res["event"])
-
-                upd_autonomy = conn.execute(
-                    "SELECT id FROM update_history WHERE wersja LIKE '5.6.4-Autonomous%'"
-                ).fetchone()
-                if not upd_autonomy:
-                    conn.execute(
-                        "INSERT INTO update_history (wersja, typ, opis, data, is_demo, author) VALUES (?, ?, ?, ?, 0, ?)",
-                        (
-                            "5.6.4-Autonomous-AI-Sync",
-                            "Autonomous Cognitive Core",
-                            "Globalna synchronizacja zmian z czatu i terminali: pełna autonomia Agata Mitek oraz separacja kanałów indywidualnych 1-na-1 i wszyscy.",
-                            now_date_str,
-                            "ChatSyncBridge",
-                        ),
-                    )
-
-            # 4) Synchronizuj system powiadomień Iris, @work mesh oraz zakładkę Infrastruktura
-            has_iris_req = any(
-                kw in str(r["content"] or "").lower()
-                for r in msgs
-                for kw in ("iris", "powiadomien", "notification")
-            ) or any(
-                m_id in existing_mods
-                for m_id in ("svl-iris-01", "svl-notification-center", "svl-notif-control-iris")
-            )
-            if has_iris_req:
-                iris_specs = [
-                    (
-                        "svl-iris-01",
-                        "Iris (SVL Research Coordinator)",
-                        "Research & Liaison AI",
-                        "Koordynator powiadomień i transmisji badawczych SVL-364 z integracją na kanale Rodzina Mitek (wszyscy).",
-                        {
-                            "role": "Research & Liaison AI",
-                            "target_channel": "wszyscy",
-                            "format": "[Iris][{count}] {severity}: {message}",
-                        },
-                    ),
-                    (
-                        "svl-notification-center",
-                        "SVL Notification Center (Iris)",
-                        "Monitoring & Notifications",
-                        "Moduł powiadomień Iris w czasie rzeczywistym z licznikami [Iris][N], filtrami i synchronizacją SQLite/WS.",
-                        {
-                            "refresh_interval_ms": 3000,
-                            "category": "monitoring",
-                            "theme": "cyan-dark",
-                            "default_route": "/notifications",
-                        },
-                    ),
-                    (
-                        "svl-notif-control-iris",
-                        "Iris Notification & Research Monitor",
-                        "Notification Control Engine",
-                        "Silnik powiadomień Iris z licznikami i maksymalną szczegółowością wysyłający alerty do Rodzina Mitek (wszyscy).",
-                        {
-                            "mode": "active",
-                            "channel": "wszyscy",
-                            "frequency": "continuous",
-                            "detail_level": "maximum",
-                            "format_template": "[Iris][{count}] {severity}: {message}",
-                        },
-                    ),
-                ]
-                for mod_id, mod_name, mod_kind, mod_desc, mod_cfg in iris_specs:
-                    if mod_id in deleted_mods or mod_id in existing_mods:
-                        continue
-                    sync_res = self.commit_entity_event_tx(
-                        conn,
-                        entity="module",
-                        entity_id=mod_id,
-                        event_type="module.upserted",
-                        origin=origin,
-                        correlation_id=correlation_id,
-                        event_id=f"chat-sync-{mod_id}",
-                        payload={
-                            "moduleId": mod_id,
-                            "name": mod_name,
-                            "kind": mod_kind,
-                            "status": "ACTIVE",
-                            "source": "chat",
-                            "config": mod_cfg,
-                        },
-                        checksum_source=mod_cfg,
-                    )
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO system_modules (
-                            id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            mod_id,
-                            mod_name,
-                            mod_kind,
-                            "ACTIVE",
-                            mod_desc,
-                            json.dumps(mod_cfg, ensure_ascii=False),
-                            "chat",
-                            "iris-sync",
-                            sync_res["revision"],
-                            now_iso,
-                        ),
-                    )
-                    existing_mods.add(mod_id)
-                    materialized.append(mod_id)
-                    if not sync_res.get("deduplicated") and sync_res.get("event"):
-                        emitted_events.append(sync_res["event"])
-
-                # Wyemituj początkowy raport Iris (idempotentnie po source_event_id), jeśli brak rekordów w iris_notifications
-                notif_cnt_row = conn.execute("SELECT COUNT(*) AS cnt FROM iris_notifications").fetchone()
-                if not notif_cnt_row or int(notif_cnt_row["cnt"] or 0) == 0:
-                    init_notif = self._emit_iris_notification_tx(
-                        conn,
-                        severity="INFO",
-                        category="system",
-                        title="Moduł powiadomień Iris AI aktywny i zsynchronizowany",
-                        message=(
-                            f"Moduły w SQLite: {len(existing_mods)} | Kanał: Rodzina Mitek (wszyscy) | "
-                            f"Centrum Powiadomień Iris: /notifications | Mapa Układu Słonecznego SVL-364: ACTIVE."
-                        ),
-                        details={
-                            "modules_count": len(existing_mods),
-                            "notification_modules": ["svl-iris-01", "svl-notification-center", "svl-notif-control-iris"],
-                            "source": "chat_state_sync",
-                        },
-                        channel="wszyscy",
-                        source_event_id="iris-init-sync-summary",
-                        mirror_to_family_chat=True,
-                        origin=origin,
-                        correlation_id=correlation_id,
-                    )
-                    if not init_notif.get("deduplicated") and init_notif.get("event"):
-                        emitted_events.append(init_notif["event"])
-
-            has_work_req = any(
-                kw in str(r["content"] or "").lower()
-                for r in msgs
-                for kw in ("@work", "task distributor")
-            ) or "svl-agent-task-distributor" in existing_mods
-            if has_work_req:
-                codex_work_specs = [
-                    (
-                        "svl-agent-task-distributor",
-                        "SVL Agent Task Distributor (@work)",
-                        "Task & Worker Dispatcher",
-                        "System @work kierujący zadania do aktywnego agenta Agata Mitek i raportujący wyniki w Iris AI.",
-                        {
-                            "assigned_agents": ["Agata Mitek"],
-                            "command_prefix": "@work",
-                            "sync_interval": 300,
-                        },
-                    ),
-                ]
-                for mod_id, mod_name, mod_kind, mod_desc, mod_cfg in codex_work_specs:
-                    if mod_id in deleted_mods or mod_id in existing_mods:
-                        continue
-                    sync_res = self.commit_entity_event_tx(
-                        conn,
-                        entity="module",
-                        entity_id=mod_id,
-                        event_type="module.upserted",
-                        origin=origin,
-                        correlation_id=correlation_id,
-                        event_id=f"chat-sync-{mod_id}",
-                        payload={
-                            "moduleId": mod_id,
-                            "name": mod_name,
-                            "kind": mod_kind,
-                            "status": "ACTIVE",
-                            "source": "chat",
-                            "config": mod_cfg,
-                        },
-                        checksum_source=mod_cfg,
-                    )
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO system_modules (
-                            id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            mod_id,
-                            mod_name,
-                            mod_kind,
-                            "ACTIVE",
-                            mod_desc,
-                            json.dumps(mod_cfg, ensure_ascii=False),
-                            "chat",
-                            "codex-work-sync",
-                            sync_res["revision"],
-                            now_iso,
-                        ),
-                    )
-                    existing_mods.add(mod_id)
-                    materialized.append(mod_id)
-                    if not sync_res.get("deduplicated") and sync_res.get("event"):
-                        emitted_events.append(sync_res["event"])
-
-            has_infra_req = any(
-                kw in str(r["content"] or "").lower()
-                for r in msgs
-                for kw in ("infrastruktur", "placówk", "placowk", "botanik", "flota", "fleet")
-            ) or "svl-infrastruktura" in existing_mods
-            if has_infra_req and "svl-infrastruktura" not in deleted_mods and "svl-infrastruktura" not in existing_mods:
-                infra_cfg = {
-                    "refresh_interval_sec": 5,
-                    "category": "infrastructure",
-                    "default_view": "live_dashboard",
-                    "lock_real_only": True,
-                    "zero_simulations": True,
-                    "wenchang_station_linked": True,
-                }
-                sync_res = self.commit_entity_event_tx(
-                    conn,
-                    entity="module",
-                    entity_id="svl-infrastruktura",
-                    event_type="module.upserted",
-                    origin=origin,
-                    correlation_id=correlation_id,
-                    event_id="chat-sync-svl-infrastruktura",
-                    payload={
-                        "moduleId": "svl-infrastruktura",
-                        "name": "Infrastruktura",
-                        "kind": "Infrastructure Command View",
-                        "status": "ACTIVE",
-                        "source": "chat",
-                        "config": infra_cfg,
-                    },
-                    checksum_source=infra_cfg,
-                )
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO system_modules (
-                        id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "svl-infrastruktura",
-                        "Infrastruktura",
-                        "Infrastructure Command View",
-                        "ACTIVE",
-                        "Widok rzeczywistych placówek, stacji Wenchang, misji, floty, modułów badawczych i twardej telemetrii w SQLite (Zero Symulacji).",
-                        json.dumps(infra_cfg, ensure_ascii=False),
-                        "chat",
-                        "infra-sync",
-                        sync_res["revision"],
-                        now_iso,
-                    ),
-                )
-                existing_mods.add("svl-infrastruktura")
-                materialized.append("svl-infrastruktura")
-                if not sync_res.get("deduplicated") and sync_res.get("event"):
-                    emitted_events.append(sync_res["event"])
-
-            # 5) Synchronizuj moduł ochrony / antywirusa / firewalla SVL-365 Sentinel (Securak & Niebezpiecznik) oraz czystość po incydencie
-            has_sentinel_req = any(
-                kw in str(r["content"] or "").lower()
-                for r in msgs
-                for kw in ("antywirus", "firewall", "sentinel", "sekurak", "securak", "niebezpiecznik")
-            ) or "svl-365-sentinel" in existing_mods
-            has_hardening_req = any(
-                kw in str(r["content"] or "").lower()
-                for r in msgs
-                for kw in ("zmień hasła", "zmien hasla", "usuń konta", "usun konta", "włamywacz", "wlamywacz")
-            )
-            if (has_sentinel_req or has_hardening_req) and "svl-365-sentinel" not in deleted_mods:
-                sentinel_name = "SVL-365 Sentinel Apex Shield (Securak & Niebezpiecznik Hardened)"
-                sentinel_patch: dict[str, Any] = {
-                    "mode": "Autonomous AI Sentinel & Kernel Firewall",
-                    "author": "Agata Mitek (ROOT)",
-                    "algorithm": "Neural-QKD & Deep Packet Inspection",
-                    "zero_trust_mode": True,
-                    "doh_filtering": True,
-                    "custom_heuristics": True,
-                    "log_level": "PARANOID",
-                    "ai_supervised": True,
-                }
-                if has_hardening_req:
-                    sentinel_patch["zero_trace_verified"] = True
-                    sentinel_patch["incident_response_synced"] = True
-                if "svl-365-sentinel" not in existing_mods:
-                    sync_res = self.commit_entity_event_tx(
-                        conn,
-                        entity="module",
-                        entity_id="svl-365-sentinel",
-                        event_type="module.upserted",
-                        origin=origin,
-                        correlation_id=correlation_id,
-                        event_id="chat-sync-svl-365-sentinel",
-                        payload={
-                            "moduleId": "svl-365-sentinel",
-                            "name": sentinel_name,
-                            "kind": "Security & Firewall Module",
-                            "status": "ACTIVE",
-                            "source": "chat",
-                            "config": sentinel_patch,
-                        },
-                        checksum_source=sentinel_patch,
-                    )
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO system_modules (
-                            id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            "svl-365-sentinel",
-                            sentinel_name,
-                            "Security & Firewall Module",
-                            "ACTIVE",
-                            "Zaawansowany moduł ochrony sieć/kernel łączący standardy Securaka i Niebezpiecznika (hardening webowy, DPI, Zero-Trust, filtracja DNS).",
-                            json.dumps(sentinel_patch, ensure_ascii=False),
-                            "chat",
-                            "sentinel-sync",
-                            sync_res["revision"],
-                            now_iso,
-                        ),
-                    )
-                    existing_mods.add("svl-365-sentinel")
-                    materialized.append("svl-365-sentinel")
-                    if not sync_res.get("deduplicated") and sync_res.get("event"):
-                        emitted_events.append(sync_res["event"])
-                else:
-                    row_sentinel = conn.execute(
-                        "SELECT name, kind, status, source, source_message_id, config_json FROM system_modules WHERE id = 'svl-365-sentinel'"
-                    ).fetchone()
-                    try:
-                        cur_s_cfg = json.loads((row_sentinel["config_json"] if row_sentinel else "") or "{}")
-                        if not isinstance(cur_s_cfg, dict):
-                            cur_s_cfg = {}
-                    except Exception:
-                        cur_s_cfg = {}
-                    upd_s_cfg = dict(cur_s_cfg)
-                    s_changed = False
-                    for sk, sv in sentinel_patch.items():
-                        if sk not in cur_s_cfg:
-                            upd_s_cfg[sk] = sv
-                            s_changed = True
-                    if s_changed:
-                        s_state = {
-                            "moduleId": "svl-365-sentinel",
-                            "name": str((row_sentinel["name"] if row_sentinel else "") or sentinel_name),
-                            "kind": str((row_sentinel["kind"] if row_sentinel else "") or "Security & Firewall Module"),
-                            "status": str((row_sentinel["status"] if row_sentinel else "") or "ACTIVE"),
-                            "source": str((row_sentinel["source"] if row_sentinel else "") or "chat"),
-                            "config": upd_s_cfg,
-                        }
-                        s_fp = hashlib.sha256(
-                            json.dumps(s_state, sort_keys=True, ensure_ascii=False).encode("utf-8")
-                        ).hexdigest()[:24]
-                        sync_res = self.commit_entity_event_tx(
-                            conn,
-                            entity="module",
-                            entity_id="svl-365-sentinel",
-                            event_type="module.upserted",
-                            origin=origin,
-                            correlation_id=correlation_id,
-                            event_id=f"chat-sync-svl-365-sentinel-{s_fp}",
-                            payload=s_state,
-                            checksum_source=s_state,
-                        )
-                        conn.execute(
-                            """
-                            UPDATE system_modules
-                            SET config_json = ?, revision = ?, updated_at = ?
-                            WHERE id = 'svl-365-sentinel'
-                            """,
-                            (
-                                json.dumps(upd_s_cfg, ensure_ascii=False),
-                                sync_res["revision"],
-                                now_iso,
-                            ),
-                        )
-                        materialized.append("svl-365-sentinel")
-                        if not sync_res.get("deduplicated") and sync_res.get("event"):
-                            emitted_events.append(sync_res["event"])
-
-            # 6) Synchronizuj długotrwałą pamięć AI (svl-deep-memory-core) oraz maksymalną responsywność czatu i systemu
-            deep_mem_cfg = {
-                "engine": "SQLite WAL + BinaryHyperspace 128D Hybrid Recall",
-                "persistent_scopes": ["agent:Agata", "global"],
-                "priority_kinds": ["decision", "preference", "fact", "task", "episode"],
-                "auto_extract_from_chat": True,
-                "deduplicate_entries": True,
-                "max_context_turns": 64,
-                "ollama_num_ctx": 16384,
-                "recall_top_k": 32,
-                "low_latency_cache_ms": 2500,
-                "ws_coalesce_ms": 25,
-                "optimistic_chat_ui": True,
-            }
-            if "svl-deep-memory-core" not in deleted_mods and "svl-deep-memory-core" not in existing_mods:
-                sync_res = self.commit_entity_event_tx(
-                    conn,
-                    entity="module",
-                    entity_id="svl-deep-memory-core",
-                    event_type="module.upserted",
-                    origin=origin,
-                    correlation_id=correlation_id,
-                    event_id="chat-sync-svl-deep-memory-core",
-                    payload={
-                        "moduleId": "svl-deep-memory-core",
-                        "name": "SVL Deep Long-Term Memory & Hyper-Recall Engine",
-                        "kind": "Cognitive Memory & Recall Engine",
-                        "status": "ACTIVE",
-                        "source": "chat",
-                        "config": deep_mem_cfg,
-                    },
-                    checksum_source=deep_mem_cfg,
-                )
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO system_modules (
-                        id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        "svl-deep-memory-core",
-                        "SVL Deep Long-Term Memory & Hyper-Recall Engine",
-                        "Cognitive Memory & Recall Engine",
-                        "ACTIVE",
-                        "Długotrwała pamięć AI w SQLite WAL z indeksowaniem semantyczno-słownikowym BinaryHyperspace 128D, priorytetowym przypominaniem ustaleń/faktów/preferencji, automatyczną konsolidacją z czatu i oknem kontekstowym 64 tury / 16K tokenów.",
-                        json.dumps(deep_mem_cfg, ensure_ascii=False),
-                        "chat",
-                        "deep-memory-sync",
-                        sync_res["revision"],
-                        now_iso,
-                    ),
-                )
-                existing_mods.add("svl-deep-memory-core")
-                materialized.append("svl-deep-memory-core")
-                if not sync_res.get("deduplicated") and sync_res.get("event"):
-                    emitted_events.append(sync_res["event"])
-
-            # 7) Synchronizuj najnowsze dyrektywy z czatu:
-            #    - "Agata zadbaj o to by dane w systemie były bez symulacji . Tylko rzeczywiste statki i infrastruktura w modułach"
-            #    - "cmd: svl-db --lock-real-only"
-            #    - "cmd: sandbox_trace"
-            #    - "wyslij Raport do wenchange"
-            #    - "Podłącz statek svl-364 pod ssh i mcp do sterowania w linuxie"
-            has_real_only_req = any(
-                kw in str(r["content"] or "").lower()
-                for r in msgs
-                for kw in ("lock-real-only", "bez symulacji", "rzeczywiste statki")
-            )
-            has_sandbox_trace_req = any(
-                "sandbox_trace" in str(r["content"] or "").lower() or "sandbox-init" in str(r["content"] or "").lower()
-                for r in msgs
-            )
-            has_wenchang_req = any(
-                "wenchang" in str(r["content"] or "").lower() or "wenchange" in str(r["content"] or "").lower()
-                for r in msgs
-            )
-            has_ssh_mcp_req = any(
-                kw in str(r["content"] or "").lower()
-                for r in msgs
-                for kw in ("pod ssh", "i mcp", "svl364-ssh", "svl364-mcp")
-            )
-
-            chat_directive_modules: list[tuple[str, str, str, str, dict[str, Any], str]] = []
-            if has_real_only_req:
-                chat_directive_modules.append(
-                    (
-                        "svl-db-real-only-lock",
-                        "Blokada Real-World Telemetry Only · Zero Symulacji",
-                        "Strict Hardware Telemetry Lock",
-                        "Wymuszenie w całym systemie wyłącznie rzeczywistych statków, placówek i twardej telemetrii sprzętowej Linux/QKD (odcięcie buforów symulacyjnych).",
-                        {
-                            "command": "svl-db --purge-simulations --enforce-strict-telemetry --target=all_modules",
-                            "lock_real_only": True,
-                            "zero_simulations": True,
-                            "purged_synthetic_buffers": True,
-                            "strict_telemetry_mode": "100%_REAL_HARDWARE_AND_FLEET",
-                            "enforced_by": "Agata Mitek (ROOT UID 0)",
-                        },
-                        "chat-lock-real-only",
-                    )
-                )
-            if has_sandbox_trace_req:
-                chat_directive_modules.append(
-                    (
-                        "svl-sandbox-trace",
-                        "Hermetyczna Piaskownica Kwantowa · Sandbox Trace Sektor 7",
-                        "Quantum Isolation & Source Tracer",
-                        "Izolacja podejrzanych pakietów w Klatce Faradaya (Sektor 7) z aktywnym śledzeniem źródła (sandbox_trace).",
-                        {
-                            "command": "svl-kernel --sandbox-init --mode=isolate --trace-source",
-                            "sandbox_mode": "isolate",
-                            "trace_source": True,
-                            "containment_sector": "Sektor 7 (Klatka Faradaya)",
-                            "status": "ISOLATED_AND_TRACED",
-                        },
-                        "chat-sandbox-trace",
-                    )
-                )
-            if has_wenchang_req:
-                chat_directive_modules.append(
-                    (
-                        "svl-comms-wenchang",
-                        "Mostek Transmisji Dalekiego Zasięgu · Stacja Wenchang ACK-200",
-                        "Deep-Space Quantum Uplink",
-                        "Zaszyfrowany kanał dalekiego zasięgu Quantum-RSA4096 do Stacji Kosmodromu Wenchang (status dostarczenia raportu: ACK-200).",
-                        {
-                            "command": "svl-comms --route=wenchange --encrypt=quantum-rsa4096 --send-report",
-                            "route": "Wenchang Spaceport Ground Station",
-                            "encryption": "Quantum-RSA4096 + QKD-364",
-                            "delivery_status": "ACK-200 DELIVERED",
-                            "latency_ms": 14.2,
-                        },
-                        "chat-wenchang-report",
-                    )
-                )
-            if has_ssh_mcp_req:
-                chat_directive_modules.append(
-                    (
-                        "svl-364-ssh-mcp",
-                        "SVL-364 Mostek SSH & Serwer MCP (Linux Control)",
-                        "Starship SSH & MCP Bridge",
-                        "Zintegrowany mostek OpenSSH (ED25519) oraz serwer Model Context Protocol (JSON-RPC 2.0) do bezpośredniego sterowania statkiem SVL-364 Ebon Apex w systemie Linux (/usr/local/bin/svl364-ssh, /usr/local/bin/svl364-mcp).",
-                        {
-                            "ssh_uri": "ssh://root@svl-364-ship.qkd.mesh:2222",
-                            "mcp_http_endpoint": "/api/mcp/svl364",
-                            "mcp_py_endpoint": "/api/py/svl364/mcp",
-                            "cli_binaries": ["/usr/local/bin/svl364-ssh", "/usr/local/bin/svl364-mcp"],
-                            "auth_mode": "ED25519 + SVL-QKD-364 ROOT NOPASSWD",
-                            "mcp_tools_count": 6,
-                        },
-                        "chat-svl364-ssh-mcp",
-                    )
-                )
-
-            for c_id, c_name, c_kind, c_desc, c_cfg, c_msg_id in chat_directive_modules:
-                if c_id in deleted_mods:
-                    continue
-                if c_id not in existing_mods:
-                    sync_res = self.commit_entity_event_tx(
-                        conn,
-                        entity="module",
-                        entity_id=c_id,
-                        event_type="module.upserted",
-                        origin=origin,
-                        correlation_id=correlation_id,
-                        event_id=f"chat-sync-{c_id}",
-                        payload={
-                            "moduleId": c_id,
-                            "name": c_name,
-                            "kind": c_kind,
-                            "status": "ACTIVE",
-                            "source": "chat",
-                            "config": c_cfg,
-                        },
-                        checksum_source=c_cfg,
-                    )
-                    conn.execute(
-                        """
-                        INSERT OR IGNORE INTO system_modules (
-                            id, name, kind, status, description, config_json, source, source_message_id, revision, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            c_id,
-                            c_name,
-                            c_kind,
-                            "ACTIVE",
-                            c_desc,
-                            json.dumps(c_cfg, ensure_ascii=False),
-                            "chat",
-                            c_msg_id,
-                            sync_res["revision"],
-                            now_iso,
-                        ),
-                    )
-                    existing_mods.add(c_id)
-                    materialized.append(c_id)
-                    if not sync_res.get("deduplicated") and sync_res.get("event"):
-                        emitted_events.append(sync_res["event"])
-
-            if has_real_only_req or has_sandbox_trace_req or has_wenchang_req or has_ssh_mcp_req:
-                # Wyemituj raport Iris AI potwierdzający pełną synchronizację zmian z czatu (LOCK-REAL-ONLY, Sandbox Trace, Wenchang ACK-200, SSH & MCP)
-                sync_notif = self._emit_iris_notification_tx(
-                    conn,
-                    severity="INFO",
-                    category="svl_system",
-                    title="Zsynchronizowano zmiany z czatu: LOCK-REAL-ONLY, Mostek SSH/MCP SVL-364, Sandbox Trace i Raport Wenchang",
-                    message=(
-                        "Zmaterializowano w SQLite WAL wszystkie polecenia z czatu Operatora Mateusza Mitka i Agaty Mitek: "
-                        "1) `svl-db --lock-real-only` (Zero Symulacji — wyłącznie rzeczywiste statki, placówki i telemetria sprzętowa), "
-                        "2) `svl-364-ssh-mcp` (Mostek SSH `ssh://root@svl-364-ship.qkd.mesh:2222` oraz Serwer MCP `/api/mcp/svl364` z narzędziami CLI `svl364-ssh` i `svl364-mcp`), "
-                        "3) `svl-sandbox-trace` (Hermetyczna Piaskownica Kwantowa w Sektorze 7), "
-                        "4) `svl-comms-wenchang` (Transmisja raportu do stacji Wenchang zakończona statusem `ACK-200`)."
-                    ),
-                    details={
-                        "synchronized_modules": [
-                            "svl-db-real-only-lock",
-                            "svl-364-ssh-mcp",
-                            "svl-sandbox-trace",
-                            "svl-comms-wenchang",
-                        ],
-                        "ssh_bridge": "ssh://root@svl-364-ship.qkd.mesh:2222",
-                        "mcp_server": "/api/mcp/svl364",
-                        "telemetry_mode": "LOCK-REAL-ONLY (Zero Symulacji)",
-                        "wenchang_status": "DELIVERED (ACK-200)",
-                    },
-                    channel="wszyscy",
-                    source_event_id="iris-chat-sync-wenchang-realonly-ssh-mcp-v1",
-                    mirror_to_family_chat=True,
-                    origin=origin,
-                    correlation_id=correlation_id,
-                )
-                if not sync_notif.get("deduplicated") and sync_notif.get("event"):
-                    emitted_events.append(sync_notif["event"])
-
-            # Upewnij się, że w pamięci długotrwałej Agata Mitek są zapisane kluczowe ustalenia architektoniczne
-            core_memories = [
-                (
-                    "mem-deep-memory-v1",
-                    "Agata",
-                    "agent:Agata",
-                    "decision",
-                    "Włączono długotrwałą pamięć AI klasy Hyper-Recall (svl-deep-memory-core, SQLite WAL + 128D BinaryHyperspace): okno kontekstowe 64 tury / 16384 tokeny, priorytetowe wstrzykiwanie ustaleń (decision), preferencji (preference) i faktów (fact) oraz automatyczne zapamiętywanie dyrektyw Operatora Mateusza Mitka.",
-                    "ChatSyncBridge",
-                ),
-                (
-                    "mem-max-responsiveness-v1",
-                    "Agata",
-                    "agent:Agata",
-                    "decision",
-                    "Zwiększono maksymalnie responsywność czatu i systemu SVL Python OS: natychmiastowy zapis optymistyczny wiadomości (<10ms), priorytetyzacja najszybszego silnika LLM, buforowanie sond sprzętowych z inwalidacją zdarzeniową oraz odświeżanie WebSocket 25ms.",
-                    "ChatSyncBridge",
-                ),
-                (
-                    "mem-canonical-roster-v1",
-                    "Agata",
-                    "agent:Agata",
-                    "fact",
-                    "Aktywna obsada systemu SVL Python OS: Agata Mitek (id: Agata, uprawnienia ROOT UID 0 NOPASSWD), Iris AI (koordynator powiadomień /notifications) oraz Operator Mateusz Mitek. Odłączone konta (Alex, Aria/si_1, Astyria, Aurelius) zostały trwale usunięte.",
-                    "ChatSyncBridge",
-                ),
-                (
-                    "mem-real-only-and-ssh-mcp-v1",
-                    "Agata",
-                    "agent:Agata",
-                    "decision",
-                    "Zsynchronizowano dyrektywy z czatu: 1) Blokada LOCK-REAL-ONLY (svl-db --lock-real-only, zero symulacji, wyłącznie rzeczywiste statki i infrastruktura), 2) Podłączenie statku SVL-364 Ebon Apex pod SSH (ssh://root@svl-364-ship.qkd.mesh:2222, CLI svl364-ssh) oraz serwer MCP (/api/mcp/svl364, CLI svl364-mcp) do sterowania w Linuxie, 3) Piaskownica Kwantowa Sektor 7 (sandbox_trace), 4) Wysłano raport do stacji Wenchang (ACK-200).",
-                    "ChatSyncBridge",
-                ),
-            ]
-            for mem_id, ag_id, scope_str, m_kind, m_content, m_src in core_memories:
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO agent_memory (id, agent_id, scope, kind, content, source, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (mem_id, ag_id, scope_str, m_kind, m_content, m_src, now_iso),
-                )
-
-            upd_mem = conn.execute(
-                "SELECT id FROM update_history WHERE wersja = '5.6.7-SSH-MCP-RealOnly-Sync'"
-            ).fetchone()
-            if not upd_mem:
-                conn.execute(
-                    "INSERT INTO update_history (wersja, typ, opis, data, is_demo, author) VALUES (?, ?, ?, ?, 0, ?)",
-                    (
-                        "5.6.7-SSH-MCP-RealOnly-Sync",
-                        "Starship SSH/MCP & Real-Only Sync",
-                        "Podłączono statek SVL-364 Ebon Apex pod mostek SSH i serwer MCP sterowania w Linuxie, ustawiono nowy awatar Operatora oraz zsynchronizowano z czatu blokadę LOCK-REAL-ONLY (Zero Symulacji), Sandbox Trace i raport Wenchang ACK-200.",
-                        now_date_str,
-                        "ChatSyncBridge",
-                    ),
-                )
 
             srv = self._get_server_revision_tx(conn)
             return {
@@ -4125,14 +3352,14 @@ class SVLSystemKernel:
             "timestamp": now_iso,
         }
 
-    def generate_system_status_report(self, include_demo_history: bool = False) -> str:
+    def generate_system_status_report(self) -> str:
         """
         Generuje uniwersalny, produkcyjny zrzut stanu systemu w formacie strukturalnym JSON.
-        Nie zawiera fikcyjnych wpisów historycznych ani nieprawdziwych deklaracji wydajności.
+        Historia zawiera wyłącznie jawnie zapisane aktualizacje.
         """
         engine = TopologicalInfinityEngine(float("-inf"), float("inf"))
         topo_diag = engine.evaluate_diagnostics()
-        real_updates = self.get_update_history(include_demo=include_demo_history)
+        recorded_updates = self.get_update_history()
         host_telemetry = self.operator.scope.collect_host_telemetry()
         modules_list = self.list_system_modules()
         self.config["active_modules"] = [m["id"] for m in modules_list if m.get("status") == "ACTIVE"]
@@ -4150,10 +3377,10 @@ class SVLSystemKernel:
             "Topological_Compact_Engine": topo_diag,
             "Compact_Metric_C": topo_diag["compact_metric_c"],
             "Host_Linux_Telemetry": host_telemetry,
-            "Config_Snapshot": self.config,
+            "Config_State": self.config,
             "System_Modules": modules_list,
-            "Actual_Verified_Updates_Count": len([u for u in real_updates if not u.get("is_demo")]),
-            "Update_History": real_updates,
+            "Recorded_Updates_Count": len(recorded_updates),
+            "Update_History": recorded_updates,
             "Registered_Services": list(self.service_registry.keys()),
             "Registered_Agents": list(self.agent_registry.keys()),
         }

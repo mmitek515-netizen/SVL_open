@@ -33,7 +33,9 @@ const CONVERSATIONS_CACHE_KEY = 'svl_python_os_conversations_v1';
 
 const DEFAULT_TERMINAL_LOGS: Record<TerminalTabId, TerminalLogLine[]> = {
   linux: [],
+  ssh: [],
   python: [],
+  codex: [],
   hyperspace: [],
   agents: [],
 };
@@ -59,6 +61,11 @@ export interface ViteHmrDiagnostic {
   hmrState: 'active' | 'disabled' | 'proxy_unavailable';
   hmrMessage?: string;
   detectedAt?: string;
+}
+
+export interface DomainRefreshReport {
+  ok: boolean;
+  error?: string;
 }
 
 function formatUpdatedAt(raw?: string): string {
@@ -130,19 +137,19 @@ interface SvlSyncContextValue {
   workspaceState: WorkspaceUiState;
 
   activeConvId: string;
-  targetAgent: 'Auto' | 'Rodzina Mitek' | 'Agata';
-  selectedAgentPanel: 'Agata';
+  targetAgent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
+  selectedAgentPanel: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
 
   triggerFullSync: (reason?: string) => Promise<SyncExecutionReport>;
-  refreshDomainModules: (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>) => Promise<void>;
+  refreshDomainModules: (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>) => Promise<DomainRefreshReport>;
   reconnectWebSocket: () => void;
   connectMyAi: (triggeredBy?: string) => Promise<any>;
 
   setActiveConvId: (convId: string) => void;
-  setTargetAgent: (agent: 'Auto' | 'Rodzina Mitek' | 'Agata') => void;
-  setSelectedAgentPanel: (agent: 'Agata') => void;
+  setTargetAgent: (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
+  setSelectedAgentPanel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
   openFamilyChannel: () => void;
-  openAgentChannel: (agent: 'Agata') => void;
+  openAgentChannel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
 
   createConversation: () => SyncableConversation;
   deleteConversation: (convId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -210,8 +217,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [activeConvIdState, setActiveConvIdState] = useState<string>(
     () => conversations[0]?.id || 'conv-rodzina-mitek-wszyscy',
   );
-  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Agata'>('Rodzina Mitek');
-  const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Agata'>('Agata');
+  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Rodzina Mitek');
+  const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Agata');
 
   const pendingMsgIdsRef = useRef<Set<string>>(new Set());
   // Keep a newly-created EMPTY thread visible while SQLite create is in-flight.
@@ -346,7 +353,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (snap.terminalLogs) {
         setTerminalLogsByTab((prev) => {
           const next = { ...prev };
-          (['linux', 'python', 'hyperspace', 'agents'] as TerminalTabId[]).forEach((tab) => {
+          (['linux', 'ssh', 'python', 'hyperspace', 'agents'] as TerminalTabId[]).forEach((tab) => {
             if (Array.isArray(snap.terminalLogs?.[tab])) {
               next[tab] = snap.terminalLogs[tab];
             }
@@ -463,9 +470,14 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const refreshDomainModules = useCallback(
-    async (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>) => {
+    async (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>): Promise<DomainRefreshReport> => {
       const unique = Array.from(new Set(modules));
       const tasks: Promise<void>[] = [];
+      const taskDomains: string[] = [];
+      const addTask = (domain: string, task: Promise<void>) => {
+        taskDomains.push(domain);
+        tasks.push(task);
+      };
 
       if (unique.includes('avatars')) {
         tasks.push(
@@ -504,105 +516,120 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       }
 
       if (unique.includes('health')) {
-        tasks.push(
+        addTask('health',
           safeFetchJson('/api/py/health', { timeoutMs: 12000 }).then((r) => {
-            if (r.ok && r.data) {
-              setHealthData(r.data);
-              if (Array.isArray(r.data.system_modules)) {
-                setSystemModules(r.data.system_modules);
-              }
-              advanceServerRevision(r.data.serverRevision);
+            if (!r.ok || !r.data || r.data.ok === false) {
+              throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
             }
+            setHealthData(r.data);
+            if (Array.isArray(r.data.system_modules)) {
+              setSystemModules(r.data.system_modules);
+            }
+            advanceServerRevision(r.data.serverRevision);
           }),
         );
       }
       if (unique.includes('kernel')) {
-        tasks.push(
+        addTask('kernel',
           safeFetchJson('/api/py/kernel/report', { timeoutMs: 12000 }).then((r) => {
-            if (r.ok && r.data) {
-              setKernelData(r.data);
-              if (Array.isArray(r.data.system_modules)) {
-                setSystemModules(r.data.system_modules);
-              }
-              advanceServerRevision(r.data.serverRevision);
+            if (!r.ok || !r.data || r.data.ok === false) {
+              throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
             }
+            setKernelData(r.data);
+            if (Array.isArray(r.data.system_modules)) {
+              setSystemModules(r.data.system_modules);
+            }
+            advanceServerRevision(r.data.serverRevision);
           }),
         );
       }
       if (unique.includes('modules')) {
-        tasks.push(
-          safeFetchJson<{ ok: boolean; modules?: SystemModule[]; serverRevision?: number }>('/api/py/modules', {
+        addTask('modules',
+          safeFetchJson<{ ok: boolean; modules?: SystemModule[]; serverRevision?: number; error?: string }>('/api/py/modules', {
             timeoutMs: 12000,
           }).then((r) => {
-            if (r.ok && r.data?.ok && Array.isArray(r.data.modules)) {
-              setSystemModules(r.data.modules);
-              advanceServerRevision(r.data.serverRevision);
+            if (!r.ok || !r.data?.ok || !Array.isArray(r.data.modules)) {
+              throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
             }
+            setSystemModules(r.data.modules);
+            advanceServerRevision(r.data.serverRevision);
           }),
         );
       }
       if (unique.includes('agents')) {
-        tasks.push(
+        addTask('agents',
           safeFetchJson('/api/py/agents/status', { timeoutMs: 12000 }).then((r) => {
-            if (r.ok && r.data) {
-              setAgentsData(r.data);
-              advanceServerRevision(r.data.serverRevision);
+            if (!r.ok || !r.data || r.data.ok === false) {
+              throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
             }
+            setAgentsData(r.data);
+            advanceServerRevision(r.data.serverRevision);
           }),
         );
       }
       if (unique.includes('chat')) {
-        tasks.push(
+        addTask('chat',
           safeFetchJson('/api/py/chat/conversations', { timeoutMs: 12000 }).then((r) => {
-            if (r.ok && r.data?.ok && Array.isArray(r.data.conversations)) {
-              advanceServerRevision(r.data.serverRevision);
-              const hydrated = normalizeConversationsFromServer(r.data.conversations);
-              for (const conversation of hydrated) {
-                deletedConvIdsRef.current.delete(conversation.id);
-              }
-              setConversations((prev) =>
-                mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current, pendingConvIdsRef.current),
-              );
+            if (!r.ok || !r.data?.ok || !Array.isArray(r.data.conversations)) {
+              throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
             }
+            advanceServerRevision(r.data.serverRevision);
+            const hydrated = normalizeConversationsFromServer(r.data.conversations);
+            for (const conversation of hydrated) {
+              deletedConvIdsRef.current.delete(conversation.id);
+            }
+            setConversations((prev) =>
+              mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current, pendingConvIdsRef.current),
+            );
           }),
         );
       }
       if (unique.includes('terminals')) {
-        tasks.push(
+        addTask('terminals',
           safeFetchJson('/api/py/terminal/history', { timeoutMs: 12000 }).then((r) => {
-            if (r.ok && r.data?.ok && r.data.terminalLogs) {
-              advanceServerRevision(r.data.serverRevision);
-              setTerminalLogsByTab((prev) => ({ ...prev, ...r.data.terminalLogs }));
+            if (!r.ok || !r.data?.ok || !r.data.terminalLogs) {
+              throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
             }
+            advanceServerRevision(r.data.serverRevision);
+            setTerminalLogsByTab((prev) => ({ ...prev, ...r.data.terminalLogs }));
           }),
         );
       }
       if (unique.includes('workspace')) {
-        tasks.push(
+        addTask('workspace',
           safeFetchJson('/api/py/workspace/state', { timeoutMs: 12000 }).then((r) => {
-            if (r.ok && r.data?.ok && r.data.workspaceState) {
-              advanceServerRevision(r.data.serverRevision);
-              const ws = r.data.workspaceState as any;
-              setWorkspaceState(ws);
-              const rawConv = ws.active_conversation_id?.value ?? ws.active_conversation_id;
-              if (typeof rawConv === 'string' && rawConv && !REMOVED_AGENT_CONVERSATION_IDS.has(rawConv)) {
-                setActiveConvIdState(rawConv);
-              }
-              const rawTarget = ws.selected_target_agent?.value ?? ws.selected_target_agent;
-              if (rawTarget && ['Auto', 'Rodzina Mitek', 'Agata'].includes(String(rawTarget))) {
-                setTargetAgentState(String(rawTarget) as any);
-              }
-              const rawPanel = ws.selected_agent_panel_id?.value ?? ws.selected_agent_panel_id;
-              if (rawPanel && ['Agata'].includes(String(rawPanel))) {
-                setSelectedAgentPanelState(String(rawPanel) as any);
-              }
+            if (!r.ok || !r.data?.ok || !r.data.workspaceState) {
+              throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
+            }
+            advanceServerRevision(r.data.serverRevision);
+            const ws = r.data.workspaceState as any;
+            setWorkspaceState(ws);
+            const rawConv = ws.active_conversation_id?.value ?? ws.active_conversation_id;
+            if (typeof rawConv === 'string' && rawConv) setActiveConvIdState(rawConv);
+            const rawTarget = ws.selected_target_agent?.value ?? ws.selected_target_agent;
+            if (rawTarget && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawTarget))) {
+              setTargetAgentState(String(rawTarget) as any);
+            }
+            const rawPanel = ws.selected_agent_panel_id?.value ?? ws.selected_agent_panel_id;
+            if (rawPanel && ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawPanel))) {
+              setSelectedAgentPanelState(String(rawPanel) as any);
             }
           }),
         );
       }
 
-      await Promise.allSettled(tasks);
+      const results = await Promise.allSettled(tasks);
+      const failures = results.flatMap((result, index) => {
+        if (result.status !== 'rejected') return [];
+        const detail = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        return [`${taskDomains[index]}: ${detail}`];
+      });
+      if (failures.length > 0) {
+        return { ok: false, error: failures.join('; ') };
+      }
+
       setLastSyncedAt(new Date().toLocaleTimeString('pl-PL', { hour12: false }));
+      return { ok: true };
     },
     [advanceServerRevision],
   );
@@ -620,11 +647,13 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const batch = Array.from(queuedDomainsRef.current);
         queuedDomainsRef.current.clear();
         if (batch.length > 0) {
-          void refreshDomainModules(batch);
+          void refreshDomainModules(batch).then((report) => {
+            if (!report.ok) void triggerFullSync('domain_refresh_failed');
+          });
         }
       }, 25);
     },
-    [refreshDomainModules],
+    [refreshDomainModules, triggerFullSync],
   );
 
   const applySyncEvent = useCallback(
@@ -1163,11 +1192,10 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const openAgentChannel = useCallback(
-    (agent: 'Agata') => {
+    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
       const slug = agent.toLowerCase();
       const convId = `conv-agent-${slug}`;
       const displayName = `${agent} Mitek`;
-      const agentId = agent;
       deletedConvIdsRef.current.delete(convId);
       const exists = conversationsRef.current.some((c) => c.id === convId);
       if (!exists) {
@@ -1177,17 +1205,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           title: `${displayName} (1-na-1)`,
           updatedAt: nowTime,
           revision: 1,
-          messages: [
-            {
-              id: `msg-init-${slug}`,
-              role: 'assistant',
-              sender: displayName,
-              agentId,
-              modelUsed: 'Pełna Autonomia',
-              timestamp: nowTime,
-              content: `Cześć! To nasz bezpośredni, indywidualny kanał 1-na-1 — odpisuję tutaj wyłącznie ja (**${displayName}**), w pełni autonomicznie i niezależnie.`,
-            },
-          ],
+          messages: [],
         };
         setConversations((prev) => [newConv, ...prev]);
       }
@@ -1200,7 +1218,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const setTargetAgent = useCallback(
-    (agent: 'Auto' | 'Rodzina Mitek' | 'Agata') => {
+    (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
       setTargetAgentState(agent);
       void persistWorkspaceKey('selected_target_agent', agent);
     },
@@ -1208,7 +1226,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const setSelectedAgentPanel = useCallback(
-    (agent: 'Agata') => {
+    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
       setSelectedAgentPanelState(agent);
       void persistWorkspaceKey('selected_agent_panel_id', agent);
     },

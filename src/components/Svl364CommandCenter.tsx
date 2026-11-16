@@ -13,7 +13,6 @@ import {
    Orbit,
   RadioTower,
   RefreshCw,
-  Satellite,
   Server,
   Shield,
   Sparkles,
@@ -201,7 +200,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
           method: 'POST',
           timeoutMs: 15000,
           body: JSON.stringify({
-            directive: 'Pełny raport telemetrii statku kosmicznego SVL-364 Ebon Apex, sieci kwantowej QKD-364 oraz parametrów CPU/GPU/RAM',
+            directive: 'Pełny raport operacyjny usług SVL-364 i hosta',
             emitToIris: true,
             origin: 'svl364-command-center',
           }),
@@ -299,6 +298,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const handleExecSshOnShip = async (customCmd?: string) => {
     const cmdToRun = (customCmd ?? sshCommandInput).trim();
     if (!cmdToRun || sshBusy) return;
+    if (!window.confirm(`Wykonać na zdalnym hoście Ship?\n\n${cmdToRun}`)) return;
     if (customCmd) setSshCommandInput(customCmd);
     setSshBusy(true);
     try {
@@ -307,6 +307,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
         timeoutMs: 15000,
         body: JSON.stringify({
           command: cmdToRun,
+          confirmed: true,
           target_subsystem: sshTargetSubsystem,
           origin: 'svl364-ssh-panel',
         }),
@@ -491,18 +492,11 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
         {/* Top CIC Command Header */}
         <header className="flex flex-wrap items-start justify-between gap-3 border-b border-cyan-500/25 pb-4">
           <div>
-            <p className="flex items-center gap-2 text-xs uppercase tracking-[0.24em] text-cyan-400 font-mono">
-              <Satellite size={16} /> CIC COMMAND BRIDGE · STATEK KOSMICZNY {commandModule?.name || 'SVL-364 EBON APEX'}
+            <p className="flex items-center gap-2 text-xs uppercase tracking-[0.24em] text-violet-400">
+              <Server size={16} /> SVL-364
             </p>
-            <h1 className="text-xl sm:text-2xl font-bold mt-1.5 tracking-tight text-slate-50">
-              Centrum Dowodzenia Statku SVL-364 · Telemetria, Sieć Kwantowa i Mapa Galaktyczna CIC
-            </h1>
             <p className="text-xs sm:text-sm text-slate-400 mt-1">
-              Lokalizacja: <span className="text-cyan-300 font-mono">{shipSector.name}</span> · Współrzędne:{' '}
-              <span className="text-amber-300 font-mono">{shipSector.coordinates}</span> · Demon Ollama:{' '}
-              <span className="text-emerald-300 font-mono">
-                {ollamaReachable ? `ONLINE (${ollamaModels.length} modele)` : 'Łączenie...'}
-              </span>
+              Dane usług dostępnych w aplikacji SVL Python OS.
             </p>
             {(commandModule?.config?.isolation_mode || sentinelModule) && (
               <p className="text-xs font-mono text-cyan-300 mt-1">
@@ -560,10 +554,10 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
         )}
 
         {/* Section 1: CPU, GPU, RAM & Onboard Reactor Telemetry Cards */}
-        <section aria-label="Parametry CPU, GPU, RAM i Telemetria Statku SVL-364" className="space-y-3">
+        <section aria-label="Parametry CPU, GPU i RAM hosta SVL-364" className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 text-sm sm:text-base font-semibold text-cyan-300 uppercase tracking-wider font-mono">
-              <Gauge size={18} className="text-cyan-400" /> Parametry Statku Kosmicznego SVL-364 i Hosta (CPU · GPU · RAM · Reaktor)
+              <Gauge size={18} className="text-cyan-400" /> Parametry hosta (CPU · GPU · RAM)
             </h2>
             <span className="text-xs font-mono text-emerald-300 bg-emerald-950/50 border border-emerald-500/30 px-2.5 py-0.5 rounded">
               TELEMETRIA LIVE · REV {serverRevision}
@@ -1146,7 +1140,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
             </div>
             <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
               <span className="px-2.5 py-1 rounded bg-emerald-950/80 border border-emerald-400/50 text-emerald-200">
-                SSH: {sshMcpStatus?.ssh?.uri || healthData?.svl364_ssh_mcp?.ssh?.uri || 'ssh://root@svl-364-ship.qkd.mesh:2222'}
+                SSH: {sshMcpStatus?.ssh?.uri || healthData?.svl364_ssh_mcp?.ssh?.uri || 'ssh://Ship'}
               </span>
               <span className="px-2.5 py-1 rounded bg-cyan-950/80 border border-cyan-400/50 text-cyan-200">
                 MCP: /api/mcp/svl364 (6 narzędzi Linux)
@@ -1162,10 +1156,10 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
             <div className="rounded-xl border border-slate-800 bg-[#060B13] p-3 space-y-1">
               <div className="text-emerald-300 font-semibold">Mostek SSH Statku (OpenSSH + QKD-364)</div>
               <div className="text-slate-300 break-all">
-                URI: <span className="text-cyan-300">{sshMcpStatus?.ssh?.uri || 'ssh://root@svl-364-ship.qkd.mesh:2222'}</span>
+                URI: <span className="text-cyan-300">{sshMcpStatus?.ssh?.uri || 'ssh://Ship'}</span>
               </div>
               <div className="text-slate-400 break-all">
-                Klucz ED25519: <span className="text-slate-200">{sshMcpStatus?.ssh?.key_fingerprint || 'SHA256:SVL364-QKD-ED25519-ACTIVE'}</span>
+                Uwierzytelnianie: <span className="text-slate-200">konfiguracja OpenSSH procesu</span>
               </div>
               <div className="text-slate-400">
                 Narzędzie CLI w Linuxie: <span className="text-emerald-300">/usr/local/bin/svl364-ssh</span>
@@ -1205,7 +1199,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
             <div className="rounded-xl border border-slate-800 bg-[#060A12] p-3.5 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-mono uppercase tracking-wider text-emerald-300 font-semibold">
-                  1. Konsola SSH Statku (`svl364-ssh` · ROOT UID 0)
+                  1. Konsola SSH (`Ship` · potwierdzenie operatora)
                 </span>
                 <select
                   aria-label="Podsystem docelowy SSH statku SVL-364"
@@ -1248,7 +1242,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') void handleExecSshOnShip();
                   }}
-                  placeholder="Wpisz polecenie Linux dla root@svl-364-ship..."
+                  placeholder="Wpisz polecenie Linux dla hosta Ship..."
                   className="min-w-0 flex-1 rounded-lg border border-slate-700 bg-[#0B1220] px-3 py-1.5 text-xs font-mono text-slate-100"
                 />
                 <button
@@ -1441,7 +1435,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
             onClick={() => onNavigate('terminals')}
             className="flex gap-2 items-center rounded-lg border border-slate-700 bg-slate-800/60 px-3 py-2 text-sm hover:bg-slate-700"
           >
-            <Terminal size={16} /> Terminal Statku SVL-364 (ROOT CLI)
+            <Terminal size={16} /> Powłoka Linux SVL-364 (ROOT CLI)
           </button>
           <button
             type="button"
