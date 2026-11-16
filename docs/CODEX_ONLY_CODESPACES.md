@@ -17,7 +17,7 @@ W trybie developerskim serwer nasłuchuje na interfejsach kontenera, aby podglą
 
 W czacie wybierz silnik **Codex CLI · konto ChatGPT**, a w polu dostępu wpisz `SVL_CODEX_CHAT_ACCESS_TOKEN`. Dla panelu agentów, terminali i ręcznej synchronizacji GitHub użyj osobnego `SVL_OPERATOR_TOKEN`. Skrypt podaje komendę pozwalającą lokalnie odczytać oba sekrety. Nie wklejaj ich do GitHuba, AI Studio ani publicznych logów.
 
-Wszystkie zadania tekstowe używają `--sandbox read-only`; odpowiedź AI ma status `ANSWER_READY`, który **nie jest dowodem zakończenia rzeczywistej operacji**. Jedno konto Codex CLI ma limity użytkowania; pięć agentów dzieli sesję, a zadania są szeregowane blokadą procesów.
+Wszystkie zadania tekstowe używają `--sandbox read-only`; odpowiedź AI ma status `ANSWER_READY`, który **nie jest dowodem zakończenia rzeczywistej operacji**. Jedno konto Codex CLI ma limity użytkowania; zadania są szeregowane blokadą procesów.
 
 **Google AI Studio** uruchamia odrębną kopię aplikacji i nie otrzymuje automatycznie sesji OAuth z GitHub Codespaces. Do korzystania z Codexa przez aplikację potrzebny jest runtime, w którym konto jest faktycznie zalogowane. Samo scalenie `main` nie udostępnia tej sesji.
 
@@ -28,7 +28,7 @@ Ten projekt ma też inne endpointy niż czat i terminal. Utrzymuj port prywatny;
 
 ## Diagnostyka bez testów, bez stałego IP
 
-Aby odczytać **rzeczywisty** stan działającego Codespace (zalogowanie ChatGPT OAuth, serwer Python, pięć workerów, ostatni błąd Codex CLI), uruchom w jego terminalu:
+Aby odczytać **rzeczywisty** stan działającego Codespace (zalogowanie ChatGPT OAuth, serwer Python, worker Agaty, ostatni błąd Codex CLI), uruchom w jego terminalu:
 
 ```bash
 python3 deploy/svl-doctor.py

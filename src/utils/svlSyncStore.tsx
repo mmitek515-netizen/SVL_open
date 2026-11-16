@@ -15,8 +15,6 @@ import {
   SyncableMessage,
   SystemModule,
   SvlSyncEvent,
-  SvlSyncModuleStatus,
-  SvlSystemSnapshot,
   TerminalLogLine,
   TerminalTabId,
   WorkspaceUiState,
@@ -45,16 +43,12 @@ export const INITIAL_WELCOME_CONVERSATIONS: SyncableConversation[] = [
   { id: 'conv-agent-agata', title: 'Agata Mitek (1-na-1)', updatedAt: '', revision: 1, messages: [] },
 ];
 
-export interface SyncExecutionReport {
+export interface RefreshExecutionReport {
   ok: boolean;
-  syncId?: string;
-  schemaVersion?: string;
   serverRevision: number;
   timestamp: string;
   durationMs: number;
-  warnings: string[];
-  modules: Record<string, SvlSyncModuleStatus>;
-  error: string | null;
+  error?: string;
 }
 
 export interface ViteHmrDiagnostic {
@@ -123,7 +117,7 @@ interface SvlSyncContextValue {
   lastSyncedAt: string | null;
   isSyncing: boolean;
   isConnectingAi: boolean;
-  lastSyncReport: SyncExecutionReport | null;
+  lastRefreshReport: RefreshExecutionReport | null;
 
   healthData: any;
   kernelData: any;
@@ -137,19 +131,19 @@ interface SvlSyncContextValue {
   workspaceState: WorkspaceUiState;
 
   activeConvId: string;
-  targetAgent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
-  selectedAgentPanel: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
+  targetAgent: 'Auto' | 'Rodzina Mitek' | 'Agata';
+  selectedAgentPanel: 'Agata';
 
-  triggerFullSync: (reason?: string) => Promise<SyncExecutionReport>;
+  refreshAllDomains: (reason?: string) => Promise<RefreshExecutionReport>;
   refreshDomainModules: (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>) => Promise<DomainRefreshReport>;
   reconnectWebSocket: () => void;
   connectMyAi: (triggeredBy?: string) => Promise<any>;
 
   setActiveConvId: (convId: string) => void;
-  setTargetAgent: (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
-  setSelectedAgentPanel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
+  setTargetAgent: (agent: 'Auto' | 'Rodzina Mitek' | 'Agata') => void;
+  setSelectedAgentPanel: (agent: 'Agata') => void;
   openFamilyChannel: () => void;
-  openAgentChannel: (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => void;
+  openAgentChannel: (agent: 'Agata') => void;
 
   createConversation: () => SyncableConversation;
   deleteConversation: (convId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -188,7 +182,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isConnectingAi, setIsConnectingAi] = useState(false);
-  const [lastSyncReport, setLastSyncReport] = useState<SyncExecutionReport | null>(null);
+  const [lastRefreshReport, setLastRefreshReport] = useState<RefreshExecutionReport | null>(null);
 
   const [healthData, setHealthData] = useState<any>(null);
   const [kernelData, setKernelData] = useState<any>(null);
@@ -217,8 +211,8 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [activeConvIdState, setActiveConvIdState] = useState<string>(
     () => conversations[0]?.id || 'conv-rodzina-mitek-wszyscy',
   );
-  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Rodzina Mitek');
-  const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('Agata');
+  const [targetAgentState, setTargetAgentState] = useState<'Auto' | 'Rodzina Mitek' | 'Agata'>('Rodzina Mitek');
+  const [selectedAgentPanelState, setSelectedAgentPanelState] = useState<'Agata'>('Agata');
 
   const pendingMsgIdsRef = useRef<Set<string>>(new Set());
   // Keep a newly-created EMPTY thread visible while SQLite create is in-flight.
@@ -228,7 +222,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const seenEventOrderRef = useRef<string[]>([]);
   const seenSignalIdsRef = useRef<Set<string>>(new Set());
   const seenSignalOrderRef = useRef<string[]>([]);
-  const inflightSnapshotRef = useRef<Promise<SyncExecutionReport> | null>(null);
+  const inflightRefreshRef = useRef<Promise<RefreshExecutionReport> | null>(null);
   const inflightCatchupRef = useRef<Promise<void> | null>(null);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const wsReconnectNowRef = useRef<(() => void) | null>(null);
@@ -304,213 +298,54 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
     [recordSeenSignalId, tabOrigin],
   );
 
-  const applyAuthoritativeSnapshot = useCallback(
-    (snap: SvlSystemSnapshot) => {
-      if (snap.schemaVersion) setSchemaVersion(snap.schemaVersion);
-      advanceServerRevision(snap.serverRevision);
-
-      if (Array.isArray(snap.deletedEntities)) {
-        deletedConvIdsRef.current.clear();
-        for (const ent of snap.deletedEntities) {
-          if (ent.startsWith('chat:')) {
-            deletedConvIdsRef.current.add(ent.slice('chat:'.length));
-          }
-        }
-      }
-
-      if (snap.health) setHealthData(snap.health);
-      if (snap.kernel) setKernelData(snap.kernel);
-      if (snap.agentsData) setAgentsData(snap.agentsData);
-      const snapModules = Array.isArray(snap.systemModules)
-        ? snap.systemModules
-        : Array.isArray(snap.kernel?.system_modules)
-          ? snap.kernel.system_modules
-          : Array.isArray(snap.health?.system_modules)
-            ? snap.health.system_modules
-            : null;
-      if (snapModules) setSystemModules(snapModules);
-
-      if (snap.avatars && typeof snap.avatars === 'object') {
-        setAvatars(snap.avatars);
-      }
-
-      if (Array.isArray(snap.irisNotifications)) {
-        setIrisNotifications(snap.irisNotifications);
-        setIrisUnreadCount(
-          typeof snap.irisUnreadCount === 'number'
-            ? snap.irisUnreadCount
-            : snap.irisNotifications.filter((n) => !n.isRead).length,
-        );
-      }
-
-      if (Array.isArray(snap.conversations)) {
-        const hydrated = normalizeConversationsFromServer(snap.conversations);
-        setConversations((prev) =>
-          mergeConversationThreads(hydrated, prev, pendingMsgIdsRef.current, deletedConvIdsRef.current, pendingConvIdsRef.current),
-        );
-      }
-
-      if (snap.terminalLogs) {
-        setTerminalLogsByTab((prev) => {
-          const next = { ...prev };
-          (['linux', 'ssh', 'python', 'hyperspace', 'agents'] as TerminalTabId[]).forEach((tab) => {
-            if (Array.isArray(snap.terminalLogs?.[tab])) {
-              next[tab] = snap.terminalLogs[tab];
-            }
-          });
-          return next;
-        });
-      }
-
-      if (snap.workspaceState) {
-        setWorkspaceState(snap.workspaceState);
-        const rawActiveConv =
-          (snap.workspaceState.active_conversation_id as any)?.value ?? snap.workspaceState.active_conversation_id;
-        const rawTargetAgent =
-          (snap.workspaceState.selected_target_agent as any)?.value ?? snap.workspaceState.selected_target_agent;
-
-        if (typeof rawActiveConv === 'string' && rawActiveConv && !REMOVED_AGENT_CONVERSATION_IDS.has(rawActiveConv)) {
-          setActiveConvIdState((prev) => {
-            const existsInRemote = snap.conversations?.some((c) => c.id === rawActiveConv);
-            return existsInRemote ? rawActiveConv : prev;
-          });
-          if (rawActiveConv === 'conv-rodzina-mitek-wszyscy') {
-            setTargetAgentState('Rodzina Mitek');
-          } else if (rawActiveConv === 'conv-agent-agata') {
-            setTargetAgentState('Agata');
-          } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Agata'].includes(String(rawTargetAgent))) {
-            setTargetAgentState(String(rawTargetAgent) as any);
-          }
-        } else if (rawTargetAgent && ['Auto', 'Rodzina Mitek', 'Agata'].includes(String(rawTargetAgent))) {
-          setTargetAgentState(String(rawTargetAgent) as any);
-        }
-        const rawPanelAgent =
-          (snap.workspaceState.selected_agent_panel_id as any)?.value ?? snap.workspaceState.selected_agent_panel_id;
-        if (rawPanelAgent && ['Agata'].includes(String(rawPanelAgent))) {
-          setSelectedAgentPanelState(String(rawPanelAgent) as any);
-        }
-      }
-
-      if (Array.isArray(snap.recentEvents)) {
-        for (const ev of snap.recentEvents) {
-          recordSeenEventId(ev.eventId);
-        }
-      }
-
-      setLastSyncedAt(new Date().toLocaleTimeString('pl-PL', { hour12: false }));
-    },
-    [advanceServerRevision, recordSeenEventId],
-  );
-
-  const triggerFullSync = useCallback(
-    async (reason = 'operator_sync_button'): Promise<SyncExecutionReport> => {
-      if (inflightSnapshotRef.current) {
-        return inflightSnapshotRef.current;
-      }
-
-      const task = (async (): Promise<SyncExecutionReport> => {
-        const t0 = performance.now();
-        setIsSyncing(true);
-        try {
-          // A snapshot reads from the authoritative server; it must not replay local cache.
-          const res = await safeFetchJson<SvlSystemSnapshot>('/api/py/system/sync', {
-            method: 'POST',
-            timeoutMs: 25000,
-            body: JSON.stringify({
-              triggered_by: reason,
-              origin: tabOrigin,
-              clientRevision: serverRevisionRef.current,
-            }),
-          });
-
-          const durationMs = Math.round(performance.now() - t0);
-          const data = res.data;
-
-          if (res.ok && data?.ok) {
-            applyAuthoritativeSnapshot(data);
-            const report: SyncExecutionReport = {
-              ok: true,
-              syncId: data.syncId,
-              schemaVersion: data.schemaVersion,
-              serverRevision: Number(data.serverRevision || serverRevisionRef.current),
-              timestamp: data.timestamp || new Date().toISOString(),
-              durationMs,
-              warnings: Array.isArray(data.warnings) ? data.warnings : [],
-              modules: data.modules || {},
-              error: null,
-            };
-            setLastSyncReport(report);
-            // Read-only snapshots are not mutations: never echo them across tabs.
-            return report;
-          }
-
-          const errReport: SyncExecutionReport = {
-            ok: false,
-            syncId: data?.syncId,
-            schemaVersion: data?.schemaVersion,
-            serverRevision: serverRevisionRef.current,
-            timestamp: new Date().toISOString(),
-            durationMs,
-            warnings: Array.isArray(data?.warnings) ? data.warnings : [],
-            modules: data?.modules || {},
-            error: res.error || data?.error || `Błąd synchronizacji HTTP ${res.status}`,
-          };
-          setLastSyncReport(errReport);
-          return errReport;
-        } finally {
-          setIsSyncing(false);
-          inflightSnapshotRef.current = null;
-        }
-      })();
-
-      inflightSnapshotRef.current = task;
-      return task;
-    },
-    [applyAuthoritativeSnapshot, tabOrigin],
-  );
-
   const refreshDomainModules = useCallback(
     async (modules: Array<'health' | 'kernel' | 'agents' | 'chat' | 'terminals' | 'workspace' | 'modules' | 'notifications' | 'avatars'>): Promise<DomainRefreshReport> => {
       const unique = Array.from(new Set(modules));
       const tasks: Promise<void>[] = [];
       const taskDomains: string[] = [];
+      let refreshedConversationIds: Set<string> | null = null;
+      let refreshedActiveConversation: unknown;
       const addTask = (domain: string, task: Promise<void>) => {
         taskDomains.push(domain);
         tasks.push(task);
       };
 
       if (unique.includes('avatars')) {
-        tasks.push(
+        addTask('avatars',
           safeFetchJson<{
             ok: boolean;
             avatars?: SvlAvatarMap;
             serverRevision?: number;
+            error?: string;
           }>('/api/avatars', { timeoutMs: 10000 }).then((r) => {
-            if (r.ok && r.data?.ok && r.data.avatars && typeof r.data.avatars === 'object') {
-              setAvatars(r.data.avatars);
-              advanceServerRevision(r.data.serverRevision);
+            if (!r.ok || !r.data?.ok || !r.data.avatars || typeof r.data.avatars !== 'object') {
+              throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
             }
+            setAvatars(r.data.avatars);
+            advanceServerRevision(r.data.serverRevision);
           }),
         );
       }
 
       if (unique.includes('notifications')) {
-        tasks.push(
+        addTask('notifications',
           safeFetchJson<{
             ok: boolean;
             notifications?: IrisNotification[];
             unreadCount?: number;
             serverRevision?: number;
+            error?: string;
           }>('/api/py/notifications?limit=80', { timeoutMs: 12000 }).then((r) => {
-            if (r.ok && r.data?.ok && Array.isArray(r.data.notifications)) {
-              setIrisNotifications(r.data.notifications);
-              setIrisUnreadCount(
-                typeof r.data.unreadCount === 'number'
-                  ? r.data.unreadCount
-                  : r.data.notifications.filter((n) => !n.isRead).length,
-              );
-              advanceServerRevision(r.data.serverRevision);
+            if (!r.ok || !r.data?.ok || !Array.isArray(r.data.notifications)) {
+              throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
             }
+            setIrisNotifications(r.data.notifications);
+            setIrisUnreadCount(
+              typeof r.data.unreadCount === 'number'
+                ? r.data.unreadCount
+                : r.data.notifications.filter((n) => !n.isRead).length,
+            );
+            advanceServerRevision(r.data.serverRevision);
           }),
         );
       }
@@ -522,6 +357,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
               throw new Error(r.data?.error || r.error || `HTTP ${r.status}`);
             }
             setHealthData(r.data);
+            if (typeof r.data.schemaVersion === 'string') setSchemaVersion(r.data.schemaVersion);
             if (Array.isArray(r.data.system_modules)) {
               setSystemModules(r.data.system_modules);
             }
@@ -575,6 +411,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
             }
             advanceServerRevision(r.data.serverRevision);
             const hydrated = normalizeConversationsFromServer(r.data.conversations);
+            refreshedConversationIds = new Set(hydrated.map((conversation) => conversation.id));
             for (const conversation of hydrated) {
               deletedConvIdsRef.current.delete(conversation.id);
             }
@@ -605,14 +442,14 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
             const ws = r.data.workspaceState as any;
             setWorkspaceState(ws);
             const rawConv = ws.active_conversation_id?.value ?? ws.active_conversation_id;
-            if (typeof rawConv === 'string' && rawConv) setActiveConvIdState(rawConv);
+            refreshedActiveConversation = rawConv;
             const rawTarget = ws.selected_target_agent?.value ?? ws.selected_target_agent;
-            if (rawTarget && ['Auto', 'Rodzina Mitek', 'Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawTarget))) {
-              setTargetAgentState(String(rawTarget) as any);
+            if (rawTarget === 'Auto' || rawTarget === 'Rodzina Mitek' || rawTarget === 'Agata') {
+              setTargetAgentState(rawTarget);
             }
             const rawPanel = ws.selected_agent_panel_id?.value ?? ws.selected_agent_panel_id;
-            if (rawPanel && ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(String(rawPanel))) {
-              setSelectedAgentPanelState(String(rawPanel) as any);
+            if (rawPanel === 'Agata') {
+              setSelectedAgentPanelState(rawPanel);
             }
           }),
         );
@@ -628,10 +465,63 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return { ok: false, error: failures.join('; ') };
       }
 
+      if (refreshedActiveConversation !== undefined) {
+        const knownConversationIds = refreshedConversationIds ??
+          new Set(conversationsRef.current.map((conversation) => conversation.id));
+        if (
+          typeof refreshedActiveConversation === 'string' &&
+          refreshedActiveConversation &&
+          !REMOVED_AGENT_CONVERSATION_IDS.has(refreshedActiveConversation) &&
+          knownConversationIds.has(refreshedActiveConversation)
+        ) {
+          setActiveConvIdState(refreshedActiveConversation);
+        }
+      }
+
       setLastSyncedAt(new Date().toLocaleTimeString('pl-PL', { hour12: false }));
       return { ok: true };
     },
     [advanceServerRevision],
+  );
+
+  const refreshAllDomains = useCallback(
+    async (_reason = 'operator_refresh'): Promise<RefreshExecutionReport> => {
+      if (inflightRefreshRef.current) return inflightRefreshRef.current;
+
+      const task = (async (): Promise<RefreshExecutionReport> => {
+        const startedAt = performance.now();
+        setIsSyncing(true);
+        try {
+          const result = await refreshDomainModules([
+            'health',
+            'kernel',
+            'agents',
+            'chat',
+            'terminals',
+            'workspace',
+            'modules',
+            'notifications',
+            'avatars',
+          ]);
+          const report: RefreshExecutionReport = {
+            ok: result.ok,
+            serverRevision: serverRevisionRef.current,
+            timestamp: new Date().toISOString(),
+            durationMs: Math.round(performance.now() - startedAt),
+            ...(result.error ? { error: result.error } : {}),
+          };
+          setLastRefreshReport(report);
+          return report;
+        } finally {
+          setIsSyncing(false);
+          inflightRefreshRef.current = null;
+        }
+      })();
+
+      inflightRefreshRef.current = task;
+      return task;
+    },
+    [refreshDomainModules],
   );
 
   // Coalesced domain refresh queue for incoming outbox events
@@ -648,12 +538,12 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         queuedDomainsRef.current.clear();
         if (batch.length > 0) {
           void refreshDomainModules(batch).then((report) => {
-            if (!report.ok) void triggerFullSync('domain_refresh_failed');
+            if (!report.ok) void refreshAllDomains('domain_refresh_failed');
           });
         }
       }, 25);
     },
-    [refreshDomainModules, triggerFullSync],
+    [refreshDomainModules, refreshAllDomains],
   );
 
   const applySyncEvent = useCallback(
@@ -664,9 +554,9 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       const incomingSrvRev = Number(evt.serverRevision || 0);
       if (serverRevisionRef.current > 0 && incomingSrvRev > serverRevisionRef.current + 1) {
-        // Gap detected in outbox sequence: coalesce catch-up snapshot
+        // A missing event requires refreshing current server domains.
         advanceServerRevision(incomingSrvRev);
-        void triggerFullSync('sequence_gap_catchup');
+        void refreshAllDomains('sequence_gap_catchup');
         return;
       }
       advanceServerRevision(incomingSrvRev);
@@ -772,14 +662,14 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return;
       }
 
-      if (evt.entity === 'system' && evt.origin !== tabOrigin && evt.type !== 'system.snapshot_synced') {
-        void triggerFullSync('remote_system_mutation');
+      if (evt.entity === 'system' && evt.origin !== tabOrigin) {
+        void refreshAllDomains('remote_system_mutation');
         return;
       }
 
       scheduleDomainRefresh(['health', 'kernel', 'agents', 'chat', 'terminals', 'workspace', 'modules', 'notifications', 'avatars']);
     },
-    [advanceServerRevision, recordSeenEventId, scheduleDomainRefresh, tabOrigin, triggerFullSync],
+    [advanceServerRevision, recordSeenEventId, refreshAllDomains, scheduleDomainRefresh, tabOrigin],
   );
 
   const catchUpFromEvents = useCallback(
@@ -799,7 +689,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
             let pages = 0;
             while (true) {
               if (res.data.gapDetected) {
-                await triggerFullSync(`${sourceReason}_gap`);
+                await refreshAllDomains(`${sourceReason}_gap`);
                 return;
               }
               const evts = Array.isArray(res.data.events) ? res.data.events : [];
@@ -813,7 +703,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
               }
 
               if (serverRevisionRef.current <= beforeRevision || evts.length === 0) {
-                await triggerFullSync(`${sourceReason}_pagination_stalled`);
+                await refreshAllDomains(`${sourceReason}_pagination_stalled`);
                 return;
               }
 
@@ -843,13 +733,13 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       inflightCatchupRef.current = run;
       return run;
     },
-    [advanceServerRevision, applySyncEvent, triggerFullSync],
+    [advanceServerRevision, applySyncEvent, refreshAllDomains],
   );
 
-  // Initial authoritative snapshot on boot
+  // Load each server domain independently on boot.
   useEffect(() => {
-    void triggerFullSync('boot_initial_sync');
-  }, [triggerFullSync]);
+    void refreshAllDomains('boot_initial_load');
+  }, [refreshAllDomains]);
 
   // Cross-tab BroadcastChannel + localStorage 'storage' event fallback (signal-only)
   useEffect(() => {
@@ -1012,7 +902,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
           if (frame.schemaVersion) setSchemaVersion(String(frame.schemaVersion));
           const srvRev = Number(frame.serverRevision || 0);
           if (srvRev > serverRevisionRef.current && serverRevisionRef.current === 0) {
-            void triggerFullSync('ws_hello_initial');
+            void refreshAllDomains('ws_hello_initial');
           } else if (wasReconnect && srvRev > serverRevisionRef.current) {
             void catchUpFromEvents('ws_reconnect_hello');
           }
@@ -1048,7 +938,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
 
         if (frame.type === 'svl.resync_required') {
-          void triggerFullSync(`ws_${frame.reason || 'resync_required'}`);
+          void refreshAllDomains(`ws_${frame.reason || 'resync_required'}`);
           return;
         }
 
@@ -1119,7 +1009,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         // ignore
       }
     };
-  }, [advanceServerRevision, applySyncEvent, catchUpFromEvents, tabOrigin, triggerFullSync]);
+  }, [advanceServerRevision, applySyncEvent, catchUpFromEvents, refreshAllDomains, tabOrigin]);
 
   // Low-frequency fallback heartbeat only when WS is offline/reconnecting (avoids redundant polling when online)
   useEffect(() => {
@@ -1192,7 +1082,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const openAgentChannel = useCallback(
-    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
+    (agent: 'Agata') => {
       const slug = agent.toLowerCase();
       const convId = `conv-agent-${slug}`;
       const displayName = `${agent} Mitek`;
@@ -1218,7 +1108,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const setTargetAgent = useCallback(
-    (agent: 'Auto' | 'Rodzina Mitek' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
+    (agent: 'Auto' | 'Rodzina Mitek' | 'Agata') => {
       setTargetAgentState(agent);
       void persistWorkspaceKey('selected_target_agent', agent);
     },
@@ -1226,7 +1116,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
   );
 
   const setSelectedAgentPanel = useCallback(
-    (agent: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata') => {
+    (agent: 'Agata') => {
       setSelectedAgentPanelState(agent);
       void persistWorkspaceKey('selected_agent_panel_id', agent);
     },
@@ -1365,7 +1255,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
         notifyLocalMutation('chat', newId, response.data.serverRevision, response.data.event);
       } else {
         // The operator can still type and the next message can create the thread.
-        // Do not silently discard the selected conversation on a stale snapshot.
+        // Do not silently discard the selected conversation on a stale domain response.
         console.warn('[SVL] Zapis pustej sesji nie powiódł się; zachowuję lokalną sesję do pierwszej wiadomości.');
       }
     });
@@ -1697,7 +1587,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       lastSyncedAt,
       isSyncing,
       isConnectingAi,
-      lastSyncReport,
+      lastRefreshReport,
       healthData,
       kernelData,
       agentsData,
@@ -1711,7 +1601,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       activeConvId: activeConvIdState,
       targetAgent: targetAgentState,
       selectedAgentPanel: selectedAgentPanelState,
-      triggerFullSync,
+      refreshAllDomains,
       refreshDomainModules,
       reconnectWebSocket,
       connectMyAi,
@@ -1754,7 +1644,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       isConnectingAi,
       isSyncing,
       kernelData,
-      lastSyncReport,
+      lastRefreshReport,
       lastSyncedAt,
       notifyLocalMutation,
       openAgentChannel,
@@ -1774,7 +1664,7 @@ export const SvlSyncProvider: React.FC<{ children: React.ReactNode }> = ({ child
       tabOrigin,
       targetAgentState,
       terminalLogsByTab,
-      triggerFullSync,
+      refreshAllDomains,
       upsertSystemModule,
       viteHmrDiagnostic,
       workspaceState,

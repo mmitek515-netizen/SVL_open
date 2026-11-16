@@ -81,8 +81,6 @@ if [[ -z "${SVL_CODEX_CHAT_ACCESS_TOKEN:-}" || -z "${SVL_OPERATOR_TOKEN:-}" ]]; 
 fi
 export SVL_CODEX_CHAT_ENABLED=true
 export SVL_CODEX_AGENTS_ENABLED=true
-export SVL_GITHUB_AUTO_SYNC=false
-export SVL_GITHUB_APPLY_REMOTE_CHANGES=false
 
 echo "SVL_open ready to start with Codex CLI OAuth (same Linux runtime)."
 echo "Open the private Codespaces port 3000 preview; static IP not needed."

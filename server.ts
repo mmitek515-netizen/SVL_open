@@ -55,10 +55,7 @@ const SYNC_SCHEMA_VERSION = '2026.11.sync.v1';
 function createGitHubFileService(): GitHubFileService {
   return new GitHubFileService({
     token: process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '',
-    branch:
-      process.env.SVL_GITHUB_FILE_BRANCH ||
-      process.env.SVL_GITHUB_SYNC_BRANCH ||
-      DEFAULT_GITHUB_FILE_BRANCH,
+    branch: process.env.SVL_GITHUB_FILE_BRANCH || DEFAULT_GITHUB_FILE_BRANCH,
   });
 }
 
@@ -1447,8 +1444,8 @@ async function startServer() {
 
       res.json({
         ok: true,
-        sender: 'Alex Mitek',
-        agentId: 'Alex',
+        sender: 'Agata Mitek',
+        agentId: 'Agata',
         modelUsed: 'Lokalna powłoka Linux',
         reply: formattedReply,
       });
@@ -1508,23 +1505,10 @@ async function startServer() {
     );
 
     const msgLower = cleanMsg.toLowerCase();
-    const mentionedAgent =
-      /\baurelius/i.test(cleanMsg)
-        ? 'Aurelius'
-        : /\bastyri/i.test(cleanMsg)
-          ? 'Astyria'
-          : /\b(agata|agatę|agacie)\b/i.test(cleanMsg)
-            ? 'Agata'
-            : /\b(aria|arię|ario|si_1)\b/i.test(cleanMsg)
-              ? 'Aria'
-              : /\b(alex|aleks)/i.test(cleanMsg)
-                ? 'Alex'
-                : '';
-
     const selectedAgent: string =
       isSingleAgentTargeted && normalizedTarget
         ? normalizedTarget
-        : mentionedAgent || 'Agata';
+        : 'Agata';
 
     const selectedDisplayName = formatAgentDisplayName(selectedAgent);
 
@@ -1554,10 +1538,6 @@ async function startServer() {
       .join('\n');
 
     const agentRoles: Record<string, string> = {
-      Aria: 'asystent AI do integracji modeli, Ollama i usług zewnętrznych',
-      Alex: 'asystent AI do architektury systemu i backendu',
-      Astyria: 'asystent AI do interfejsu i dostępności',
-      Aurelius: 'asystent AI do RBAC, izolacji procesów i audytu',
       Agata: 'asystent AI do optymalizacji, testów i rozwoju',
     };
 
@@ -2200,14 +2180,13 @@ async function startServer() {
           ok: true,
         });
         void pollAndRelayOutbox();
-        const followUps = await buildFollowUpFamilyMessages(selectedAgent, avBadge, avReply);
         res.json({
           ok: true,
           sender: selectedDisplayName,
           agentId: selectedAgent,
           modelUsed: avBadge,
           reply: avReply,
-          followUpMessages: followUps,
+          followUpMessages: [],
           appliedActions,
           latestServerRevision: Number(avRes.data.serverRevision || latestActionSrvRev),
         });

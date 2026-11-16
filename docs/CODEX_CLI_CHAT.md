@@ -26,11 +26,11 @@ Uruchom lokalny gateway z dotychczasową konfiguracją. W czacie wybierz `Codex 
 
 Stan procesu i logowania pokazuje `GET /api/codex-chat/status`, a po wdrożeniu również Centrum Dowodzenia SVL-364. Wskazanie `ZALOGOWANY W RUNTIME` dotyczy wyłącznie procesu Codex CLI dostępnego dla działającego backendu.
 
-## Zadania pięciu agentów przez Codex CLI
+## Zadania agentki Agaty przez Codex CLI
 
 Jeżeli Ollama jest niedostępna, ustaw na **tym samym serwerze / Codespace** `SVL_CODEX_AGENTS_ENABLED=true` (oprócz `SVL_CODEX_CHAT_ENABLED=true`). Wypełnij prywatny `SVL_OPERATOR_TOKEN` o długości minimum 32 znaków. Zrestartuj backend. Następnie w Panelu Agentów wpisz token operatora i wyślij zadanie.
 
-W tym trybie pięć procesów Aria, Alex, Astyria, Aurelius, Agata korzysta ze wspólnego zalogowania Codex CLI. Przed uruchomieniem sprawdzają `codex login status`; blokada plikowa nie dopuszcza do pięciu równoczesnych wywołań. Wynik zadania ma status `ANSWER_READY`: oznacza przygotowaną odpowiedź, **nie** potwierdza wykonania misji, modyfikacji systemu ani wdrożenia kodu.
+W tym trybie worker Agaty korzysta z zalogowania Codex CLI. Przed uruchomieniem sprawdza `codex login status`; blokada plikowa ogranicza równoczesne wywołania. Wynik zadania ma status `ANSWER_READY`: oznacza przygotowaną odpowiedź, **nie** potwierdza wykonania misji, modyfikacji systemu ani wdrożenia kodu.
 
 Oprogramowanie uruchomione w osobnym AI Studio nadal nie będzie miało dostępu do lokalnego OAuth Codexa. Zmienne środowiskowe i dane logowania nie są kopiowane przez GitHub.
 
@@ -43,7 +43,7 @@ Usunięcie rozmowy, wyczyszczenie całej historii, synchronizacja administracyjn
 
 - `SVL_CODEX_CHAT_ENABLED` jest domyślnie `false`. Włączenie wymaga prywatnego tokenu operatora długości minimum 32 znaków.
 - Backend uruchamia Codex CLI z `--sandbox read-only` w pustym, tymczasowym katalogu bez projektu, bez API key i z ograniczeniami czasu, rozmiaru odpowiedzi oraz liczby równoczesnych żądań. Nie wystawia sesji OAuth przez MCP HTTP.
-- Lokalny czat oraz pięć workerów używają wspólnej blokady `flock` (util-linux) dla tego samego użytkownika Linux, w prywatnym katalogu `~/.local/state/svl-open/codex-cli.lock`. Nie potrzeba stałego IP. Gdy konto jest zajęte, serwer zgłasza stan zajętości zamiast uruchamiać równoległe generowanie.
+- Lokalny czat oraz worker Agaty używają wspólnej blokady `flock` (util-linux) dla tego samego użytkownika Linux, w prywatnym katalogu `~/.local/state/svl-open/codex-cli.lock`. Nie potrzeba stałego IP. Gdy konto jest zajęte, serwer zgłasza stan zajętości zamiast uruchamiać równoległe generowanie.
 - Szczegółowa diagnostyka zalogowania wymaga prywatnego tokenu operatora w nagłówku `X-SVL-Codex-Access`. Bez niego endpoint pokazuje jedynie ogólny stan konfiguracji.
 - Tryb jest tekstowy. Nie deklaruje obsługi obrazów ani uruchomionych usług Ollama.
 - Gdy jest to przydatne, model może zwrócić przyciski `[btn: Etykieta|akcja]`; czat renderuje je komponentem `@vector-im/compound-web`. Polecenia powłoki pozostają zablokowane. Biblioteka jest dostępna na licencji AGPL-3.0-or-later lub komercyjnej Element — sprawdź zgodność licencji przed wdrożeniem.

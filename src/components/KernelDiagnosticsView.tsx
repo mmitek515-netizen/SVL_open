@@ -266,7 +266,7 @@ export const KernelDiagnosticsView: React.FC = () => {
             </div>
           )}
 
-          {/* Protected Variables Current Snapshot */}
+          {/* Protected Variables Current State */}
           <div className="pt-2 border-t border-slate-800 space-y-1.5 text-xs font-mono">
             {Object.values(protectedVars).map((v: any) => (
               <div

@@ -218,7 +218,7 @@ class SphericalEventBus:
             "circuit_breaker": cb.to_dict(),
         }
 
-    def get_spherical_observability_snapshot(self) -> dict[str, Any]:
+    def get_spherical_observability(self) -> dict[str, Any]:
         return {
             "architecture": "Spherical-Polymorphic-Async-Bus",
             "max_history_size": self.max_history_size,

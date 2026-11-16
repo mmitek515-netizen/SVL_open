@@ -176,7 +176,7 @@ class SVLLocalOllamaDaemon:
                 telemetry = kernel.operator.scope.collect_host_telemetry()
                 mods = kernel.list_system_modules()
                 mod_count = len([m for m in mods if m.get("status") == "ACTIVE"])
-                srv_rev = kernel.get_sync_snapshot_meta().get("serverRevision", 1)
+                srv_rev = kernel.get_sync_metadata().get("serverRevision", 1)
             except Exception:
                 pass
 

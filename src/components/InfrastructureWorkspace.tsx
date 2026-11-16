@@ -371,7 +371,7 @@ export const InfrastructureWorkspace: React.FC<InfrastructureWorkspaceProps> = (
     healthData,
     serverRevision,
     isSyncing,
-    triggerFullSync,
+    refreshAllDomains,
     upsertSystemModule,
     refreshDomainModules,
   } = useSvlSync();
@@ -497,7 +497,7 @@ export const InfrastructureWorkspace: React.FC<InfrastructureWorkspaceProps> = (
             </button>
             <button
               type="button"
-              onClick={() => void triggerFullSync('infrastructure_tab_sync')}
+              onClick={() => void refreshAllDomains('infrastructure_tab_refresh')}
               disabled={isSyncing}
               className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs font-medium text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-40"
             >

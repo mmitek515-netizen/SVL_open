@@ -58,7 +58,7 @@ const TERMINAL_TABS: Array<{
       'print(kernel.generate_comprehensive_svl_system_markdown_report("raport systemu"))',
       'print(kernel.generate_system_status_report())',
       'TopologicalInfinityEngine(float("-inf"), float("inf")).evaluate_diagnostics()',
-      'VisualScope.get_registry_snapshot()',
+      'VisualScope.get_registry_entries()',
       'hyperspace.resolve_intent("status systemu i diagnostyka")',
     ],
   },
@@ -94,13 +94,9 @@ const TERMINAL_TABS: Array<{
     subtitle: 'Zapisuje dyrektywy jako zadania dla agentów; wykonanie zależy od dostępności workera.',
     defaultPrompt: 'agents>',
     welcomeText:
-      'Wpisz @Aria, @Alex, @Astyria, @Aurelius lub @Agata i treść zadania. Dyrektywa zostanie zapisana w kolejce; jej wykonanie zależy od aktywnego workera.',
+      'Wpisz @Agata i treść zadania. Dyrektywa zostanie zapisana w kolejce; jej wykonanie zależy od aktywnego workera.',
     quickCommands: [
       'podłącz moje ai',
-      '@Alex Sprawdź spójność usług backendu Python i bazy SQLite',
-      '@Aria Zweryfikuj połączenie z lokalnym silnikiem Ollama 11434',
-      '@Astyria Oceń responsywność interfejsu Open WebUI na ekranach dotykowych',
-      '@Aurelius Sprawdź zakres uprawnień skonfigurowanych agentów',
     ],
   },
 ];

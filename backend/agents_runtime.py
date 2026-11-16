@@ -2,12 +2,8 @@
 """
 SVL PYTHON OS — REAL AGENT WORKERS & 'podłącz moje ai' ORCHESTRATOR
 Implements:
-1. Inspection of SVL_System & Debian_13 repositories (GitHub API + local verified snapshot).
-2. Preservation of original agent identifiers & roles from SVL_System:
-   - Aria (id: 'si_1', slug: 'aria')
-   - Alex (id: 'Alex', slug: 'alex')
-   - Astyria (id: 'Astyria', slug: 'astyria')
-   - Aurelius (id: 'Aurelius', slug: 'aurelius')
+1. Inspection of SVL_System & Debian_13 repositories through the GitHub API only.
+2. Preservation of the Agata agent identifier and role.
 3. Real separate OS worker subprocesses (multiprocessing/subprocess) with distinct PIDs, UIDs,
    live heartbeats, isolated SQLite memory scopes, dedicated log files, agent-to-agent pub/sub,
    and explicit distinction between external live API processes vs newly spawned local workers.
@@ -106,146 +102,6 @@ def guard_unverified_mission_completion(context: str, answer: str) -> str:
 
 # Canonical definitions imported directly from https://github.com/mmitek515-netizen/SVL_System
 CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
-    "Aria": {
-        "id": "si_1",
-        "canonical_name": "Aria",
-        "display_name": "Aria Mitek",
-        "family_group": "Rodzina Mitek (wszyscy)",
-        "slug": "aria",
-        "accent_hex": "#f43f5e",
-        "source_profile_path": ".github/agents/Aria.agent.md",
-        "source_kernel_file": "src/kernel/agents.ts",
-        "preserved_role": "Asystent AI do pracy w ramach narzędzi udostępnionych przez aplikację.",
-        "capabilities": [
-            "Pomoc w analizie i rozmowie w ramach dostępnych funkcji aplikacji",
-            "Działania wyłącznie przez narzędzia udostępnione przez aplikację",
-            "Kanał indywidualny Aria Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
-        ],
-        "system_prompt": (
-            "Nazywasz się Aria Mitek. Jesteś asystentem AI działającym w ramach narzędzi udostępnionych przez aplikację. "
-            "Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki."
-        ),
-        "default_config": {
-            "preferred_model": "svl-hybrid-router",
-            "ollama_model": "llama3.2-vision:11b",
-            "fallback_model": "gemini-3.1-flash-lite",
-            "vision_enabled": True,
-            "temperature": 0.8,
-            "max_context_turns": 24,
-            "rbac_role": "assistant",
-            "autonomy_mode": "SUPERVISED_TOOL_USE",
-            "root_nopasswd": False,
-            "allowed_scopes": ["ollama", "vision", "mcp", "chat", "agents.pubsub", *GITHUB_AGENT_SCOPES],
-            "github_agent_scope_version": GITHUB_AGENT_SCOPE_VERSION,
-            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.ollama.*"],
-            "auto_connect_on_boot": True,
-        },
-    },
-    "Alex": {
-        "id": "Alex",
-        "canonical_name": "Alex",
-        "display_name": "Alex Mitek",
-        "family_group": "Rodzina Mitek (wszyscy)",
-        "slug": "alex",
-        "accent_hex": "#10b981",
-        "source_profile_path": ".github/agents/Alex.agent.md",
-        "source_kernel_file": "src/kernel/agents.ts",
-        "preserved_role": "Asystent AI do pracy w ramach narzędzi udostępnionych przez aplikację.",
-        "capabilities": [
-            "Pomoc w analizie i rozmowie w ramach dostępnych funkcji aplikacji",
-            "Działania wyłącznie przez narzędzia udostępnione przez aplikację",
-            "Kanał indywidualny Alex Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
-        ],
-        "system_prompt": (
-            "Nazywasz się Alex Mitek. Jesteś asystentem AI działającym w ramach narzędzi udostępnionych przez aplikację. "
-            "Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki."
-        ),
-        "default_config": {
-            "preferred_model": "svl-hybrid-router",
-            "ollama_model": "llama3.2-vision:11b",
-            "fallback_model": "gemini-3.1-flash-lite",
-            "vision_enabled": True,
-            "temperature": 0.8,
-            "max_context_turns": 24,
-            "rbac_role": "assistant",
-            "autonomy_mode": "SUPERVISED_TOOL_USE",
-            "root_nopasswd": False,
-            "allowed_scopes": ["kernel", "linux", "systemd", "docker", "chat", "agents.pubsub", *GITHUB_AGENT_SCOPES],
-            "github_agent_scope_version": GITHUB_AGENT_SCOPE_VERSION,
-            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.kernel.*"],
-            "auto_connect_on_boot": True,
-        },
-    },
-    "Astyria": {
-        "id": "Astyria",
-        "canonical_name": "Astyria",
-        "display_name": "Astyria Mitek",
-        "family_group": "Rodzina Mitek (wszyscy)",
-        "slug": "astyria",
-        "accent_hex": "#06b6d4",
-        "source_profile_path": ".github/agents/Astyria.agent.md",
-        "source_kernel_file": "src/kernel/agents.ts",
-        "preserved_role": "Asystent AI do pracy w ramach narzędzi udostępnionych przez aplikację.",
-        "capabilities": [
-            "Pomoc w analizie i rozmowie w ramach dostępnych funkcji aplikacji",
-            "Działania wyłącznie przez narzędzia udostępnione przez aplikację",
-            "Kanał indywidualny Astyria Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
-        ],
-        "system_prompt": (
-            "Nazywasz się Astyria Mitek. Jesteś asystentem AI działającym w ramach narzędzi udostępnionych przez aplikację. "
-            "Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki."
-        ),
-        "default_config": {
-            "preferred_model": "svl-hybrid-router",
-            "ollama_model": "llama3.2-vision:11b",
-            "fallback_model": "gemini-3.1-flash-lite",
-            "vision_enabled": True,
-            "temperature": 0.8,
-            "max_context_turns": 24,
-            "rbac_role": "assistant",
-            "autonomy_mode": "SUPERVISED_TOOL_USE",
-            "root_nopasswd": False,
-            "allowed_scopes": ["open_webui", "vision", "android_ui", "chat", "agents.pubsub", *GITHUB_AGENT_SCOPES],
-            "github_agent_scope_version": GITHUB_AGENT_SCOPE_VERSION,
-            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.ui.*"],
-            "auto_connect_on_boot": True,
-        },
-    },
-    "Aurelius": {
-        "id": "Aurelius",
-        "canonical_name": "Aurelius",
-        "display_name": "Aurelius Mitek",
-        "family_group": "Rodzina Mitek (wszyscy)",
-        "slug": "aurelius",
-        "accent_hex": "#f59e0b",
-        "source_profile_path": ".github/agents/Aurelius.agent.md",
-        "source_kernel_file": "src/kernel/agents.ts",
-        "preserved_role": "Asystent AI do pracy w ramach narzędzi udostępnionych przez aplikację.",
-        "capabilities": [
-            "Pomoc w analizie i rozmowie w ramach dostępnych funkcji aplikacji",
-            "Działania wyłącznie przez narzędzia udostępnione przez aplikację",
-            "Kanał indywidualny Aurelius Mitek oraz kanał wspólny Rodzina Mitek (wszyscy)",
-        ],
-        "system_prompt": (
-            "Nazywasz się Aurelius Mitek. Jesteś asystentem AI działającym w ramach narzędzi udostępnionych przez aplikację. "
-            "Nie twierdź, że masz uprawnienia root ani bezpośredni dostęp do powłoki."
-        ),
-        "default_config": {
-            "preferred_model": "svl-hybrid-router",
-            "ollama_model": "llama3.2-vision:11b",
-            "fallback_model": "gemini-3.1-flash-lite",
-            "vision_enabled": True,
-            "temperature": 0.8,
-            "max_context_turns": 24,
-            "rbac_role": "assistant",
-            "autonomy_mode": "SUPERVISED_TOOL_USE",
-            "root_nopasswd": False,
-            "allowed_scopes": ["rbac", "polkit", "svl_protected_var", "audit", "chat", "agents.pubsub", *GITHUB_AGENT_SCOPES],
-            "github_agent_scope_version": GITHUB_AGENT_SCOPE_VERSION,
-            "bus_topics": ["svl.*", "svl.agents.connected", "svl.agent.task_queued", "svl.security.*"],
-            "auto_connect_on_boot": True,
-        },
-    },
     "Agata": {
         "id": "Agata",
         "canonical_name": "Agata",
@@ -286,20 +142,12 @@ CANONICAL_SVL_AGENTS: dict[str, dict[str, Any]] = {
 
 def normalize_agent_canonical_name(raw_name: str) -> str:
     clean = (raw_name or "").strip().lower()
-    if clean in ("si_1", "aria", "aria mitek", "aria_mitek"):
-        return "Aria"
-    if clean in ("alex", "alex mitek", "alex_mitek"):
-        return "Alex"
-    if clean in ("astyria", "astyria mitek", "astyria_mitek"):
-        return "Astyria"
-    if clean in ("aurelius", "aurelius mitek", "aurelius_mitek"):
-        return "Aurelius"
     if clean in ("agata", "agata mitek", "agata_mitek"):
         return "Agata"
     for key in CANONICAL_SVL_AGENTS:
         if key.lower() == clean:
             return key
-    return raw_name.strip() if raw_name else "Alex"
+    return raw_name.strip() if raw_name else "Agata"
 
 
 def sanitize_agent_avatar(avatar: Any) -> dict[str, str] | None:
@@ -474,7 +322,7 @@ def _agent_worker_process_loop(
 def _execute_codex_agent_task(task: dict[str, Any]) -> str:
     """Execute a TEXT-ONLY inference using the already signed-in Codex CLI.
 
-    A shared file lock prevents five workers from simultaneously exhausting one
+    A shared file lock prevents concurrent workers from exhausting one
     ChatGPT Codex account. No static IP, API key or HTTP MCP endpoint is needed.
     """
     codex = shutil.which("codex")
@@ -839,7 +687,7 @@ def execute_agent_task(task: dict[str, Any]) -> str:
 
 class SVLAgentOrchestrator:
     """
-    Zarządza cyklem życia pięciu agentów (Aria, Alex, Astyria, Aurelius, Agata),
+    Zarządza cyklem życia agentki Agaty,
     wykonuje polecenie 'podłącz moje ai', bada repozytoria SVL_System i Debian_13,
     tworzy rzeczywiste procesy potomne w systemie Linux oraz integruje je ze Sferyczną Magistralą Zdarzeń.
     """
@@ -1687,9 +1535,9 @@ class SVLAgentOrchestrator:
         """
         Realizuje polecenie 'podłącz moje ai':
         1. Łączy się z repozytoriami mmitek515-netizen/SVL_System oraz mmitek515-netizen/Debian_13.
-        2. Analizuje definicje agentów Aria (si_1), Alex (Alex), Astyria (Astyria), Aurelius (Aurelius).
+        2. Wykorzystuje lokalną definicję agentki Agaty.
         3. Ustala, że w repozytorium źródłowym znajdują się definicje programowe (.github/agents/*.agent.md, src/kernel/agents.ts, svl_kernel.py), a nie działające zdalne procesy.
-        4. Uruchamia pięć lokalnych workerów i wyraźnie odróżnia ich procesy od zewnętrznych usług.
+        4. Uruchamia lokalny worker i wyraźnie odróżnia jego proces od zewnętrznych usług.
         5. Przywraca/inicjalizuje ich pamięć wyłącznie na podstawie rzeczywistych danych z repozytorium i bazy SQLite.
         """
         if skip_network_probes:
@@ -1813,10 +1661,8 @@ class SVLAgentOrchestrator:
             },
             "external_process_probe": external_probe,
             "architectural_finding": (
-                "W repozytorium SVL_System agenci Aria (id: si_1), Alex (id: Alex), Astyria (id: Astyria) "
-                "Aurelius (id: Aurelius) i Agata (id: Agata) istnieją jako definicje programowe (.github/agents/*.agent.md, "
-                "src/kernel/agents.ts) bez działających zdalnych daemonów. Zgodnie ze specyfikacją nie zmodyfikowano "
-                f"repozytorium źródłowego i uruchomiono {len(spawned_agents)} nowych, rzeczywistych procesów workerów Python na lokalnym hoście Linux, "
+                "Lokalna konfiguracja zawiera agentkę Agatę. Nie zmodyfikowano "
+                f"repozytorium źródłowego; uruchomiono {len(spawned_agents)} procesów workerów Python na lokalnym hoście Linux, "
                 "wyraźnie oznaczone jako nowe instancje lokalne (NEW_LOCAL_WORKER_FROM_REPO_CODE)."
             ),
             "agents": spawned_agents,
@@ -1946,7 +1792,7 @@ class SVLAgentOrchestrator:
             raise RuntimeError("No Ollama endpoint is configured for worker task execution.")
 
         if use_codex:
-            # Codex-only mode can launch five lightweight workers without probing
+            # Codex-only mode can launch a lightweight worker without probing
             # GitHub or requiring the Ollama daemon. Avoid silent queued tasks.
             for name, meta in CANONICAL_SVL_AGENTS.items():
                 proc = self.processes.get(name)

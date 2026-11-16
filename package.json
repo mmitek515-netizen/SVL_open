@@ -11,7 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test:python": "python3 -m unittest discover -s backend/tests -p 'test_*.py' -v",
-    "test:unit": "npx --yes tsx --test src/utils/svlLogic.test.ts src/utils/githubSync.test.ts"
+    "test:unit": "npx --yes tsx --test src/utils/svlLogic.test.ts src/utils/githubFiles.test.ts"
   },
   "dependencies": {
     "@fontsource/inconsolata": "^5.3.0",

@@ -426,7 +426,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     serverRevision,
     isSyncing,
     isConnectingAi,
-    lastSyncReport,
+    lastRefreshReport,
     healthData,
     agentsData,
     systemModules,
@@ -441,7 +441,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     deleteConversation,
     clearAllConversationsAndBuffers,
     appendAndPersistChatMessage,
-    triggerFullSync,
+    refreshAllDomains,
     refreshDomainModules,
     connectMyAi,
     notifyLocalMutation,
@@ -680,14 +680,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
     }
   };
 
-  const handleTriggerFullSync = async () => {
+  const handleRefreshAllDomains = async () => {
     if (isSyncing) return;
     setChatActionError(null);
-    const rep = await triggerFullSync('operator_sync_button');
-    await refreshDomainModules(['modules', 'agents', 'kernel', 'health', 'chat', 'notifications']);
+    const rep = await refreshAllDomains('operator_refresh_button');
     setSyncDrawerOpen(true);
     if (!rep.ok) {
-      setChatActionError(rep.error || 'Synchronizacja nie powiodła się.');
+      setChatActionError(rep.error || 'Odświeżanie nie powiodło się.');
     }
   };
 
@@ -742,7 +741,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           origin: tabOrigin,
         }),
       });
-      await triggerFullSync('operator_antivirus_scan');
+      await refreshAllDomains('operator_antivirus_scan');
       await refreshDomainModules(['chat', 'notifications', 'modules', 'kernel', 'health', 'agents']);
       if (res.ok && res.data?.ok) {
         notifyLocalMutation('chat', 'conv-rodzina-mitek-wszyscy', res.data.serverRevision);
@@ -850,7 +849,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       const historyPayload = buildChatHistoryPayload(targetConvObj.messages, 16);
 
       const isSpecificAgentTargeted =
-        ['Aria', 'Alex', 'Astyria', 'Aurelius', 'Agata'].includes(targetAgent);
+        targetAgent === 'Agata';
       const isFamilyDuplex =
         !isSpecificAgentTargeted &&
         (targetConvId === 'conv-rodzina-mitek-wszyscy' ||
@@ -1025,7 +1024,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
       return;
     }
     if (val === 'action:sync' || val === 'sync') {
-      await handleTriggerFullSync();
+      await handleRefreshAllDomains();
       return;
     }
 
@@ -1271,10 +1270,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
               className="min-w-0 flex-1 max-w-[220px] bg-[#0B0D13] border border-slate-700/80 rounded-md px-2 py-1 text-xs text-slate-100 font-medium focus:outline-none focus:border-violet-500 truncate"
             >
               <option value="Rodzina Mitek">Rodzina Mitek (wszyscy — czat grupowy)</option>
-              <option value="Aria">Aria Mitek (1-na-1)</option>
-              <option value="Alex">Alex Mitek (1-na-1)</option>
-              <option value="Astyria">Astyria Mitek (1-na-1)</option>
-              <option value="Aurelius">Aurelius Mitek (1-na-1)</option>
               <option value="Agata">Agata Mitek (1-na-1)</option>
               <option value="Auto">Auto-Router (1 odpowiedź)</option>
             </select>
@@ -1342,7 +1337,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
             </button>
             <button
               type="button"
-              onClick={() => void handleTriggerFullSync()}
+              onClick={() => void handleRefreshAllDomains()}
               disabled={isSyncing}
               title="Synchronizuj aplikację"
               aria-label="Synchronizuj aplikację"
@@ -1469,7 +1464,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
             <div className="px-3 py-1.5 flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => void handleTriggerFullSync()}
+                onClick={() => void handleRefreshAllDomains()}
                 disabled={isSyncing}
                 className="px-2 py-1 rounded bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-medium"
               >
@@ -1523,16 +1518,16 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({ onNavigateTab }) =
           </div>
         )}
 
-        {/* Authoritative Snapshot Sync Report Drawer */}
-        {syncDrawerOpen && lastSyncReport && (
+        {/* Domain Refresh Report Drawer */}
+        {syncDrawerOpen && lastRefreshReport && (
           <div className="px-4 py-2.5 border-b border-slate-800/80 bg-[#0F131D] text-xs space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 font-mono">
-                <span className={lastSyncReport.ok ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}>
-                  {lastSyncReport.ok ? 'SNAPSHOT SPÓJNY' : 'BŁĄD SYNCHRONIZACJI'}
+                <span className={lastRefreshReport.ok ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}>
+                  {lastRefreshReport.ok ? 'DOMENY ODŚWIEŻONE' : 'BŁĄD ODŚWIEŻANIA'}
                 </span>
                 <span className="text-slate-400">
-                  syncId: {lastSyncReport.syncId || 'n/a'} · rev: {lastSyncReport.serverRevision} · czas: {lastSyncReport.durationMs} ms
+                  rev: {lastRefreshReport.serverRevision} · czas: {lastRefreshReport.durationMs} ms
                 </span>
               </div>
               <div className="flex items-center gap-3">

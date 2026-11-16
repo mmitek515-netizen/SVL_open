@@ -224,8 +224,8 @@ class TestSVLKernelSuite(unittest.TestCase):
     def test_spherical_event_bus_pubsub(self) -> None:
         async def _run() -> None:
             bus = SphericalEventBus()
-            scope = VisualScope("agent:Alex", scope_mode="CAŁOŚĆ", allowed_readers={"Alex"})
-            q = bus.register_worker("Alex", scope, {"status": "READY"})
+            scope = VisualScope("agent:Agata", scope_mode="CAŁOŚĆ", allowed_readers={"Agata"})
+            q = bus.register_worker("Agata", scope, {"status": "READY"})
             await bus.publish("svl.test", "operator", {"msg": "ping"})
             evt = await asyncio.wait_for(q.get(), timeout=1.0)
             self.assertEqual(evt.topic, "svl.test")
@@ -241,9 +241,10 @@ class TestSVLKernelSuite(unittest.TestCase):
             bus = SphericalEventBus()
             orchestrator = SVLAgentOrchestrator(kernel, bus)
 
-            self.assertEqual(set(CANONICAL_SVL_AGENTS.keys()), {"Aria", "Alex", "Astyria", "Aurelius", "Agata"})
-            self.assertEqual(orchestrator.agent_states["Aria"]["id"], "si_1")
-            self.assertEqual(orchestrator.agent_states["Aria"]["config"]["ollama_model"], "llama3.2-vision:11b")
+            self.assertEqual(set(CANONICAL_SVL_AGENTS.keys()), {"Agata"})
+            self.assertEqual(set(orchestrator.agent_states), {"Agata"})
+            self.assertEqual(orchestrator.agent_states["Agata"]["id"], "Agata")
+            self.assertEqual(orchestrator.agent_states["Agata"]["config"]["ollama_model"], "llama3.2-vision:11b")
             for name in CANONICAL_SVL_AGENTS:
                 config = orchestrator.get_agent_config(name)
                 self.assertFalse(config["root_nopasswd"])
@@ -255,7 +256,7 @@ class TestSVLKernelSuite(unittest.TestCase):
 
             custom_prompt = "Zachowuj moje ustalenia i odpowiadaj zwięźle."
             updated = orchestrator.update_agent_config(
-                "Aria",
+                "Agata",
                 {
                     "temperature": 0.42,
                     "ollama_model": "llama3.2-vision:11b",
@@ -263,17 +264,17 @@ class TestSVLKernelSuite(unittest.TestCase):
                 },
             )
             self.assertAlmostEqual(updated["temperature"], 0.42)
-            reloaded = orchestrator.get_agent_config("Aria")
+            reloaded = orchestrator.get_agent_config("Agata")
             self.assertAlmostEqual(reloaded["temperature"], 0.42)
             self.assertEqual(reloaded["system_prompt"], custom_prompt)
             self.assertFalse(reloaded["root_nopasswd"])
-            orchestrator.add_agent_memory("Aria", "Ustalenie do zachowania po restarcie.", kind="decision")
+            orchestrator.add_agent_memory("Agata", "Ustalenie do zachowania po restarcie.", kind="decision")
 
             restarted_kernel = SVLSystemKernel(db_path=db_file, operator_token=token)
             restarted_orchestrator = SVLAgentOrchestrator(restarted_kernel, bus)
-            self.assertEqual(restarted_orchestrator.get_agent_config("Aria")["system_prompt"], custom_prompt)
+            self.assertEqual(restarted_orchestrator.get_agent_config("Agata")["system_prompt"], custom_prompt)
             self.assertEqual(
-                restarted_orchestrator.get_agent_memories("Aria", limit=1)[0]["content"],
+                restarted_orchestrator.get_agent_memories("Agata", limit=1)[0]["content"],
                 "Ustalenie do zachowania po restarcie.",
             )
 
@@ -284,12 +285,12 @@ class TestSVLKernelSuite(unittest.TestCase):
                         '{"root_nopasswd": true, "rbac_role": "autonomous_independent_ai", '
                         '"autonomy_mode": "FULL_AUTONOMOUS_INDEPENDENT", '
                         '"allowed_scopes": ["chat", "root", "sudo_nopasswd"]}',
-                        "Aria",
+                        "Agata",
                     ),
                 ),
                 write=True,
             )
-            migrated = SVLAgentOrchestrator(kernel, bus).get_agent_config("Aria")
+            migrated = SVLAgentOrchestrator(kernel, bus).get_agent_config("Agata")
             self.assertFalse(migrated["root_nopasswd"])
             self.assertEqual(migrated["rbac_role"], "assistant")
             self.assertEqual(migrated["autonomy_mode"], "SUPERVISED_TOOL_USE")
@@ -309,7 +310,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                 with patch.dict("agents_runtime.os.environ", {"SVL_CODEX_AGENTS_ENABLED": "true"}):
                     dispatched = await orchestrator.dispatch_agent_task(
                         "test-suite",
-                        "Aria",
+                        "Agata",
                         "Inspect sync",
                         "Check event delivery.",
                         ai_provider="codex",
@@ -325,7 +326,7 @@ class TestSVLKernelSuite(unittest.TestCase):
                 restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
                 persisted = next(
                     task
-                    for task in restored.agent_queues["Aria"]
+                    for task in restored.agent_queues["Agata"]
                     if task["id"] == dispatched["task"]["id"]
                 )
                 self.assertEqual(persisted["status"], "QUEUED")
@@ -346,28 +347,28 @@ class TestSVLKernelSuite(unittest.TestCase):
                 )
                 orchestrator = SVLAgentOrchestrator(kernel, SphericalEventBus())
                 dispatched = await orchestrator.dispatch_agent_task(
-                    "test-suite", "Aria", "Summarize", "A short task."
+                    "test-suite", "Agata", "Summarize", "A short task."
                 )
                 task_id = dispatched["task"]["id"]
 
                 await orchestrator._handle_worker_message({
                     "type": "task_started",
                     "task_id": task_id,
-                    "agent": "Aria",
+                    "agent": "Agata",
                     "worker_pid": 1234,
                     "started_at": "2025-01-01T00:00:00+00:00",
                 })
                 await orchestrator._handle_worker_message({
                     "type": "task_answer_ready",
                     "task_id": task_id,
-                    "agent": "Aria",
+                    "agent": "Agata",
                     "worker_pid": 1234,
                     "result": "Task result",
                     "completed_at": "2025-01-01T00:00:01+00:00",
                 })
 
                 restored = SVLAgentOrchestrator(kernel, SphericalEventBus())
-                task = next(item for item in restored.agent_queues["Aria"] if item["id"] == task_id)
+                task = next(item for item in restored.agent_queues["Agata"] if item["id"] == task_id)
                 self.assertEqual(task["status"], "ANSWER_READY")
                 self.assertEqual(task["result"], "Task result")
 
@@ -542,8 +543,8 @@ class TestSVLKernelSuite(unittest.TestCase):
             process = multiprocessing.Process(
                 target=_agent_worker_process_loop,
                 args=(
-                    "Aria",
-                    "si_1",
+                    "Agata",
+                    "Agata",
                     str(Path(tmpdir) / "heartbeat.json"),
                     str(Path(tmpdir) / "worker.log"),
                     task_queue,

@@ -135,12 +135,12 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
     serverRevision,
     lastSyncedAt,
     wsState,
-    lastSyncReport,
+    lastRefreshReport,
     conversations,
     irisNotifications,
     irisUnreadCount,
     refreshDomainModules,
-    triggerFullSync,
+    refreshAllDomains,
     isSyncing,
   } = useSvlSync();
 
@@ -166,28 +166,12 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
   const [runtimeLogsError, setRuntimeLogsError] = useState<string | null>(null);
   const [runtimeLogStatus, setRuntimeLogStatus] = useState<string | null>(null);
   const [loadingRuntimeLogs, setLoadingRuntimeLogs] = useState(false);
-  const [githubInfo, setGithubInfo] = useState<any>(null);
-  const [pullingGithub, setPullingGithub] = useState(false);
-  const [githubFeedback, setGithubFeedback] = useState<string | null>(null);
 
   const currentRevisionRef = useRef(serverRevision);
   const observabilityBusyRef = useRef(false);
   useEffect(() => {
     currentRevisionRef.current = serverRevision;
   }, [serverRevision]);
-
-  const loadGithubSummary = useCallback(async (inspect = false) => {
-    const res = await safeFetchJson<any>(`/api/github/sync-status${inspect ? '?inspect=1' : ''}`, {
-      timeoutMs: 12000,
-    });
-    if (res.ok && res.data?.ok) {
-      setGithubInfo(res.data);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadGithubSummary(true);
-  }, [loadGithubSummary]);
 
   const handleEmitDetailedReport = async () => {
     if (isEmittingReport) return;
@@ -237,7 +221,7 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
           origin: 'svl364-command-center-av',
         }),
       });
-      await triggerFullSync('svl364_antivirus_scan');
+      await refreshAllDomains('svl364_antivirus_scan');
       await refreshDomainModules(['notifications', 'chat', 'health', 'kernel', 'modules']);
       if (res.ok && res.data?.ok) {
         setReportFeedback(
@@ -248,34 +232,6 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
       }
     } finally {
       setIsScanningAv(false);
-    }
-  };
-
-  const handlePullFromGithubInCommandCenter = async () => {
-    if (pullingGithub) return;
-    setPullingGithub(true);
-    setGithubFeedback(null);
-    try {
-      const res = await safeFetchJson<any>('/api/github/pull-updates', {
-        method: 'POST',
-        timeoutMs: 30000,
-        body: JSON.stringify({ branch: 'main', applyAll: false, includeRemoteOnlyOnly: true }),
-      });
-      await triggerFullSync('svl364_github_sync');
-      await loadGithubSummary(true);
-      if (res.ok && res.data?.ok) {
-        const dl = Array.isArray(res.data.downloaded) ? res.data.downloaded.length : 0;
-        const diffCount = Array.isArray(res.data.inspection?.differing) ? res.data.inspection.differing.length : 0;
-        setGithubFeedback(
-          dl > 0
-            ? `Pobrano ${dl} plik(ów) z GitHub (main) i zsynchronizowano system.`
-            : `Sprawdzono GitHub (main @ ${String(res.data.inspection?.commitSha || '').slice(0, 8)}): różnic=${diffCount}.`,
-        );
-      } else {
-        setGithubFeedback(res.error || res.data?.error || 'Nie udało się sprawdzić GitHub.');
-      }
-    } finally {
-      setPullingGithub(false);
     }
   };
 
@@ -445,9 +401,8 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
     if (isRefreshing) return;
     setIsRefreshing(true);
     try {
-      await triggerFullSync('svl364_operator_command_center');
+      await refreshAllDomains('svl364_operator_command_center');
       await refreshObservability();
-      await loadGithubSummary(true);
     } finally {
       setIsRefreshing(false);
     }
@@ -1011,39 +966,13 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
           </div>
         </section>
 
-        {/* Section 4: Synchronized Modules & GitHub */}
-        <section className="rounded-xl border border-emerald-500/30 bg-[#0B1220] p-4 space-y-3" aria-label="Zmiany z czatu, AI i GitHub">
+        {/* Section 4: Synchronized Modules */}
+        <section className="rounded-xl border border-emerald-500/30 bg-[#0B1220] p-4 space-y-3" aria-label="Zmiany z czatu i AI">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="flex items-center gap-2 font-semibold text-emerald-300">
-              <RefreshCw size={17} /> Zsynchronizowane moduły SVL_System, AI i GitHub
+              <RefreshCw size={17} /> Zsynchronizowane moduły SVL_System i AI
             </h2>
-            <button
-              type="button"
-              onClick={() => void handlePullFromGithubInCommandCenter()}
-              disabled={pullingGithub || isSyncing}
-              className="rounded-md border border-violet-500/50 bg-violet-600/20 px-2.5 py-1 text-xs text-violet-100 hover:bg-violet-500/30 disabled:opacity-50"
-            >
-              {pullingGithub ? 'Synchronizuję z GitHub…' : 'Sprawdź / pobierz z GitHub (main)'}
-            </button>
           </div>
-          {githubInfo?.remoteInspection?.main && (
-            <div className="rounded-lg border border-slate-800 bg-[#070C16] p-2.5 text-xs space-y-1">
-              <div className="flex flex-wrap items-center justify-between gap-2 font-mono">
-                <span className="text-violet-300">
-                  GitHub main: {String(githubInfo.remoteInspection.main.commitSha || '').slice(0, 8) || 'brak SHA'}
-                </span>
-                <span className="text-slate-400">
-                  Nowe na GitHub: {githubInfo.remoteInspection.main.remoteOnly?.length ?? 0} · Różnice: {githubInfo.remoteInspection.main.differing?.length ?? 0}
-                </span>
-              </div>
-              {githubInfo.remoteInspection.main.recentCommits?.[0] && (
-                <p className="text-slate-300">
-                  Ostatni commit: <span className="text-slate-100">{githubInfo.remoteInspection.main.recentCommits[0].message}</span>
-                </p>
-              )}
-              {githubFeedback && <p className="text-emerald-300 font-mono">{githubFeedback}</p>}
-            </div>
-          )}
           <div className="grid gap-2 md:grid-cols-2">
             {systemModules
               .filter(
@@ -1445,8 +1374,8 @@ export const Svl364CommandCenter: React.FC<CenterProps> = ({ onNavigate }) => {
             <HardDrive size={16} /> Demon Ollama & Diagnostyka Linux
           </button>
           <span className="self-center text-xs text-slate-500">
-            {lastSyncReport?.ok === false
-              ? 'Ostatni błąd synchronizacji: ' + (lastSyncReport.error || 'Brak danych')
+            {lastRefreshReport?.ok === false
+              ? 'Ostatni błąd odświeżania: ' + (lastRefreshReport.error || 'Brak danych')
               : 'Synchronizacja aktywna · ' + (lastSyncedAt || 'bieżąca')}
             {' · commit: ' + (runningCommit ? runningCommit.slice(0, 12) : 'lokalny')}
           </span>

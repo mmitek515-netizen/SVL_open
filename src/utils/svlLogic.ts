@@ -5,8 +5,8 @@
 
 export interface CanonicalAgentMeta {
   id: string;
-  canonicalName: 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata';
-  displayName: 'Aria Mitek' | 'Alex Mitek' | 'Astyria Mitek' | 'Aurelius Mitek' | 'Agata Mitek';
+  canonicalName: 'Agata';
+  displayName: 'Agata Mitek';
   slug: string;
   preservedRole: string;
   sourceProfile: string;
@@ -16,50 +16,6 @@ export interface CanonicalAgentMeta {
 }
 
 export const CANONICAL_AGENTS: CanonicalAgentMeta[] = [
-  {
-    id: 'si_1',
-    canonicalName: 'Aria',
-    displayName: 'Aria Mitek',
-    slug: 'aria',
-    preservedRole: 'Integracje z modelami i usługami AI, lokalnym Ollama, MCP oraz API',
-    sourceProfile: '.github/agents/Aria.agent.md',
-    accentHex: '#f43f5e',
-    borderClass: 'border-rose-500/30',
-    textClass: 'text-rose-400',
-  },
-  {
-    id: 'Alex',
-    canonicalName: 'Alex',
-    displayName: 'Alex Mitek',
-    slug: 'alex',
-    preservedRole: 'Architektura systemu, backend i integracja usług',
-    sourceProfile: '.github/agents/Alex.agent.md',
-    accentHex: '#10b981',
-    borderClass: 'border-emerald-500/30',
-    textClass: 'text-emerald-400',
-  },
-  {
-    id: 'Astyria',
-    canonicalName: 'Astyria',
-    displayName: 'Astyria Mitek',
-    slug: 'astyria',
-    preservedRole: 'Interfejs webowy, czat obustronny, responsywność Android i analiza Vision',
-    sourceProfile: '.github/agents/Astyria.agent.md',
-    accentHex: '#06b6d4',
-    borderClass: 'border-cyan-500/30',
-    textClass: 'text-cyan-400',
-  },
-  {
-    id: 'Aurelius',
-    canonicalName: 'Aurelius',
-    displayName: 'Aurelius Mitek',
-    slug: 'aurelius',
-    preservedRole: 'Bezpieczeństwo RBAC, izolacja procesów i audyt',
-    sourceProfile: '.github/agents/Aurelius.agent.md',
-    accentHex: '#f59e0b',
-    borderClass: 'border-amber-500/30',
-    textClass: 'text-amber-400',
-  },
   {
     id: 'Agata',
     canonicalName: 'Agata',
@@ -184,10 +140,6 @@ export function isConnectMyAiCommand(input: string): boolean {
     .replace(/ą/g, 'a')
     .replace(/\s+/g, ' ');
   return normalized === 'podlacz moje ai';
-}
-
-export function isGitHubWorkspaceSyncRequest(input: string): boolean {
-  return /github(?:\.com)?/i.test(input) && /synchroniz|sync/i.test(input);
 }
 
 export function validateOperatorTokenFormat(token: string): {
@@ -347,13 +299,6 @@ export interface SvlSyncEvent<TPayload = Record<string, any>> {
   payload: TPayload;
 }
 
-export interface SvlSyncModuleStatus {
-  status: 'ok' | 'degraded' | 'error';
-  required: boolean;
-  durationMs: number;
-  error: string | null;
-}
-
 export type TargetAgentSelection = 'Auto' | 'Rodzina Mitek' | 'Agata';
 
 export interface WorkspaceUiState {
@@ -366,32 +311,6 @@ export interface WorkspaceUiState {
 export type AvatarProfileKey = 'Agata' | 'Iris' | 'Operator';
 
 export type SvlAvatarMap = Partial<Record<AvatarProfileKey, string>>;
-
-export interface SvlSystemSnapshot {
-  ok: boolean;
-  syncId: string;
-  schemaVersion: string;
-  serverRevision: number;
-  timestamp: string;
-  synchronized_at?: string;
-  correlationId?: string;
-  warnings: string[];
-  modules: Record<string, SvlSyncModuleStatus>;
-  systemModules?: SystemModule[];
-  entityRevisions?: Record<string, number>;
-  deletedEntities?: string[];
-  health?: any;
-  kernel?: any;
-  agentsData?: any;
-  avatars?: SvlAvatarMap;
-  conversations?: SyncableConversation[];
-  terminalLogs?: Record<TerminalTabId, TerminalLogLine[]>;
-  workspaceState?: WorkspaceUiState;
-  irisNotifications?: IrisNotification[];
-  irisUnreadCount?: number;
-  recentEvents?: SvlSyncEvent[];
-  error?: string;
-}
 
 export interface IrisNotification {
   id: string;

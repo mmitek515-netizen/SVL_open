@@ -56,7 +56,7 @@ Klient MCP (LAN / VPN / HTTPS)
 
 Integracja nie zamienia logowania ChatGPT w klucz OPENAI_API_KEY. 
 Frontend SVL_open pozostaje na porcie 3000, Python na 8085, MCP na 8787.
-Most MCP nie duplikuje bazy SQLite ani historii czatów i nie korzysta ze snapshotów.
+Most MCP nie duplikuje bazy SQLite ani historii czatów i nie tworzy ich kopii.
 
 ## Narzędzia MCP
 

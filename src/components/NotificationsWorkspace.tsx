@@ -33,7 +33,7 @@ export const NotificationsWorkspace: React.FC<NotificationsWorkspaceProps> = ({ 
     isSyncing,
     emitIrisNotification,
     ackIrisNotifications,
-    triggerFullSync,
+    refreshAllDomains,
     refreshDomainModules,
     upsertSystemModule,
     openFamilyChannel,
@@ -239,7 +239,7 @@ export const NotificationsWorkspace: React.FC<NotificationsWorkspaceProps> = ({ 
             </button>
             <button
               type="button"
-              onClick={() => void triggerFullSync('notifications_tab_sync')}
+              onClick={() => void refreshAllDomains('notifications_tab_refresh')}
               disabled={isSyncing}
               className="flex items-center gap-1.5 rounded-lg border border-cyan-500/40 bg-cyan-500/15 px-3 py-2 text-xs font-medium text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-40"
             >

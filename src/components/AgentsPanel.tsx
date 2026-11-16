@@ -39,7 +39,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
     systemModules,
   } = useSvlSync();
 
-  const [senderActor, setSenderActor] = useState<'operator' | 'Aria' | 'Alex' | 'Astyria' | 'Aurelius' | 'Agata'>('operator');
+  const [senderActor, setSenderActor] = useState<'operator' | 'Agata'>('operator');
   const [taskTitle, setTaskTitle] = useState('');
   const [taskPayload, setTaskPayload] = useState('');
   const [agentOperatorToken, setAgentOperatorToken] = useState('');
@@ -294,7 +294,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
         notifyLocalMutation('agent_config', 'all', data.serverRevision);
         setConfigStatus({
           ok: true,
-          msg: 'Skonfigurowano i podłączono wszystkich 5 agentów (Ollama llama3.2-vision:11b + Gemini 3.1 + Magistrala Sferyczna).',
+          msg: 'Skonfigurowano agentkę Agatę i zlecono jej podłączenie.',
         });
       } else {
         setConfigStatus({
@@ -368,7 +368,7 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-800">
         <div>
           <h1 className="text-xl font-bold text-slate-100">
-            01. Panel Pięciu Agentów AI — Rodzina Mitek (Aria Mitek, Alex Mitek, Astyria Mitek, Aurelius Mitek, Agata Mitek)
+            01. Panel agentki AI — Agata Mitek
           </h1>
           <p className="text-xs text-slate-400 mt-1">
             Zachowane identyfikatory z <code className="text-violet-300">mmitek515-netizen/SVL_System</code>, lokalne procesy workerów o rzeczywistym PID/UID, trwała kolejka SQLite, tekstowe zadania Ollama i magistrala zdarzeń (rev {serverRevision}).
@@ -608,10 +608,6 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
                 >
                   <option value="operator">Mateusz Mitek (Operator)</option>
-                  <option value="Aria">Agent: Aria Mitek (id: si_1)</option>
-                  <option value="Alex">Agent: Alex Mitek (id: Alex)</option>
-                  <option value="Astyria">Agent: Astyria Mitek (id: Astyria)</option>
-                  <option value="Aurelius">Agent: Aurelius Mitek (id: Aurelius)</option>
                   <option value="Agata">Agent: Agata Mitek (id: Agata)</option>
                 </select>
               </div>
@@ -625,10 +621,6 @@ export const AgentsPanel: React.FC<AgentsPanelProps> = ({ onNavigateToChat }) =>
                   onChange={(e) => setSelectedAgent(e.target.value as any)}
                   className="w-full bg-[#0B0D13] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200"
                 >
-                  <option value="Aria">Aria Mitek (id: si_1)</option>
-                  <option value="Alex">Alex Mitek (id: Alex)</option>
-                  <option value="Astyria">Astyria Mitek (id: Astyria)</option>
-                  <option value="Aurelius">Aurelius Mitek (id: Aurelius)</option>
                   <option value="Agata">Agata Mitek (id: Agata)</option>
                 </select>
               </div>

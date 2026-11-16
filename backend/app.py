@@ -505,7 +505,7 @@ class SVLBackendRuntime:
             if self.ollama_pull_state.get("active"):
                 if self.ollama_pull_state.get("model") == clean_model:
                     state = dict(self.ollama_pull_state)
-                    meta = self.kernel.get_sync_snapshot_meta()
+                    meta = self.kernel.get_sync_metadata()
                     return 202, {
                         "ok": True,
                         "started": False,
@@ -636,7 +636,7 @@ async def handle_api_request(
     expected_rev = _opt_int(body.get("expectedRevision"))
 
     if method == "GET" and path == "/api/py/health":
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {
             "status": "ONLINE",
             "system": runtime.kernel.sys_version.value,
@@ -664,7 +664,7 @@ async def handle_api_request(
         return 200, runtime.kernel.get_outbox_events_since(since_revision=since_rev, limit=limit)
 
     if method == "GET" and path == "/api/py/sync/status":
-        return 200, {"ok": True, **runtime.kernel.get_sync_snapshot_meta()}
+        return 200, {"ok": True, **runtime.kernel.get_sync_metadata()}
 
     if method == "POST" and path == "/api/py/kernel/verify-token":
         candidate = str(body.get("token", "")).strip()
@@ -673,12 +673,12 @@ async def handle_api_request(
 
     if method == "GET" and path == "/api/py/kernel/report":
         raw_report = json.loads(runtime.kernel.generate_system_status_report())
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {
             "serverRevision": meta["serverRevision"],
             "schemaVersion": meta["schemaVersion"],
             "report": raw_report,
-            "visual_scopes": VisualScope.get_registry_snapshot(),
+            "visual_scopes": VisualScope.get_registry_entries(),
             "protected_variables": {
                 k: v.to_metadata() for k, v in runtime.kernel.protected_variables.items()
             },
@@ -707,7 +707,7 @@ async def handle_api_request(
                 origin=origin,
                 correlation_id=corr,
             )
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {
             "ok": True,
             "directive": directive,
@@ -724,7 +724,7 @@ async def handle_api_request(
         }
 
     if method == "GET" and path == "/api/py/modules":
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {
             "ok": True,
             "serverRevision": meta["serverRevision"],
@@ -903,7 +903,7 @@ async def handle_api_request(
             name: runtime.orchestrator.get_agent_memories(name, limit=60)
             for name in CANONICAL_SVL_AGENTS
         }
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {
             "serverRevision": meta["serverRevision"],
             "schemaVersion": meta["schemaVersion"],
@@ -914,7 +914,7 @@ async def handle_api_request(
             "agent_logs": runtime.orchestrator.agent_logs,
             "agent_queues": runtime.orchestrator.agent_queues,
             "agent_memories": memories,
-            "spherical_bus": runtime.bus.get_spherical_observability_snapshot(),
+            "spherical_bus": runtime.bus.get_spherical_observability(),
         }
 
     if method == "POST" and path == "/api/py/agents/task":
@@ -989,7 +989,7 @@ async def handle_api_request(
             limit=limit_val,
             kind_filter=kind_filter,
         )
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {
             "ok": True,
             "agent": agent_name,
@@ -1113,7 +1113,7 @@ async def handle_api_request(
         return 200, res
 
     if method == "GET" and path == "/api/py/terminal/history":
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {
             "ok": True,
             "terminalLogs": runtime.kernel.list_terminal_history(),
@@ -1155,7 +1155,7 @@ async def handle_api_request(
         return 200, res
 
     if method == "GET" and path == "/api/py/workspace/state":
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {
             "ok": True,
             "workspaceState": runtime.kernel.get_workspace_ui_state(),
@@ -1189,7 +1189,7 @@ async def handle_api_request(
         return 200, {"ok": True, **runtime.kernel.get_chat_diagnostics()}
 
     if method == "GET" and path == "/api/py/chat/conversations":
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {
             "ok": True,
             "serverRevision": meta["serverRevision"],
@@ -1406,7 +1406,7 @@ async def handle_api_request(
 
     if method == "GET" and path == "/api/py/avatars":
         avatars = runtime.kernel.get_persisted_avatars()
-        meta = runtime.kernel.get_sync_snapshot_meta()
+        meta = runtime.kernel.get_sync_metadata()
         return 200, {"ok": True, "avatars": avatars, "serverRevision": meta["serverRevision"]}
 
     if method == "POST" and path == "/api/py/avatars":
@@ -1532,195 +1532,6 @@ async def handle_api_request(
             correlation_id=corr,
         )
         return 200, res
-
-    if method == "POST" and path == "/api/py/system/sync":
-        # Spójny, idempotentny i bezpieczny snapshot globalny bez niebezpiecznych operacji OS
-        sync_id = f"sync-{uuid.uuid4().hex[:12]}"
-        started_at = datetime.now(timezone.utc).isoformat()
-        modules_status: dict[str, dict[str, Any]] = {}
-        warnings: list[str] = []
-
-        def _time_module(name: str, required: bool, fn: Any) -> Any:
-            t0 = time.perf_counter()
-            try:
-                val = fn()
-                modules_status[name] = {
-                    "status": "ok",
-                    "required": required,
-                    "durationMs": round((time.perf_counter() - t0) * 1000, 1),
-                    "error": None,
-                }
-                return val
-            except Exception as exc:
-                err_txt = str(exc)
-                modules_status[name] = {
-                    "status": "error" if required else "degraded",
-                    "required": required,
-                    "durationMs": round((time.perf_counter() - t0) * 1000, 1),
-                    "error": err_txt,
-                }
-                if not required:
-                    warnings.append(f"{name}: {err_txt}")
-                return None
-
-        # 1. Zastosuj i zmaterializuj zmiany z czatu/terminali oraz wymagane moduły rdzenia
-        req_origin = str(body.get("origin") or "operator_sync_button")
-        req_corr = str(body.get("correlationId") or sync_id)
-
-        def _sync_chat_and_runtime() -> dict[str, Any]:
-            runtime.kernel.ensure_mitek_family_channel()
-            runtime.antivirus.scan_and_purge(
-                emit_to_chat=False,
-                emit_to_iris=False,
-                origin=req_origin,
-                correlation_id=req_corr,
-            )
-            mut_res = runtime.kernel.sync_chat_state_mutations(
-                origin=req_origin,
-                correlation_id=req_corr,
-            )
-            runtime.apply_active_module_settings()
-            return mut_res
-
-        _time_module("chat_state_mutations", True, _sync_chat_and_runtime)
-        sqlite_meta = _time_module("sqlite_persistence", True, runtime.kernel.get_sync_snapshot_meta)
-
-        def _load_chat() -> list[dict[str, Any]]:
-            return runtime.kernel.list_conversations_with_messages()
-
-        conversations = _time_module("chat", True, _load_chat)
-
-        def _load_agents() -> dict[str, Any]:
-            agents = runtime.orchestrator.refresh_states()
-            alive_count = sum(
-                1 for a in agents
-                if a.get("status") in {"ONLINE_LOCAL_WORKER", "BUSY_LOCAL_WORKER"}
-            )
-            if alive_count < len(CANONICAL_SVL_AGENTS):
-                warnings.append(f"agents: aktywne workery lokalne {alive_count}/{len(CANONICAL_SVL_AGENTS)}")
-            memories = {
-                name: runtime.orchestrator.get_agent_memories(name, limit=60)
-                for name in CANONICAL_SVL_AGENTS
-            }
-            return {
-                "connected_at": runtime.orchestrator.connected_at,
-                "last_sync_report": runtime.orchestrator.last_Sync_report,
-                "agents": agents,
-                "agent_logs": runtime.orchestrator.agent_logs,
-                "agent_queues": runtime.orchestrator.agent_queues,
-                "agent_memories": memories,
-                "spherical_bus": runtime.bus.get_spherical_observability_snapshot(),
-            }
-
-        agents_payload = _time_module("agents", True, _load_agents)
-
-        system_modules = _time_module("modules_registry", True, runtime.kernel.list_system_modules)
-
-        def _load_kernel() -> dict[str, Any]:
-            raw_report = json.loads(runtime.kernel.generate_system_status_report())
-            return {
-                "report": raw_report,
-                "visual_scopes": VisualScope.get_registry_snapshot(),
-                "protected_variables": {
-                    k: v.to_metadata() for k, v in runtime.kernel.protected_variables.items()
-                },
-                "system_modules": system_modules or runtime.kernel.list_system_modules(),
-                "audit_logs": runtime.kernel.get_audit_logs(limit=40),
-            }
-
-        kernel_payload = _time_module("kernel", True, _load_kernel)
-        terminal_logs = _time_module("terminals", True, runtime.kernel.list_terminal_history)
-        workspace_state = _time_module("workspace_state", True, runtime.kernel.get_workspace_ui_state)
-
-        # 2. Moduły opcjonalne (degraded nie blokuje spójnego snapshotu rdzenia)
-        host_env = _time_module("host_telemetry", False, runtime.probe_host_environment)
-        ollama_status = _time_module("ollama", False, runtime.probe_ollama_status)
-        if ollama_status and not ollama_status.get("daemon_reachable"):
-            modules_status["ollama"]["status"] = "degraded"
-            modules_status["ollama"]["error"] = ollama_status.get("error") or "Daemon Ollama offline"
-            warnings.append(f"ollama: serwer {ollama_status.get('ollama_host')} nieosiągalny")
-        elif ollama_status and ollama_status.get("daemon_reachable"):
-            installed_names = {str(m.get("name") or "") for m in (ollama_status.get("models") or [])}
-            configured_model = ""
-            for sm in (system_modules or []):
-                cfg = sm.get("config") if isinstance(sm, dict) else None
-                if isinstance(cfg, dict) and cfg.get("configured_ollama_model"):
-                    configured_model = str(cfg["configured_ollama_model"]).strip()
-                    break
-            if configured_model:
-                base_match = configured_model.split(":")[0]
-                is_installed = configured_model in installed_names or any(
-                    name == configured_model or name.startswith(f"{base_match}:")
-                    for name in installed_names
-                )
-                if not is_installed:
-                    missing_model = f"Skonfigurowany model {configured_model} nie jest zainstalowany."
-                    modules_status["ollama"]["status"] = "degraded"
-                    modules_status["ollama"]["error"] = missing_model
-                    warnings.append(f"ollama: {missing_model}")
-
-        required_failures = [
-            m for m, st in modules_status.items() if st.get("required") and st.get("status") != "ok"
-        ]
-        if required_failures:
-            return 503, {
-                "ok": False,
-                "syncId": sync_id,
-                "schemaVersion": SYNC_SCHEMA_VERSION,
-                "timestamp": started_at,
-                "correlationId": corr,
-                "error": f"Błąd odczytu wymaganych modułów podczas synchronizacji: {', '.join(required_failures)}",
-                "modules": modules_status,
-                "warnings": warnings,
-            }
-
-        fresh_meta = runtime.kernel.get_sync_snapshot_meta()
-        final_srv_rev = fresh_meta["serverRevision"]
-
-        return 200, {
-            "ok": True,
-            "syncId": sync_id,
-            "schemaVersion": fresh_meta["schemaVersion"],
-            "serverRevision": final_srv_rev,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "synchronized_at": started_at,
-            "correlationId": corr,
-            "warnings": warnings,
-            "modules": modules_status,
-            "systemModules": system_modules,
-            "entityRevisions": fresh_meta["entityRevisions"],
-            "deletedEntities": fresh_meta["deletedEntities"],
-            "health": {
-                "status": "ONLINE",
-                "system": runtime.kernel.sys_version.value,
-                "operator": runtime.kernel.operator.value,
-                "schemaVersion": fresh_meta["schemaVersion"],
-                "serverRevision": final_srv_rev,
-                "host": host_env,
-                "ollama": ollama_status,
-                "security": {
-                    "token_source": runtime.kernel.token_source,
-                    "token_length": len(runtime.kernel.operator_token),
-                    "hardcoded_token_removed": True,
-                    "auth_required": True,
-                },
-            },
-            "kernel": kernel_payload,
-            "agentsData": agents_payload,
-            "agents": agents_payload.get("agents", []),
-            "avatars": runtime.kernel.get_persisted_avatars(),
-            "svl364SshMcp": runtime.svl364_ssh_mcp.get_status(),
-            "connection_report": runtime.orchestrator.last_Sync_report,
-            "conversations": conversations,
-            "terminalLogs": terminal_logs,
-            "workspaceState": workspace_state,
-            "irisNotifications": runtime.kernel.list_iris_notifications(limit=80)["notifications"],
-            "irisUnreadCount": runtime.kernel.list_iris_notifications(limit=80)["unreadCount"],
-            "recentEvents": runtime.kernel.get_outbox_events_since(
-                since_revision=max(0, final_srv_rev - 25),
-                limit=25,
-            )["events"],
-        }
 
     return 404, {"ok": False, "error": f"Unknown endpoint: {method} {path}"}
 

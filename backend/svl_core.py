@@ -749,7 +749,7 @@ class SVLSystemKernel:
                             "channel": "Rodzina Mitek (wszyscy)",
                             "conversation_id": "conv-rodzina-mitek-wszyscy",
                             "bidirectional_duplex": True,
-                            "agents": ["Aria Mitek", "Alex Mitek", "Astyria Mitek", "Aurelius Mitek", "Agata Mitek"],
+                            "agents": ["Agata Mitek"],
                         },
                         ensure_ascii=False,
                     ),

@@ -27,7 +27,7 @@ class FakeKernel:
             "event": event,
         }
 
-    def get_sync_snapshot_meta(self) -> dict[str, int]:
+    def get_sync_metadata(self) -> dict[str, int]:
         return {"serverRevision": 1}
 
     def record_audit(self, *args: object) -> None:

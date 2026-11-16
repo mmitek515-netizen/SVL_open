@@ -9,7 +9,6 @@ import {
   getGitHubAgentPermissions,
   guardUnverifiedMissionCompletion,
   isConnectMyAiCommand,
-  isGitHubWorkspaceSyncRequest,
   isUnsafeChatInteractiveAction,
   mergeConversationThreads,
   parseChatInteractiveToken,
@@ -33,7 +32,6 @@ test('GitHub agent scopes distinguish read access from sync-branch writes', () =
     writeSync: false,
   });
 });
-
 test('mission completion claims are blocked when no mission status can be verified', () => {
   const context = 'Prowadzę misję, sprawdź czy cała procedura się zakończyła.';
   assert.match(
@@ -97,13 +95,6 @@ test('isConnectMyAiCommand recognizes Polish diacritics and case variations', ()
   assert.equal(isConnectMyAiCommand('status systemu'), false);
 });
 
-test('isGitHubWorkspaceSyncRequest recognizes Polish inflections used in chat', () => {
-  assert.equal(isGitHubWorkspaceSyncRequest('synchronizuj z GitHubem'), true);
-  assert.equal(isGitHubWorkspaceSyncRequest('sync workspace GitHub.com'), true);
-  assert.equal(isGitHubWorkspaceSyncRequest('sprawdź GitHub'), false);
-  assert.equal(isGitHubWorkspaceSyncRequest('synchronizuj pliki lokalnie'), false);
-});
-
 test('validateOperatorTokenFormat rejects disallowed and short tokens', () => {
   const legacy = validateOperatorTokenFormat('364_OMNIKLUCZ_ROOT');
   assert.equal(legacy.valid, false);
@@ -117,9 +108,9 @@ test('validateOperatorTokenFormat rejects disallowed and short tokens', () => {
   assert.equal(validToken.error, null);
 });
 
-test('CANONICAL_AGENTS preserves exact SVL_System identifiers (si_1, Alex, Astyria, Aurelius, Agata)', () => {
+test('CANONICAL_AGENTS exposes only Agata', () => {
   const ids = CANONICAL_AGENTS.map((a) => a.id);
-  assert.deepEqual(ids, ['si_1', 'Alex', 'Astyria', 'Aurelius', 'Agata']);
+  assert.deepEqual(ids, ['Agata']);
 });
 
 test('validateOllamaHostUrl validates http/https endpoints cleanly', () => {
@@ -196,7 +187,7 @@ test('mergeConversationThreads preserves pending in-flight messages and respects
   assert.deepEqual(merged[1].messages.map((m) => m.id), ['m1', 'm2']);
 });
 
-test('empty authoritative conversation snapshots do not restore stale local threads', () => {
+test('empty authoritative conversation responses do not restore stale local threads', () => {
   const staleLocal = [
     {
       id: 'stale-conversation',
@@ -257,4 +248,3 @@ test('extractExplicitChatModuleDirective detects svl-364 and explicit module com
 
   assert.equal(extractExplicitChatModuleDirective('Cześć Alex, jak minął dzień?'), null);
 });
-

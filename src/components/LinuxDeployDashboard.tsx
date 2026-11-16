@@ -20,46 +20,6 @@ const QUICK_INSPECT_FILES = [
   '.env.example',
 ];
 
-type GitHubSyncStatus = {
-  ok: boolean;
-  error?: string;
-  repository: string;
-  branch: string;
-  branchUrl: string;
-  tokenConfigured: boolean;
-  publicReadSupported?: boolean;
-  automaticEnabled: boolean;
-  running: boolean;
-  lastAttemptAt: string | null;
-  lastSuccessAt: string | null;
-  lastError: string | null;
-  remoteInspection?: {
-    checkedAt?: string;
-    main?: {
-      commitSha?: string;
-      recentCommits?: Array<{ sha: string; message: string; date: string; author: string }>;
-      remoteOnly?: string[];
-      differing?: string[];
-      error?: string;
-    };
-    syncBranch?: {
-      commitSha?: string;
-      recentCommits?: Array<{ sha: string; message: string; date: string; author: string }>;
-      remoteOnly?: string[];
-      differing?: string[];
-      error?: string;
-    };
-  } | null;
-  lastResult: {
-    uploaded: string[];
-    downloaded: string[];
-    deletedLocally: string[];
-    deletedRemotely: string[];
-    conflicts: string[];
-    skipped: string[];
-  } | null;
-};
-
 export const LinuxDeployDashboard: React.FC = () => {
   const {
     tabOrigin,
@@ -88,31 +48,7 @@ export const LinuxDeployDashboard: React.FC = () => {
   const [ollamaActionMsg, setOllamaActionMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [isUpdatingOllama, setIsUpdatingOllama] = useState(false);
   const [pullState, setPullState] = useState<any>(ollama.pull_state || null);
-  const [githubSyncStatus, setGithubSyncStatus] = useState<GitHubSyncStatus | null>(null);
-  const [githubSyncMessage, setGithubSyncMessage] = useState<{ ok: boolean; text: string } | null>(null);
-  const [isSyncingGithub, setIsSyncingGithub] = useState(false);
-  const [githubOperatorToken, setGithubOperatorToken] = useState('');
-
-  useEffect(() => {
-    let active = true;
-    const refreshStatus = async () => {
-      const res = await safeFetchJson<GitHubSyncStatus>('/api/github/sync-status', { timeoutMs: 10000 });
-      if (active && res.ok && res.data?.ok) {
-        setGithubSyncStatus(res.data);
-      } else if (active) {
-        setGithubSyncMessage({
-          ok: false,
-          text: res.error || res.data?.error || 'Nie można pobrać statusu synchronizacji GitHub.',
-        });
-      }
-    };
-    void refreshStatus();
-    const timer = setInterval(() => void refreshStatus(), 15000);
-    return () => {
-      active = false;
-      clearInterval(timer);
-    };
-  }, []);
+  const [operatorTokenInput, setOperatorTokenInput] = useState('');
 
   useEffect(() => {
     if (ollama.ollama_host && !ollamaHostDirtyRef.current) {
@@ -207,78 +143,7 @@ export const LinuxDeployDashboard: React.FC = () => {
     }
   };
 
-  const handleGitHubWorkspaceSync = async () => {
-    setIsSyncingGithub(true);
-    setGithubSyncMessage(null);
-    try {
-      const res = await safeFetchJson<any>('/api/github/sync-workspace', {
-        method: 'POST',
-        timeoutMs: 120000,
-        headers: githubOperatorToken ? {'X-SVL-Operator-Token': githubOperatorToken} : {},
-        body: JSON.stringify({}),
-      });
-      const data = res.data;
-      if (res.ok && data?.ok) {
-        setGithubSyncMessage({
-          ok: true,
-          text: `Wysłano: ${data.uploaded?.length || 0}, pobrano: ${data.downloaded?.length || 0}, konflikty: ${data.conflicts?.length || 0}, pominięto: ${data.skipped?.length || 0}.`,
-        });
-      } else {
-        setGithubSyncMessage({
-          ok: false,
-          text: res.error || data?.error || 'Synchronizacja GitHub nie powiodła się.',
-        });
-      }
-      const status = await safeFetchJson<GitHubSyncStatus>('/api/github/sync-status?inspect=1', { timeoutMs: 12000 });
-      if (status.ok && status.data?.ok) setGithubSyncStatus(status.data);
-    } finally {
-      setIsSyncingGithub(false);
-    }
-  };
-
-  const handleGitHubPullUpdates = async (
-    branch: 'main' | 'svl-sync',
-    applyAll: boolean,
-    paths?: string[],
-  ) => {
-    setIsSyncingGithub(true);
-    setGithubSyncMessage(null);
-    try {
-      const res = await safeFetchJson<any>('/api/github/pull-updates', {
-        method: 'POST',
-        timeoutMs: 45000,
-        headers: githubOperatorToken ? {'X-SVL-Operator-Token': githubOperatorToken} : {},
-        body: JSON.stringify({
-          branch,
-          applyAll,
-          includeRemoteOnlyOnly: !applyAll && (!paths || paths.length === 0),
-          ...(paths && paths.length > 0 ? { paths } : {}),
-        }),
-      });
-      const data = res.data;
-      if (res.ok && data?.ok) {
-        await refreshDomainModules(['health', 'agents', 'modules', 'kernel', 'chat']);
-        const dl = Array.isArray(data.downloaded) ? data.downloaded.length : 0;
-        const diffCount = Array.isArray(data.inspection?.differing) ? data.inspection.differing.length : 0;
-        const remoteNew = Array.isArray(data.inspection?.remoteOnly) ? data.inspection.remoteOnly.length : 0;
-        setGithubSyncMessage({
-          ok: true,
-          text: `GitHub (${branch}): pobrano ${dl} plik(ów). Pozostałe różnice z runtime: ${diffCount}, tylko na GitHub: ${remoteNew}.`,
-        });
-      } else {
-        setGithubSyncMessage({
-          ok: false,
-          text: res.error || data?.error || 'Nie udało się pobrać zmian z GitHub.',
-        });
-      }
-      const status = await safeFetchJson<GitHubSyncStatus>('/api/github/sync-status?inspect=1', { timeoutMs: 12000 });
-      if (status.ok && status.data?.ok) setGithubSyncStatus(status.data);
-    } finally {
-      setIsSyncingGithub(false);
-    }
-  };
-
-  const effectiveOperatorToken = githubOperatorToken || getSvlOperatorAccessToken();
+  const effectiveOperatorToken = operatorTokenInput || getSvlOperatorAccessToken();
   useEffect(() => {
     const controller = new AbortController();
     async function loadFile() {
@@ -333,7 +198,7 @@ export const LinuxDeployDashboard: React.FC = () => {
         </button>
       </div>
 
-      {/* 3-Column Status Grid: Linux Host, Ollama Engine, GitHub Sync */}
+      {/* 3-Column Status Grid: Linux Host, Ollama Engine, repository probes */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         {/* Card 1: Real Linux Kernel & Host Telemetry */}
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-3">
@@ -486,28 +351,25 @@ export const LinuxDeployDashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Card 3: GitHub Repositories & SVL_System Sync */}
+        {/* Card 3: Agent source repository probes */}
         <div className="p-5 rounded-xl bg-[#111520] border border-slate-800 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-slate-100">
-              Repozytoria GitHub &amp; SVL_System
+              Repozytoria źródłowe agentów
             </h2>
-            <span className="text-xs font-mono text-violet-300">
-              Gałąź: {githubSyncStatus?.branch || 'svl-sync'}
-            </span>
           </div>
 
           <div className="space-y-2 text-xs font-mono tabular-nums text-slate-300">
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Repozytorium SVL_System:</span>
-              <span className="text-emerald-400">
-                {syncRep?.repositories_inspected?.SVL_System?.reachable ? 'Połączono (GitHub API)' : 'Dostępne'}
+              <span className={syncRep?.repositories_inspected?.SVL_System?.reachable ? 'text-emerald-400' : 'text-slate-400'}>
+                {syncRep?.repositories_inspected?.SVL_System?.reachable ? 'Połączono (GitHub API)' : 'Niezweryfikowane / offline'}
               </span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
               <span className="text-slate-400">Repozytorium Debian_13:</span>
-              <span className="text-emerald-400">
-                {syncRep?.repositories_inspected?.Debian_13?.reachable ? 'Połączono (GitHub API)' : 'Dostępne'}
+              <span className={syncRep?.repositories_inspected?.Debian_13?.reachable ? 'text-emerald-400' : 'text-slate-400'}>
+                {syncRep?.repositories_inspected?.Debian_13?.reachable ? 'Połączono (GitHub API)' : 'Niezweryfikowane / offline'}
               </span>
             </div>
             <div className="flex justify-between py-1 border-b border-slate-800/70">
@@ -516,61 +378,8 @@ export const LinuxDeployDashboard: React.FC = () => {
             </div>
           </div>
 
-          <div className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 space-y-2">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className={githubSyncStatus?.tokenConfigured ? 'text-emerald-300' : 'text-cyan-300'}>
-                {!githubSyncStatus
-                  ? 'Sprawdzam status GitHub…'
-                  : githubSyncStatus.tokenConfigured
-                    ? githubSyncStatus.automaticEnabled
-                      ? 'Auto-sync aktywny (odczyt + zapis)'
-                      : 'Token ustawiony (odczyt + zapis)'
-                    : 'Publiczny GitHub aktywny (odczyt main)'}
-              </span>
-              <a
-                href={githubSyncStatus?.branchUrl || 'https://github.com/mmitek515-netizen/SVL_open/tree/svl-sync'}
-                target="_blank"
-                rel="noreferrer"
-                className="font-mono text-violet-300 hover:text-violet-200 underline"
-              >
-                Gałąź: {githubSyncStatus?.branch || 'svl-sync'}
-              </a>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                aria-label="Token operatora SVL do synchronizacji GitHub i odczytu plików projektu"
-                value={githubOperatorToken}
-                onChange={(event) => setGithubOperatorToken(event.target.value)}
-                placeholder="SVL_OPERATOR_TOKEN"
-                className="min-w-0 w-44 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200"
-              />
-              <button
-                type="button"
-                onClick={() => void handleGitHubPullUpdates('main', false)}
-                disabled={isSyncingGithub || Boolean(githubSyncStatus?.running)}
-                className="min-h-[34px] px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-xs font-medium text-white flex items-center gap-1.5"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGithub ? 'animate-spin' : ''}`} />
-                Sprawdź / pobierz nowe (main)
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleGitHubWorkspaceSync()}
-                disabled={!githubSyncStatus?.tokenConfigured || isSyncingGithub || githubSyncStatus.running}
-                className="min-h-[34px] px-3 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium text-white flex items-center gap-2"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGithub || githubSyncStatus?.running ? 'animate-spin' : ''}`} />
-                {isSyncingGithub || githubSyncStatus?.running ? 'Synchronizuję…' : 'Synchronizuj workspace'}
-              </button>
-            </div>
-            {githubSyncMessage && (
-              <p className={`text-xs ${githubSyncMessage.ok ? 'text-emerald-300' : 'text-rose-300'}`}>
-                {githubSyncMessage.text}
-              </p>
-            )}
+          <div className="p-3 rounded-lg bg-[#0B0D13] border border-slate-800 text-xs text-slate-400">
+            Synchronizacja i masowe pobieranie workspace z GitHub są wyłączone. Dostęp do pojedynczych plików pozostaje dostępny przez MCP.
           </div>
         </div>
       </div>
@@ -582,6 +391,16 @@ export const LinuxDeployDashboard: React.FC = () => {
             <h2 className="text-sm font-semibold text-slate-100">
               02. Menedżer Plików Projektu i Artefaktów Wdrożeniowych
             </h2>
+            <input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              aria-label="Token operatora SVL do odczytu plików projektu"
+              value={operatorTokenInput}
+              onChange={(event) => setOperatorTokenInput(event.target.value)}
+              placeholder="SVL_OPERATOR_TOKEN"
+              className="min-w-0 w-44 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-200"
+            />
             <button
               type="button"
               onClick={() => void handleCopyFile()}

@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-import json, sys, urllib.request
+import json, os, sys, urllib.request
 
-cmd = " ".join(sys.argv[1:]).strip() or "uname -a && uptime"
+cmd = " ".join(sys.argv[1:]).strip()
+target = os.environ.get("SVL_SSH_TARGET", "Ship")
+if not cmd:
+    sys.stderr.write("Usage: svl364-ssh <command>\n")
+    sys.exit(2)
+if not sys.stdin.isatty() or input(f"Execute on {target}? [y/N] ").strip().lower() not in ("y", "yes"):
+    sys.stderr.write("SSH command cancelled.\n")
+    sys.exit(2)
 req = urllib.request.Request(
     "http://127.0.0.1:8085/api/py/svl364/ssh/exec",
-    data=json.dumps({"command": cmd, "origin": "svl364-ssh-cli"}).encode("utf-8"),
+    data=json.dumps({"command": cmd, "confirmed": True, "origin": "svl364-ssh-cli"}).encode("utf-8"),
     headers={"Content-Type": "application/json"},
     method="POST",
 )
